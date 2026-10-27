@@ -759,7 +759,7 @@ mod tests {
             keyslot: 2,
             sealing,
             networks: networks.iter().map(|name| (*name).to_owned()).collect(),
-            siblings: vec!["ada's laptop".into()],
+            siblings: vec!["Ada's laptop".into()],
         }
     }
 
@@ -874,7 +874,7 @@ mod tests {
             shown.contains("Home") && shown.contains("Office 5G"),
             "{shown}"
         );
-        assert!(shown.contains("ada's laptop"), "{shown}");
+        assert!(shown.contains("Ada's laptop"), "{shown}");
 
         let authority = FakeAuthority::new(Ok(vec![volume(Sealing::Tpm2, &[])]));
         let mut card = DiskUnlockModel::with_authority(test_cx(), authority);

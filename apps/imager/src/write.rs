@@ -1511,7 +1511,7 @@ mod tests {
                 ..InstallProfile::default()
             };
             profile.user.username = "ada".into();
-            profile.user.full_name = "ada Example".into();
+            profile.user.full_name = "Ada Example".into();
             profile.user.password = "must-not-cross".into();
 
             let work = tempfile::tempdir().unwrap();

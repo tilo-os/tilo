@@ -93,6 +93,7 @@ doc = false
 "base16ct-0_2_0" = { package = "base16ct", version = "^0.2.0", default-features = false, features = ["alloc"] }
 "base16ct-1_0_0" = { package = "base16ct", version = "^1.0.0", default-features = false, features = ["alloc"] }
 "base64-0_22_1" = { package = "base64", version = "^0.22.1", default-features = false, features = ["alloc", "default", "std"] }
+"base64-0_23_1" = { package = "base64", version = "^0.23.1", default-features = false, features = ["alloc", "default", "simd-unsafe", "std"] }
 "base64ct-1_8_3" = { package = "base64ct", version = "^1.8.3", default-features = false, features = ["alloc"] }
 "bcrypt-pbkdf-0_11_0" = { package = "bcrypt-pbkdf", version = "^0.11.0", default-features = false, features = ["alloc"] }
 "biblatex-0_12_0" = { package = "biblatex", version = "^0.12.0", default-features = false, features = ["unic-langid"] }
@@ -113,7 +114,7 @@ doc = false
 "block-devices" = { path = "../../../crates/system/block-devices", default-features = false, features = ["udisks"] }
 "block-padding-0_4_2" = { package = "block-padding", version = "^0.4.2", default-features = false, features = [] }
 "blowfish-0_10_0" = { package = "blowfish", version = "^0.10.0", default-features = false, features = ["bcrypt"] }
-"bon-3_10_2" = { package = "bon", version = "^3.10.2", default-features = false, features = ["alloc", "std"] }
+"bon-3_10_2" = { package = "bon", version = "^3.10.2", default-features = false, features = ["alloc", "default", "std"] }
 "bounded-command" = { path = "../../../crates/system/bounded-command", default-features = false, features = [] }
 "bounded-zip" = { path = "../../../crates/doc/bounded-zip", default-features = false, features = ["default", "epub"] }
 "brotli-8_0_2" = { package = "brotli", version = "^8.0.2", default-features = false, features = ["alloc-stdlib", "default", "std"] }
@@ -237,6 +238,7 @@ doc = false
 "data-encoding-2_10_0" = { package = "data-encoding", version = "^2.10.0", default-features = false, features = ["alloc", "default", "std"] }
 "data-encoding-macro-0_1_19" = { package = "data-encoding-macro", version = "^0.1.19", default-features = false, features = [] }
 "data-url-0_3_2" = { package = "data-url", version = "^0.3.2", default-features = false, features = ["alloc", "default", "std"] }
+"datasketches-0_5_0" = { package = "datasketches", version = "^0.5.0", default-features = false, features = ["default", "hll"] }
 "davey-0_1_5" = { package = "davey", path = "../../../vendor/davey", default-features = false, features = ["default"] }
 "db-client" = { path = "../../../apps/db-client", default-features = false, features = [] }
 "der-0_7_10" = { package = "der", version = "^0.7.10", default-features = false, features = ["alloc", "derive", "flagset", "oid", "pem", "std", "zeroize"] }
@@ -259,6 +261,7 @@ doc = false
 "disks" = { path = "../../../apps/disks", default-features = false, features = ["default", "live"] }
 "dlib-0_5_3" = { package = "dlib", version = "^0.5.3", default-features = false, features = [] }
 "downcast-rs-1_2_1" = { package = "downcast-rs", version = "^1.2.1", default-features = false, features = ["default", "std"] }
+"downcast-rs-2_0_2" = { package = "downcast-rs", version = "^2.0.2", default-features = false, features = ["default", "std", "sync"] }
 "dpi-0_1_2" = { package = "dpi", version = "^0.1.2", default-features = false, features = ["default", "std"] }
 "drm-0_14_1" = { package = "drm", version = "^0.14.1", default-features = false, features = [] }
 "drm-ffi-0_9_0" = { package = "drm-ffi", version = "^0.9.0", default-features = false, features = [] }
@@ -287,6 +290,7 @@ doc = false
 "env_filter-2_0_0" = { package = "env_filter", version = "^2.0.0", default-features = false, features = ["std"] }
 "env_logger-0_11_11" = { package = "env_logger", version = "^0.11.11", default-features = false, features = ["auto-color", "color", "humantime"] }
 "equivalent-1_0_2" = { package = "equivalent", version = "^1.0.2", default-features = false, features = [] }
+"erased-serde-0_4_11" = { package = "erased-serde", version = "^0.4.11", default-features = false, features = ["alloc"] }
 "errno-0_3_14" = { package = "errno", version = "^0.3.14", default-features = false, features = ["default", "std"] }
 "euclid-0_22_14" = { package = "euclid", version = "^0.22.14", default-features = false, features = [] }
 "event-listener-2_5_3" = { package = "event-listener", version = "^2.5.3", default-features = false, features = [] }
@@ -355,7 +359,7 @@ doc = false
 "fs-native" = { path = "../../../crates/system/fs-native", default-features = false, features = [] }
 "fs-protocol" = { path = "../../../crates/system/fs-protocol", default-features = false, features = [] }
 "fs-set-times-0_20_3" = { package = "fs-set-times", version = "^0.20.3", default-features = false, features = [] }
-"fs4-0_8_4" = { package = "fs4", version = "^0.8.4", default-features = false, features = ["default", "sync"] }
+"fs4-0_13_1" = { package = "fs4", version = "^0.13.1", default-features = false, features = ["default", "sync"] }
 "fuser-0_18_0" = { package = "fuser", version = "^0.18.0", default-features = false, features = ["default"] }
 "futures-0_3_32" = { package = "futures", version = "^0.3.32", default-features = false, features = ["alloc", "async-await", "default", "executor", "futures-executor", "std"] }
 "futures-buffered-0_2_12" = { package = "futures-buffered", version = "^0.2.12", default-features = false, features = [] }
@@ -421,7 +425,7 @@ doc = false
 "harfrust-0_12_0" = { package = "harfrust", version = "^0.12.0", default-features = false, features = ["default", "std"] }
 "hash32-0_2_1" = { package = "hash32", version = "^0.2.1", default-features = false, features = [] }
 "hashbrown-0_14_5" = { package = "hashbrown", version = "^0.14.5", default-features = false, features = ["raw"] }
-"hashbrown-0_15_5" = { package = "hashbrown", version = "^0.15.5", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry", "serde"] }
+"hashbrown-0_15_5" = { package = "hashbrown", version = "^0.15.5", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
 "hashbrown-0_16_1" = { package = "hashbrown", version = "^0.16.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry"] }
 "hashbrown-0_17_1" = { package = "hashbrown", version = "^0.17.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry"] }
 "hashlink-0_10_0" = { package = "hashlink", version = "^0.10.0", default-features = false, features = [] }
@@ -514,9 +518,9 @@ doc = false
 "install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = [] }
 "installer" = { path = "../../../crates/session/installer", default-features = false, features = [] }
-"instant-0_1_13" = { package = "instant", version = "^0.1.13", default-features = false, features = ["inaccurate", "js-sys", "wasm-bindgen", "wasm-bindgen_rs", "web-sys"] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
+"inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }
 "io-extras-0_18_4" = { package = "io-extras", version = "^0.18.4", default-features = false, features = ["default"] }
 "io-lifetimes-1_0_11" = { package = "io-lifetimes", version = "^1.0.11", default-features = false, features = ["close", "default", "hermit-abi", "libc", "windows-sys"] }
 "io-lifetimes-2_0_4" = { package = "io-lifetimes", version = "^2.0.4", default-features = false, features = ["default"] }
@@ -536,7 +540,6 @@ doc = false
 "is-docker-0_2_0" = { package = "is-docker", version = "^0.2.0", default-features = false, features = [] }
 "is-wsl-0_4_0" = { package = "is-wsl", version = "^0.4.0", default-features = false, features = [] }
 "is_terminal_polyfill-1_70_2" = { package = "is_terminal_polyfill", version = "^1.70.2", default-features = false, features = ["default"] }
-"itertools-0_12_1" = { package = "itertools", version = "^0.12.1", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_13_0" = { package = "itertools", version = "^0.13.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_14_0" = { package = "itertools", version = "^0.14.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_15_0" = { package = "itertools", version = "^0.15.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
@@ -603,7 +606,6 @@ doc = false
 "lock_api-0_4_14" = { package = "lock_api", version = "^0.4.14", default-features = false, features = ["atomic_usize", "default"] }
 "log-0_4_29" = { package = "log", version = "^0.4.29", default-features = false, features = ["max_level_debug", "release_max_level_info", "std"] }
 "logs" = { path = "../../../apps/logs", default-features = false, features = [] }
-"lru-0_12_5" = { package = "lru", version = "^0.12.5", default-features = false, features = ["default", "hashbrown"] }
 "lru-0_16_3" = { package = "lru", version = "^0.16.3", default-features = false, features = ["default", "hashbrown"] }
 "lru-0_18_3" = { package = "lru", version = "^0.18.3", default-features = false, features = ["default", "hashbrown"] }
 "lru-slab-0_1_2" = { package = "lru-slab", version = "^0.1.2", default-features = false, features = [] }
@@ -619,7 +621,7 @@ doc = false
 "md-5-0_11_0" = { package = "md-5", version = "^0.11.0", default-features = false, features = ["alloc", "default", "oid"] }
 "md5-0_8_1" = { package = "md5", version = "^0.8.1", default-features = false, features = ["default", "std"] }
 "mdns-sd-0_20_3" = { package = "mdns-sd", version = "^0.20.3", default-features = false, features = ["async", "default", "log", "logging"] }
-"measure_time-0_8_3" = { package = "measure_time", version = "^0.8.3", default-features = false, features = [] }
+"measure_time-0_9_0" = { package = "measure_time", version = "^0.9.0", default-features = false, features = [] }
 "mediatype-0_21_0" = { package = "mediatype", version = "^0.21.0", default-features = false, features = ["serde"] }
 "memchr-2_8_0" = { package = "memchr", version = "^2.8.0", default-features = false, features = ["alloc", "default", "std"] }
 "memmap2-0_9_11" = { package = "memmap2", version = "^0.9.11", default-features = false, features = [] }
@@ -642,7 +644,7 @@ doc = false
 "moq-pattern-0_1_0" = { package = "moq-pattern", version = "^0.1.0", default-features = false, features = ["serde"] }
 "moxcms-0_8_1" = { package = "moxcms", version = "^0.8.1", default-features = false, features = ["avx", "avx_luts", "avx_shaper_fixed_point_paths", "avx_shaper_paths", "default", "lut", "neon", "neon_luts", "neon_shaper_fixed_point_paths", "neon_shaper_paths", "sse", "sse_luts", "sse_shaper_fixed_point_paths", "sse_shaper_paths"] }
 "muldiv-1_0_1" = { package = "muldiv", version = "^1.0.1", default-features = false, features = [] }
-"murmurhash32-0_3_1" = { package = "murmurhash32", version = "^0.3.1", default-features = false, features = [] }
+"murmurhash32-0_4_0" = { package = "murmurhash32", version = "^0.4.0", default-features = false, features = [] }
 "music" = { path = "../../../apps/music", default-features = false, features = ["audio", "default", "live", "spotify-native"] }
 "mutate_once-0_1_2" = { package = "mutate_once", version = "^0.1.2", default-features = false, features = [] }
 "mysql-28_0_2" = { package = "mysql", version = "^28.0.2", default-features = false, features = ["minimal-rust"] }
@@ -704,7 +706,7 @@ doc = false
 "ordered-stream-0_2_0" = { package = "ordered-stream", version = "^0.2.0", default-features = false, features = [] }
 "os-actions" = { path = "../../../crates/system/os-actions", default-features = false, features = [] }
 "osk" = { path = "../../../apps/osk", default-features = false, features = [] }
-"ownedbytes-0_7_0" = { package = "ownedbytes", version = "^0.7.0", default-features = false, features = [] }
+"ownedbytes-0_9_0" = { package = "ownedbytes", version = "^0.9.0", default-features = false, features = [] }
 "p256-0_13_2" = { package = "p256", version = "^0.13.2", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "pem", "pkcs8", "sha2", "sha256", "std"] }
 "p256-0_14_0" = { package = "p256", version = "^0.14.0", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "getrandom", "pem", "pkcs8", "precomputed-tables", "sha2", "sha256", "std"] }
 "p384-0_13_1" = { package = "p384", version = "^0.13.1", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "pem", "pkcs8", "sha2", "sha384", "std"] }
@@ -819,7 +821,6 @@ doc = false
 "rand_core-0_10_0" = { package = "rand_core", version = "^0.10.0", default-features = false, features = [] }
 "rand_core-0_6_4" = { package = "rand_core", version = "^0.6.4", default-features = false, features = ["alloc", "getrandom", "std"] }
 "rand_core-0_9_5" = { package = "rand_core", version = "^0.9.5", default-features = false, features = ["os_rng", "std"] }
-"rand_distr-0_4_3" = { package = "rand_distr", version = "^0.4.3", default-features = false, features = ["alloc", "default", "std"] }
 "rand_distr-0_5_1" = { package = "rand_distr", version = "^0.5.1", default-features = false, features = ["alloc", "default", "std"] }
 "rand_pcg-0_10_2" = { package = "rand_pcg", version = "^0.10.2", default-features = false, features = [] }
 "rand_xorshift-0_4_0" = { package = "rand_xorshift", version = "^0.4.0", default-features = false, features = [] }
@@ -887,10 +888,9 @@ doc = false
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
 "russh-util-0_52_0" = { package = "russh-util", version = "^0.52.0", default-features = false, features = [] }
-"rust-stemmers-1_2_0" = { package = "rust-stemmers", version = "^1.2.0", default-features = false, features = [] }
 "rust_decimal-1_42_1" = { package = "rust_decimal", version = "^1.42.1", default-features = false, features = ["maths"] }
 "rustc-demangle-0_1_28" = { package = "rustc-demangle", version = "^0.1.28", default-features = false, features = [] }
-"rustc-hash-1_1_0" = { package = "rustc-hash", version = "^1.1.0", default-features = false, features = ["default", "std"] }
+"rustc-hash-1_1_0" = { package = "rustc-hash", version = "^1.1.0", default-features = false, features = [] }
 "rustc-hash-2_1_3" = { package = "rustc-hash", version = "^2.1.3", default-features = false, features = ["default", "std"] }
 "rustfft-6_4_1" = { package = "rustfft", version = "^6.4.1", default-features = false, features = ["avx", "default", "neon", "sse"] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
@@ -933,6 +933,7 @@ doc = false
 "semver-1_0_27" = { package = "semver", version = "^1.0.27", default-features = false, features = ["default", "std"] }
 "serde-1_0_228" = { package = "serde", version = "^1.0.228", default-features = false, features = ["alloc", "default", "derive", "rc", "serde_derive", "std"] }
 "serde-big-array-0_5_1" = { package = "serde-big-array", version = "^0.5.1", default-features = false, features = [] }
+"serde-tuple-vec-map-1_0_1" = { package = "serde-tuple-vec-map", version = "^1.0.1", default-features = false, features = ["default", "std"] }
 "serde_bytes-0_11_19" = { package = "serde_bytes", version = "^0.11.19", default-features = false, features = ["default", "std"] }
 "serde_core-1_0_228" = { package = "serde_core", version = "^1.0.228", default-features = false, features = ["alloc", "default", "rc", "result", "std"] }
 "serde_json-1_0_151" = { package = "serde_json", path = "../../../vendor/serde_json", default-features = false, features = ["alloc", "default", "float_roundtrip", "indexmap", "preserve_order", "raw_value", "std"] }
@@ -979,7 +980,7 @@ doc = false
 "simple-dns-0_11_3" = { package = "simple-dns", version = "^0.11.3", default-features = false, features = ["default", "std"] }
 "simplecss-0_2_2" = { package = "simplecss", version = "^0.2.2", default-features = false, features = ["default", "std"] }
 "siphasher-1_0_3" = { package = "siphasher", version = "^1.0.3", default-features = false, features = ["default", "std"] }
-"sketches-ddsketch-0_2_2" = { package = "sketches-ddsketch", version = "^0.2.2", default-features = false, features = ["serde", "use_serde"] }
+"sketches-ddsketch-0_4_2" = { package = "sketches-ddsketch", version = "^0.4.2", default-features = false, features = ["serde", "use_serde"] }
 "skrifa-0_42_1" = { package = "skrifa", version = "^0.42.1", default-features = false, features = ["autohint_shaping", "default", "std"] }
 "skrifa-0_44_0" = { package = "skrifa", version = "^0.44.0", default-features = false, features = ["autohint_shaping", "default", "std"] }
 "slab-0_4_12" = { package = "slab", version = "^0.4.12", default-features = false, features = ["default", "std"] }
@@ -1045,15 +1046,15 @@ doc = false
 "system-extension" = { path = "../../../crates/system/system-extension", default-features = false, features = [] }
 "taffy-0_10_1" = { package = "taffy", version = "^0.10.1", default-features = false, features = ["alloc", "block_layout", "calc", "content_size", "default", "detailed_layout_info", "flexbox", "float_layout", "grid", "std", "taffy_tree"] }
 "tagptr-0_2_0" = { package = "tagptr", version = "^0.2.0", default-features = false, features = [] }
-"tantivy-0_22_1" = { package = "tantivy", version = "^0.22.1", default-features = false, features = ["fs4", "memmap2", "mmap", "tempfile"] }
-"tantivy-bitpacker-0_6_0" = { package = "tantivy-bitpacker", version = "^0.6.0", default-features = false, features = [] }
-"tantivy-columnar-0_3_0" = { package = "tantivy-columnar", version = "^0.3.0", default-features = false, features = [] }
-"tantivy-common-0_7_0" = { package = "tantivy-common", version = "^0.7.0", default-features = false, features = [] }
+"tantivy-0_27_0" = { package = "tantivy", version = "^0.27.0", default-features = false, features = ["fs4", "memmap2", "mmap", "tempfile"] }
+"tantivy-bitpacker-0_27_0" = { package = "tantivy-bitpacker", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-columnar-0_27_0" = { package = "tantivy-columnar", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-common-0_27_0" = { package = "tantivy-common", version = "^0.27.0", default-features = false, features = [] }
 "tantivy-fst-0_5_0" = { package = "tantivy-fst", version = "^0.5.0", default-features = false, features = ["default", "regex", "regex-syntax"] }
-"tantivy-query-grammar-0_22_0" = { package = "tantivy-query-grammar", version = "^0.22.0", default-features = false, features = [] }
-"tantivy-sstable-0_3_0" = { package = "tantivy-sstable", version = "^0.3.0", default-features = false, features = [] }
-"tantivy-stacker-0_3_0" = { package = "tantivy-stacker", version = "^0.3.0", default-features = false, features = [] }
-"tantivy-tokenizer-api-0_3_0" = { package = "tantivy-tokenizer-api", version = "^0.3.0", default-features = false, features = [] }
+"tantivy-query-grammar-0_27_0" = { package = "tantivy-query-grammar", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-sstable-0_27_0" = { package = "tantivy-sstable", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-stacker-0_27_0" = { package = "tantivy-stacker", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-tokenizer-api-0_7_0" = { package = "tantivy-tokenizer-api", version = "^0.7.0", default-features = false, features = [] }
 "tar-0_4_46" = { package = "tar", version = "^0.4.46", default-features = false, features = ["default", "xattr"] }
 "tasks" = { path = "../../../apps/tasks", default-features = false, features = [] }
 "tempfile-3_27_0" = { package = "tempfile", version = "^3.27.0", default-features = false, features = ["default", "getrandom"] }
@@ -1074,6 +1075,7 @@ doc = false
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
 "tilo-agent-models" = { path = "../../../crates/platform/tilo-agent-models", default-features = false, features = [] }
 "tilo-agent-participant" = { path = "../../../crates/agent/agent-participant", default-features = false, features = [] }
+"tilo-ai-bench" = { path = "../../../crates/dev/ai-bench", default-features = false, features = [] }
 "tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "chrono", "default", "gpu-video", "mpris", "native", "priority-contacts", "realtime-video", "test-support", "webview-adblock"] }
 "tilo-app-cli" = { path = "../../../crates/dev/tilo-app-cli", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../../crates/packaging/tilo-app-package", default-features = false, features = [] }
@@ -1137,6 +1139,7 @@ doc = false
 "tilo-environment" = { path = "../../../crates/runtime/environment", default-features = false, features = [] }
 "tilo-esp-write" = { path = "../../../crates/system/esp-write", default-features = false, features = [] }
 "tilo-extension" = { path = "../../../crates/system/extension-helper", default-features = false, features = [] }
+"tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-feedback" = { path = "../../../crates/collab/feedback", default-features = false, features = [] }
 "tilo-feedback-review" = { path = "../../../crates/collab/feedback-review", default-features = false, features = [] }
 "tilo-file-provider" = { path = "../../../crates/runtime/tilo-file-provider", default-features = false, features = [] }
@@ -1231,6 +1234,7 @@ doc = false
 "tilo-secret-vault" = { path = "../../../crates/system/secret-vault", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }
 "tilo-segment" = { path = "../../../crates/media/segment", default-features = false, features = ["infer"] }
+"tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
 "tilo-sibling-unlock" = { path = "../../../crates/system/tilo-sibling-unlock", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
@@ -1241,7 +1245,7 @@ doc = false
 "tilo-subject" = { path = "../../../crates/platform/tilo-subject", default-features = false, features = [] }
 "tilo-system-info" = { path = "../../../crates/platform/tilo-system-info", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = ["udisks"] }
-"tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = [] }
+"tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = ["document"] }
 "tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = ["default", "video"] }
 "tilo-tray-host" = { path = "../../../crates/session/tray-host", default-features = false, features = [] }
 "tilo-tts" = { path = "../../../crates/system/tts", default-features = false, features = [] }
@@ -1249,6 +1253,7 @@ doc = false
 "tilo-ui" = { path = "../../../crates/sdk/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "mpris", "native", "portal", "priority-contacts", "realtime-video", "syntax-definitions", "test-support", "ux-bench", "webview-adblock"] }
 "tilo-ui-graph" = { path = "../../../crates/dev/ui-graph", default-features = false, features = [] }
 "tilo-ui-paint" = { path = "../../../crates/sdk/ui-paint", default-features = false, features = [] }
+"tilo-unicode-emoji" = { path = "../../../crates/platform/tilo-unicode-emoji", default-features = false, features = [] }
 "tilo-unlock-protocol" = { path = "../../../crates/collab/tilo-unlock-protocol", default-features = false, features = [] }
 "tilo-user-identity" = { path = "../../../crates/collab/tilo-user-identity", default-features = false, features = [] }
 "tilo-vello-0_9_0" = { package = "tilo-vello", path = "../../../vendor/vello", default-features = false, features = ["default", "wgpu", "wgpu_default"] }
@@ -1316,6 +1321,7 @@ doc = false
 "typed-path-0_12_3" = { package = "typed-path", version = "^0.12.3", default-features = false, features = ["default", "std"] }
 "typeid-1_0_3" = { package = "typeid", version = "^1.0.3", default-features = false, features = [] }
 "typenum-1_20_1" = { package = "typenum", version = "^1.20.1", default-features = false, features = ["const-generics"] }
+"typetag-0_2_23" = { package = "typetag", version = "^0.2.23", default-features = false, features = [] }
 "typst-0_15_1" = { package = "typst", version = "^0.15.1", default-features = false, features = [] }
 "typst-assets-0_15_1" = { package = "typst-assets", version = "^0.15.1", default-features = false, features = ["fonts"] }
 "typst-editor" = { path = "../../../apps/typst-editor", default-features = false, features = [] }
@@ -1354,6 +1360,7 @@ doc = false
 "unsafe-libyaml-0_2_11" = { package = "unsafe-libyaml", version = "^0.2.11", default-features = false, features = [] }
 "unscanny-0_1_0" = { package = "unscanny", version = "^0.1.0", default-features = false, features = [] }
 "untrusted-0_9_0" = { package = "untrusted", version = "^0.9.0", default-features = false, features = [] }
+"unwrap-infallible-1_0_0" = { package = "unwrap-infallible", version = "^1.0.0", default-features = false, features = ["default"] }
 "url-2_5_8" = { package = "url", version = "^2.5.8", default-features = false, features = ["default", "serde", "std"] }
 "urlencoding-2_1_3" = { package = "urlencoding", version = "^2.1.3", default-features = false, features = [] }
 "ush" = { path = "../../../crates/runtime/ush", default-features = false, features = [] }
@@ -1463,9 +1470,9 @@ doc = false
 "zip-9_0_4" = { package = "zip", version = "^9.0.4", default-features = false, features = ["_deflate-any", "deflate-flate2", "deflate-flate2-zlib-rs"] }
 "zlib-rs-0_6_8" = { package = "zlib-rs", version = "^0.6.8", default-features = false, features = ["rust-allocator", "std"] }
 "zmij-1_0_21" = { package = "zmij", version = "^1.0.21", default-features = false, features = [] }
-"zstd-0_13_3" = { package = "zstd", version = "^0.13.3", default-features = false, features = ["arrays", "default", "experimental", "legacy", "zdict_builder"] }
-"zstd-safe-7_2_4" = { package = "zstd-safe", version = "^7.2.4", default-features = false, features = ["arrays", "experimental", "legacy", "std", "zdict_builder"] }
-"zstd-sys-2_0_16_zstd_1_5_7" = { package = "zstd-sys", version = "^2.0.16+zstd.1.5.7", default-features = false, features = ["experimental", "legacy", "std", "zdict_builder"] }
+"zstd-0_14_3" = { package = "zstd", version = "^0.14.3", default-features = false, features = ["arrays", "default", "legacy", "zdict_builder"] }
+"zstd-safe-8_2_0" = { package = "zstd-safe", version = "^8.2.0", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
+"zstd-sys-2_1_2_zstd_1_5_7" = { package = "zstd-sys", version = "^2.1.2+zstd.1.5.7", default-features = false, features = ["legacy", "std", "zdict_builder"] }
 "zune-core-0_5_1" = { package = "zune-core", version = "^0.5.1", default-features = false, features = ["std"] }
 "zune-jpeg-0_5_12" = { package = "zune-jpeg", version = "^0.5.12", default-features = false, features = ["default", "neon", "std", "x86"] }
 "zvariant-5_12_0" = { package = "zvariant", version = "^5.12.0", default-features = false, features = ["default", "enumflags2"] }
@@ -1516,6 +1523,7 @@ doc = false
 "base16ct-0_2_0" = { package = "base16ct", version = "^0.2.0", default-features = false, features = ["alloc"] }
 "base16ct-1_0_0" = { package = "base16ct", version = "^1.0.0", default-features = false, features = ["alloc"] }
 "base64-0_22_1" = { package = "base64", version = "^0.22.1", default-features = false, features = ["alloc", "default", "std"] }
+"base64-0_23_1" = { package = "base64", version = "^0.23.1", default-features = false, features = ["alloc", "default", "simd-unsafe", "std"] }
 "base64ct-1_8_3" = { package = "base64ct", version = "^1.8.3", default-features = false, features = ["alloc"] }
 "bcrypt-pbkdf-0_11_0" = { package = "bcrypt-pbkdf", version = "^0.11.0", default-features = false, features = ["alloc"] }
 "binary-merge-0_1_2" = { package = "binary-merge", version = "^0.1.2", default-features = false, features = [] }
@@ -1534,6 +1542,7 @@ doc = false
 "block-devices" = { path = "../../../crates/system/block-devices", default-features = false, features = [] }
 "block-padding-0_4_2" = { package = "block-padding", version = "^0.4.2", default-features = false, features = [] }
 "blowfish-0_10_0" = { package = "blowfish", version = "^0.10.0", default-features = false, features = ["bcrypt"] }
+"bon-3_10_2" = { package = "bon", version = "^3.10.2", default-features = false, features = ["alloc", "default", "std"] }
 "bon-macros-3_10_2" = { package = "bon-macros", version = "^3.10.2", default-features = false, features = ["alloc", "default", "std"] }
 "bounded-command" = { path = "../../../crates/system/bounded-command", default-features = false, features = [] }
 "brotli-8_0_2" = { package = "brotli", version = "^8.0.2", default-features = false, features = ["alloc-stdlib", "default", "std"] }
@@ -1630,6 +1639,7 @@ doc = false
 "data-encoding-macro-0_1_19" = { package = "data-encoding-macro", version = "^0.1.19", default-features = false, features = [] }
 "data-encoding-macro-internal-0_1_17" = { package = "data-encoding-macro-internal", version = "^0.1.17", default-features = false, features = [] }
 "data-url-0_3_2" = { package = "data-url", version = "^0.3.2", default-features = false, features = ["alloc", "default", "std"] }
+"datasketches-0_5_0" = { package = "datasketches", version = "^0.5.0", default-features = false, features = ["default", "hll"] }
 "delegate-0_13_5" = { package = "delegate", version = "^0.13.5", default-features = false, features = [] }
 "der-0_7_10" = { package = "der", version = "^0.7.10", default-features = false, features = ["alloc", "derive", "flagset", "oid", "pem", "std", "zeroize"] }
 "der-0_8_1" = { package = "der", version = "^0.8.1", default-features = false, features = ["alloc", "oid", "pem", "std", "zeroize"] }
@@ -1649,7 +1659,7 @@ doc = false
 "displaydoc-0_2_5" = { package = "displaydoc", version = "^0.2.5", default-features = false, features = ["default", "std"] }
 "dlib-0_5_3" = { package = "dlib", version = "^0.5.3", default-features = false, features = [] }
 "document-features-0_2_12" = { package = "document-features", version = "^0.2.12", default-features = false, features = ["default"] }
-"downcast-rs-1_2_1" = { package = "downcast-rs", version = "^1.2.1", default-features = false, features = ["default", "std"] }
+"downcast-rs-2_0_2" = { package = "downcast-rs", version = "^2.0.2", default-features = false, features = ["default", "std", "sync"] }
 "ecdsa-0_16_9" = { package = "ecdsa", version = "^0.16.9", default-features = false, features = ["alloc", "arithmetic", "der", "digest", "hazmat", "pem", "pkcs8", "rfc6979", "signing", "spki", "std", "verifying"] }
 "ecdsa-0_17_0" = { package = "ecdsa", version = "^0.17.0", default-features = false, features = ["algorithm", "alloc", "default", "der", "digest", "getrandom", "pem", "pkcs8", "spki", "std"] }
 "ed25519-3_0_0" = { package = "ed25519", version = "^3.0.0", default-features = false, features = ["alloc", "pem", "pkcs8", "serde"] }
@@ -1665,6 +1675,7 @@ doc = false
 "enumflags2-0_7_12" = { package = "enumflags2", version = "^0.7.12", default-features = false, features = ["serde"] }
 "enumflags2_derive-0_7_12" = { package = "enumflags2_derive", version = "^0.7.12", default-features = false, features = [] }
 "equivalent-1_0_2" = { package = "equivalent", version = "^1.0.2", default-features = false, features = [] }
+"erased-serde-0_4_11" = { package = "erased-serde", version = "^0.4.11", default-features = false, features = ["alloc"] }
 "errno-0_3_14" = { package = "errno", version = "^0.3.14", default-features = false, features = ["default", "std"] }
 "euclid-0_22_14" = { package = "euclid", version = "^0.22.14", default-features = false, features = [] }
 "event-listener-5_4_1" = { package = "event-listener", version = "^5.4.1", default-features = false, features = ["default", "parking", "std"] }
@@ -1705,7 +1716,7 @@ doc = false
 "fs-content" = { path = "../../../crates/system/fs-content", default-features = false, features = [] }
 "fs-protocol" = { path = "../../../crates/system/fs-protocol", default-features = false, features = [] }
 "fs-set-times-0_20_3" = { package = "fs-set-times", version = "^0.20.3", default-features = false, features = [] }
-"fs4-0_8_4" = { package = "fs4", version = "^0.8.4", default-features = false, features = ["default", "sync"] }
+"fs4-0_13_1" = { package = "fs4", version = "^0.13.1", default-features = false, features = ["default", "sync"] }
 "futures-0_3_32" = { package = "futures", version = "^0.3.32", default-features = false, features = ["alloc", "async-await", "default", "executor", "futures-executor", "std"] }
 "futures-buffered-0_2_12" = { package = "futures-buffered", version = "^0.2.12", default-features = false, features = [] }
 "futures-channel-0_3_32" = { package = "futures-channel", version = "^0.3.32", default-features = false, features = ["alloc", "default", "futures-sink", "sink", "std"] }
@@ -1747,7 +1758,7 @@ doc = false
 "harfrust-0_12_0" = { package = "harfrust", version = "^0.12.0", default-features = false, features = ["default", "std"] }
 "hash32-0_2_1" = { package = "hash32", version = "^0.2.1", default-features = false, features = [] }
 "hashbrown-0_14_5" = { package = "hashbrown", version = "^0.14.5", default-features = false, features = ["raw"] }
-"hashbrown-0_15_5" = { package = "hashbrown", version = "^0.15.5", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry", "serde"] }
+"hashbrown-0_15_5" = { package = "hashbrown", version = "^0.15.5", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
 "hashbrown-0_16_1" = { package = "hashbrown", version = "^0.16.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry"] }
 "hashbrown-0_17_1" = { package = "hashbrown", version = "^0.17.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry"] }
 "hashify-0_2_9" = { package = "hashify", version = "^0.2.9", default-features = false, features = [] }
@@ -1817,9 +1828,9 @@ doc = false
 "inout-0_1_4" = { package = "inout", version = "^0.1.4", default-features = false, features = [] }
 "inout-0_2_2" = { package = "inout", version = "^0.2.2", default-features = false, features = ["block-padding"] }
 "inplace-vec-builder-0_1_1" = { package = "inplace-vec-builder", version = "^0.1.1", default-features = false, features = ["smallvec"] }
-"instant-0_1_13" = { package = "instant", version = "^0.1.13", default-features = false, features = ["inaccurate", "js-sys", "wasm-bindgen", "wasm-bindgen_rs", "web-sys"] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
+"inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }
 "io-enum-1_2_1" = { package = "io-enum", version = "^1.2.1", default-features = false, features = [] }
 "io-extras-0_18_4" = { package = "io-extras", version = "^0.18.4", default-features = false, features = ["default"] }
 "io-lifetimes-2_0_4" = { package = "io-lifetimes", version = "^2.0.4", default-features = false, features = ["default"] }
@@ -1838,7 +1849,6 @@ doc = false
 "irpc-0_17_0" = { package = "irpc", version = "^0.17.0", default-features = false, features = ["derive", "spans", "stream", "varint-util"] }
 "irpc-derive-0_17_0" = { package = "irpc-derive", version = "^0.17.0", default-features = false, features = [] }
 "is_terminal_polyfill-1_70_2" = { package = "is_terminal_polyfill", version = "^1.70.2", default-features = false, features = ["default"] }
-"itertools-0_12_1" = { package = "itertools", version = "^0.12.1", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_13_0" = { package = "itertools", version = "^0.13.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_14_0" = { package = "itertools", version = "^0.14.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_15_0" = { package = "itertools", version = "^0.15.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
@@ -1872,7 +1882,6 @@ doc = false
 "litrs-1_0_0" = { package = "litrs", version = "^1.0.0", default-features = false, features = [] }
 "lock_api-0_4_14" = { package = "lock_api", version = "^0.4.14", default-features = false, features = ["atomic_usize", "default"] }
 "log-0_4_29" = { package = "log", version = "^0.4.29", default-features = false, features = ["max_level_debug", "release_max_level_info", "std"] }
-"lru-0_12_5" = { package = "lru", version = "^0.12.5", default-features = false, features = ["default", "hashbrown"] }
 "lru-0_16_3" = { package = "lru", version = "^0.16.3", default-features = false, features = ["default", "hashbrown"] }
 "lru-0_18_3" = { package = "lru", version = "^0.18.3", default-features = false, features = ["default", "hashbrown"] }
 "lru-slab-0_1_2" = { package = "lru-slab", version = "^0.1.2", default-features = false, features = [] }
@@ -1881,7 +1890,7 @@ doc = false
 "matchers-0_2_0" = { package = "matchers", version = "^0.2.0", default-features = false, features = [] }
 "maybe-owned-0_3_4" = { package = "maybe-owned", version = "^0.3.4", default-features = false, features = [] }
 "md5-0_8_1" = { package = "md5", version = "^0.8.1", default-features = false, features = ["default", "std"] }
-"measure_time-0_8_3" = { package = "measure_time", version = "^0.8.3", default-features = false, features = [] }
+"measure_time-0_9_0" = { package = "measure_time", version = "^0.9.0", default-features = false, features = [] }
 "memchr-2_8_0" = { package = "memchr", version = "^2.8.0", default-features = false, features = ["alloc", "default", "std"] }
 "memmap2-0_9_11" = { package = "memmap2", version = "^0.9.11", default-features = false, features = [] }
 "memoffset-0_9_1" = { package = "memoffset", version = "^0.9.1", default-features = false, features = ["default"] }
@@ -1892,7 +1901,7 @@ doc = false
 "module-lattice-0_2_3" = { package = "module-lattice", version = "^0.2.3", default-features = false, features = ["alloc", "ctutils"] }
 "moka-0_12_15" = { package = "moka", version = "^0.12.15", default-features = false, features = ["default", "sync"] }
 "moxcms-0_8_1" = { package = "moxcms", version = "^0.8.1", default-features = false, features = ["avx", "avx_luts", "avx_shaper_fixed_point_paths", "avx_shaper_paths", "default", "lut", "neon", "neon_luts", "neon_shaper_fixed_point_paths", "neon_shaper_paths", "sse", "sse_luts", "sse_shaper_fixed_point_paths", "sse_shaper_paths"] }
-"murmurhash32-0_3_1" = { package = "murmurhash32", version = "^0.3.1", default-features = false, features = [] }
+"murmurhash32-0_4_0" = { package = "murmurhash32", version = "^0.4.0", default-features = false, features = [] }
 "n0-error-1_0_0" = { package = "n0-error", version = "^1.0.0", default-features = false, features = ["anyhow", "default"] }
 "n0-error-macros-1_0_0" = { package = "n0-error-macros", version = "^1.0.0", default-features = false, features = [] }
 "n0-future-0_3_2" = { package = "n0-future", version = "^0.3.2", default-features = false, features = [] }
@@ -1930,9 +1939,9 @@ doc = false
 "oneshot-0_1_13" = { package = "oneshot", version = "^0.1.13", default-features = false, features = ["async", "default", "std"] }
 "opaque-debug-0_3_1" = { package = "opaque-debug", version = "^0.3.1", default-features = false, features = [] }
 "openmls_serialization_helpers-0_1_0" = { package = "openmls_serialization_helpers", version = "^0.1.0", default-features = false, features = [] }
-"ordered-float-5_0_0" = { package = "ordered-float", version = "^5.0.0", default-features = false, features = [] }
+"ordered-float-5_0_0" = { package = "ordered-float", version = "^5.0.0", default-features = false, features = ["default", "std"] }
 "ordered-stream-0_2_0" = { package = "ordered-stream", version = "^0.2.0", default-features = false, features = [] }
-"ownedbytes-0_7_0" = { package = "ownedbytes", version = "^0.7.0", default-features = false, features = [] }
+"ownedbytes-0_9_0" = { package = "ownedbytes", version = "^0.9.0", default-features = false, features = [] }
 "p256-0_13_2" = { package = "p256", version = "^0.13.2", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "pem", "pkcs8", "sha2", "sha256", "std"] }
 "p256-0_14_0" = { package = "p256", version = "^0.14.0", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "getrandom", "pem", "pkcs8", "precomputed-tables", "sha2", "sha256", "std"] }
 "p384-0_13_1" = { package = "p384", version = "^0.13.1", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "pem", "pkcs8", "sha2", "sha384", "std"] }
@@ -2019,7 +2028,6 @@ doc = false
 "rand_core-0_10_0" = { package = "rand_core", version = "^0.10.0", default-features = false, features = [] }
 "rand_core-0_6_4" = { package = "rand_core", version = "^0.6.4", default-features = false, features = ["alloc", "getrandom", "std"] }
 "rand_core-0_9_5" = { package = "rand_core", version = "^0.9.5", default-features = false, features = ["os_rng", "std"] }
-"rand_distr-0_4_3" = { package = "rand_distr", version = "^0.4.3", default-features = false, features = ["alloc", "default", "std"] }
 "rand_distr-0_5_1" = { package = "rand_distr", version = "^0.5.1", default-features = false, features = ["alloc", "default", "std"] }
 "rand_pcg-0_10_2" = { package = "rand_pcg", version = "^0.10.2", default-features = false, features = [] }
 "range-collections-0_4_6" = { package = "range-collections", version = "^0.4.6", default-features = false, features = ["default", "new_unchecked", "serde"] }
@@ -2059,8 +2067,7 @@ doc = false
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
 "russh-util-0_52_0" = { package = "russh-util", version = "^0.52.0", default-features = false, features = [] }
-"rust-stemmers-1_2_0" = { package = "rust-stemmers", version = "^1.2.0", default-features = false, features = [] }
-"rustc-hash-1_1_0" = { package = "rustc-hash", version = "^1.1.0", default-features = false, features = ["default", "std"] }
+"rustc-hash-1_1_0" = { package = "rustc-hash", version = "^1.1.0", default-features = false, features = [] }
 "rustc-hash-2_1_3" = { package = "rustc-hash", version = "^2.1.3", default-features = false, features = ["default", "std"] }
 "rustc_version-0_4_1" = { package = "rustc_version", version = "^0.4.1", default-features = false, features = [] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
@@ -2091,6 +2098,7 @@ doc = false
 "self_cell-1_2_2" = { package = "self_cell", version = "^1.2.2", default-features = false, features = [] }
 "semver-1_0_27" = { package = "semver", version = "^1.0.27", default-features = false, features = ["default", "std"] }
 "serde-1_0_228" = { package = "serde", version = "^1.0.228", default-features = false, features = ["alloc", "default", "derive", "rc", "serde_derive", "std"] }
+"serde-tuple-vec-map-1_0_1" = { package = "serde-tuple-vec-map", version = "^1.0.1", default-features = false, features = ["default", "std"] }
 "serde_bytes-0_11_19" = { package = "serde_bytes", version = "^0.11.19", default-features = false, features = ["default", "std"] }
 "serde_core-1_0_228" = { package = "serde_core", version = "^1.0.228", default-features = false, features = ["alloc", "default", "rc", "result", "std"] }
 "serde_derive-1_0_228" = { package = "serde_derive", version = "^1.0.228", default-features = false, features = ["default"] }
@@ -2121,7 +2129,7 @@ doc = false
 "simple-dns-0_11_3" = { package = "simple-dns", version = "^0.11.3", default-features = false, features = ["default", "std"] }
 "simplecss-0_2_2" = { package = "simplecss", version = "^0.2.2", default-features = false, features = ["default", "std"] }
 "siphasher-1_0_3" = { package = "siphasher", version = "^1.0.3", default-features = false, features = ["default", "std"] }
-"sketches-ddsketch-0_2_2" = { package = "sketches-ddsketch", version = "^0.2.2", default-features = false, features = ["serde", "use_serde"] }
+"sketches-ddsketch-0_4_2" = { package = "sketches-ddsketch", version = "^0.4.2", default-features = false, features = ["serde", "use_serde"] }
 "skrifa-0_42_1" = { package = "skrifa", version = "^0.42.1", default-features = false, features = ["autohint_shaping", "default", "std"] }
 "skrifa-0_44_0" = { package = "skrifa", version = "^0.44.0", default-features = false, features = ["autohint_shaping", "default", "std"] }
 "slab-0_4_12" = { package = "slab", version = "^0.4.12", default-features = false, features = ["default", "std"] }
@@ -2160,15 +2168,15 @@ doc = false
 "sysinfo-0_36_1" = { package = "sysinfo", version = "^0.36.1", default-features = false, features = ["component", "default", "disk", "network", "objc2-io-kit", "system", "user"] }
 "system-deps-7_0_8" = { package = "system-deps", version = "^7.0.8", default-features = false, features = [] }
 "tagptr-0_2_0" = { package = "tagptr", version = "^0.2.0", default-features = false, features = [] }
-"tantivy-0_22_1" = { package = "tantivy", version = "^0.22.1", default-features = false, features = ["fs4", "memmap2", "mmap", "tempfile"] }
-"tantivy-bitpacker-0_6_0" = { package = "tantivy-bitpacker", version = "^0.6.0", default-features = false, features = [] }
-"tantivy-columnar-0_3_0" = { package = "tantivy-columnar", version = "^0.3.0", default-features = false, features = [] }
-"tantivy-common-0_7_0" = { package = "tantivy-common", version = "^0.7.0", default-features = false, features = [] }
+"tantivy-0_27_0" = { package = "tantivy", version = "^0.27.0", default-features = false, features = ["fs4", "memmap2", "mmap", "tempfile"] }
+"tantivy-bitpacker-0_27_0" = { package = "tantivy-bitpacker", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-columnar-0_27_0" = { package = "tantivy-columnar", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-common-0_27_0" = { package = "tantivy-common", version = "^0.27.0", default-features = false, features = [] }
 "tantivy-fst-0_5_0" = { package = "tantivy-fst", version = "^0.5.0", default-features = false, features = ["default", "regex", "regex-syntax"] }
-"tantivy-query-grammar-0_22_0" = { package = "tantivy-query-grammar", version = "^0.22.0", default-features = false, features = [] }
-"tantivy-sstable-0_3_0" = { package = "tantivy-sstable", version = "^0.3.0", default-features = false, features = [] }
-"tantivy-stacker-0_3_0" = { package = "tantivy-stacker", version = "^0.3.0", default-features = false, features = [] }
-"tantivy-tokenizer-api-0_3_0" = { package = "tantivy-tokenizer-api", version = "^0.3.0", default-features = false, features = [] }
+"tantivy-query-grammar-0_27_0" = { package = "tantivy-query-grammar", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-sstable-0_27_0" = { package = "tantivy-sstable", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-stacker-0_27_0" = { package = "tantivy-stacker", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-tokenizer-api-0_7_0" = { package = "tantivy-tokenizer-api", version = "^0.7.0", default-features = false, features = [] }
 "tar-0_4_46" = { package = "tar", version = "^0.4.46", default-features = false, features = ["default", "xattr"] }
 "target-lexicon-0_13_5" = { package = "target-lexicon", version = "^0.13.5", default-features = false, features = ["default"] }
 "tempfile-3_27_0" = { package = "tempfile", version = "^3.27.0", default-features = false, features = ["default", "getrandom"] }
@@ -2194,6 +2202,7 @@ doc = false
 "tilo-delivery-protocol" = { path = "../../../crates/hosting/tilo-delivery-protocol", default-features = false, features = [] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = [] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = [] }
+"tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["test-support", "watch"] }
 "tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
 "tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = [] }
@@ -2215,6 +2224,7 @@ doc = false
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
 "tilo-seal" = { path = "../../../crates/system/tilo-seal", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }
+"tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-startup-metrics" = { path = "../../../crates/system/tilo-startup-metrics", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = [] }
@@ -2261,7 +2271,10 @@ doc = false
 "tungstenite-0_28_0" = { package = "tungstenite", version = "^0.28.0", default-features = false, features = ["__rustls-tls", "data-encoding", "handshake", "http", "httparse", "rustls", "rustls-pki-types", "sha1"] }
 "type-map-0_5_1" = { package = "type-map", version = "^0.5.1", default-features = false, features = [] }
 "typed-path-0_12_3" = { package = "typed-path", version = "^0.12.3", default-features = false, features = ["default", "std"] }
+"typeid-1_0_3" = { package = "typeid", version = "^1.0.3", default-features = false, features = [] }
 "typenum-1_20_1" = { package = "typenum", version = "^1.20.1", default-features = false, features = ["const-generics"] }
+"typetag-0_2_23" = { package = "typetag", version = "^0.2.23", default-features = false, features = [] }
+"typetag-impl-0_2_23" = { package = "typetag-impl", version = "^0.2.23", default-features = false, features = [] }
 "typst-macros-0_15_1" = { package = "typst-macros", version = "^0.15.1", default-features = false, features = [] }
 "unic-langid-0_9_6" = { package = "unic-langid", version = "^0.9.6", default-features = false, features = ["default", "macros", "serde", "unic-langid-macros"] }
 "unic-langid-impl-0_9_6" = { package = "unic-langid-impl", version = "^0.9.6", default-features = false, features = ["serde"] }
@@ -2282,6 +2295,7 @@ doc = false
 "universal-hash-0_5_1" = { package = "universal-hash", version = "^0.5.1", default-features = false, features = [] }
 "universal-hash-0_6_1" = { package = "universal-hash", version = "^0.6.1", default-features = false, features = [] }
 "untrusted-0_9_0" = { package = "untrusted", version = "^0.9.0", default-features = false, features = [] }
+"unwrap-infallible-1_0_0" = { package = "unwrap-infallible", version = "^1.0.0", default-features = false, features = ["default"] }
 "url-2_5_8" = { package = "url", version = "^2.5.8", default-features = false, features = ["default", "serde", "std"] }
 "usvg-0_47_0" = { package = "usvg", version = "^0.47.0", default-features = false, features = ["default", "fontdb", "memmap-fonts", "rustybuzz", "system-fonts", "text", "ttf-parser", "unicode-bidi", "unicode-script", "unicode-vo"] }
 "utf-8-0_7_6" = { package = "utf-8", version = "^0.7.6", default-features = false, features = [] }
@@ -2357,9 +2371,9 @@ doc = false
 "zip-9_0_4" = { package = "zip", version = "^9.0.4", default-features = false, features = ["_deflate-any", "deflate-flate2", "deflate-flate2-zlib-rs"] }
 "zlib-rs-0_6_8" = { package = "zlib-rs", version = "^0.6.8", default-features = false, features = ["rust-allocator", "std"] }
 "zmij-1_0_21" = { package = "zmij", version = "^1.0.21", default-features = false, features = [] }
-"zstd-0_13_3" = { package = "zstd", version = "^0.13.3", default-features = false, features = ["arrays", "default", "experimental", "legacy", "zdict_builder"] }
-"zstd-safe-7_2_4" = { package = "zstd-safe", version = "^7.2.4", default-features = false, features = ["arrays", "experimental", "legacy", "std", "zdict_builder"] }
-"zstd-sys-2_0_16_zstd_1_5_7" = { package = "zstd-sys", version = "^2.0.16+zstd.1.5.7", default-features = false, features = ["experimental", "legacy", "std", "zdict_builder"] }
+"zstd-0_14_3" = { package = "zstd", version = "^0.14.3", default-features = false, features = ["arrays", "default", "legacy", "zdict_builder"] }
+"zstd-safe-8_2_0" = { package = "zstd-safe", version = "^8.2.0", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
+"zstd-sys-2_1_2_zstd_1_5_7" = { package = "zstd-sys", version = "^2.1.2+zstd.1.5.7", default-features = false, features = ["legacy", "std", "zdict_builder"] }
 "zune-core-0_5_1" = { package = "zune-core", version = "^0.5.1", default-features = false, features = ["std"] }
 "zune-jpeg-0_5_12" = { package = "zune-jpeg", version = "^0.5.12", default-features = false, features = ["default", "neon", "std", "x86"] }
 "zvariant-5_12_0" = { package = "zvariant", version = "^5.12.0", default-features = false, features = ["default", "enumflags2"] }
@@ -2437,6 +2451,7 @@ doc = false
 "base16ct-0_2_0" = { package = "base16ct", version = "^0.2.0", default-features = false, features = ["alloc"] }
 "base16ct-1_0_0" = { package = "base16ct", version = "^1.0.0", default-features = false, features = ["alloc"] }
 "base64-0_22_1" = { package = "base64", version = "^0.22.1", default-features = false, features = ["alloc", "default", "std"] }
+"base64-0_23_1" = { package = "base64", version = "^0.23.1", default-features = false, features = ["alloc", "default", "simd-unsafe", "std"] }
 "base64ct-1_8_3" = { package = "base64ct", version = "^1.8.3", default-features = false, features = ["alloc"] }
 "bcrypt-pbkdf-0_11_0" = { package = "bcrypt-pbkdf", version = "^0.11.0", default-features = false, features = ["alloc"] }
 "biblatex-0_12_0" = { package = "biblatex", version = "^0.12.0", default-features = false, features = ["unic-langid"] }
@@ -2457,7 +2472,7 @@ doc = false
 "block-devices" = { path = "../../../crates/system/block-devices", default-features = false, features = ["udisks"] }
 "block-padding-0_4_2" = { package = "block-padding", version = "^0.4.2", default-features = false, features = [] }
 "blowfish-0_10_0" = { package = "blowfish", version = "^0.10.0", default-features = false, features = ["bcrypt"] }
-"bon-3_10_2" = { package = "bon", version = "^3.10.2", default-features = false, features = ["alloc", "std"] }
+"bon-3_10_2" = { package = "bon", version = "^3.10.2", default-features = false, features = ["alloc", "default", "std"] }
 "bounded-command" = { path = "../../../crates/system/bounded-command", default-features = false, features = [] }
 "bounded-zip" = { path = "../../../crates/doc/bounded-zip", default-features = false, features = ["default", "epub"] }
 "brotli-8_0_2" = { package = "brotli", version = "^8.0.2", default-features = false, features = ["alloc-stdlib", "default", "std"] }
@@ -2581,6 +2596,7 @@ doc = false
 "data-encoding-2_10_0" = { package = "data-encoding", version = "^2.10.0", default-features = false, features = ["alloc", "default", "std"] }
 "data-encoding-macro-0_1_19" = { package = "data-encoding-macro", version = "^0.1.19", default-features = false, features = [] }
 "data-url-0_3_2" = { package = "data-url", version = "^0.3.2", default-features = false, features = ["alloc", "default", "std"] }
+"datasketches-0_5_0" = { package = "datasketches", version = "^0.5.0", default-features = false, features = ["default", "hll"] }
 "davey-0_1_5" = { package = "davey", path = "../../../vendor/davey", default-features = false, features = ["default"] }
 "db-client" = { path = "../../../apps/db-client", default-features = false, features = [] }
 "der-0_7_10" = { package = "der", version = "^0.7.10", default-features = false, features = ["alloc", "derive", "flagset", "oid", "pem", "std", "zeroize"] }
@@ -2603,6 +2619,7 @@ doc = false
 "disks" = { path = "../../../apps/disks", default-features = false, features = ["default", "live"] }
 "dlib-0_5_3" = { package = "dlib", version = "^0.5.3", default-features = false, features = [] }
 "downcast-rs-1_2_1" = { package = "downcast-rs", version = "^1.2.1", default-features = false, features = ["default", "std"] }
+"downcast-rs-2_0_2" = { package = "downcast-rs", version = "^2.0.2", default-features = false, features = ["default", "std", "sync"] }
 "dpi-0_1_2" = { package = "dpi", version = "^0.1.2", default-features = false, features = ["default", "std"] }
 "drm-0_14_1" = { package = "drm", version = "^0.14.1", default-features = false, features = [] }
 "drm-ffi-0_9_0" = { package = "drm-ffi", version = "^0.9.0", default-features = false, features = [] }
@@ -2631,6 +2648,7 @@ doc = false
 "env_filter-2_0_0" = { package = "env_filter", version = "^2.0.0", default-features = false, features = ["std"] }
 "env_logger-0_11_11" = { package = "env_logger", version = "^0.11.11", default-features = false, features = ["auto-color", "color", "humantime"] }
 "equivalent-1_0_2" = { package = "equivalent", version = "^1.0.2", default-features = false, features = [] }
+"erased-serde-0_4_11" = { package = "erased-serde", version = "^0.4.11", default-features = false, features = ["alloc"] }
 "errno-0_3_14" = { package = "errno", version = "^0.3.14", default-features = false, features = ["default", "std"] }
 "euclid-0_22_14" = { package = "euclid", version = "^0.22.14", default-features = false, features = [] }
 "event-listener-2_5_3" = { package = "event-listener", version = "^2.5.3", default-features = false, features = [] }
@@ -2699,7 +2717,7 @@ doc = false
 "fs-native" = { path = "../../../crates/system/fs-native", default-features = false, features = [] }
 "fs-protocol" = { path = "../../../crates/system/fs-protocol", default-features = false, features = [] }
 "fs-set-times-0_20_3" = { package = "fs-set-times", version = "^0.20.3", default-features = false, features = [] }
-"fs4-0_8_4" = { package = "fs4", version = "^0.8.4", default-features = false, features = ["default", "sync"] }
+"fs4-0_13_1" = { package = "fs4", version = "^0.13.1", default-features = false, features = ["default", "sync"] }
 "fuser-0_18_0" = { package = "fuser", version = "^0.18.0", default-features = false, features = ["default"] }
 "futures-0_3_32" = { package = "futures", version = "^0.3.32", default-features = false, features = ["alloc", "async-await", "default", "executor", "futures-executor", "std"] }
 "futures-buffered-0_2_12" = { package = "futures-buffered", version = "^0.2.12", default-features = false, features = [] }
@@ -2765,7 +2783,7 @@ doc = false
 "harfrust-0_12_0" = { package = "harfrust", version = "^0.12.0", default-features = false, features = ["default", "std"] }
 "hash32-0_2_1" = { package = "hash32", version = "^0.2.1", default-features = false, features = [] }
 "hashbrown-0_14_5" = { package = "hashbrown", version = "^0.14.5", default-features = false, features = ["raw"] }
-"hashbrown-0_15_5" = { package = "hashbrown", version = "^0.15.5", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry", "serde"] }
+"hashbrown-0_15_5" = { package = "hashbrown", version = "^0.15.5", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
 "hashbrown-0_16_1" = { package = "hashbrown", version = "^0.16.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry"] }
 "hashbrown-0_17_1" = { package = "hashbrown", version = "^0.17.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry"] }
 "hashlink-0_10_0" = { package = "hashlink", version = "^0.10.0", default-features = false, features = [] }
@@ -2858,9 +2876,9 @@ doc = false
 "install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = [] }
 "installer" = { path = "../../../crates/session/installer", default-features = false, features = [] }
-"instant-0_1_13" = { package = "instant", version = "^0.1.13", default-features = false, features = ["inaccurate", "js-sys", "wasm-bindgen", "wasm-bindgen_rs", "web-sys"] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
+"inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }
 "io-extras-0_18_4" = { package = "io-extras", version = "^0.18.4", default-features = false, features = ["default"] }
 "io-lifetimes-1_0_11" = { package = "io-lifetimes", version = "^1.0.11", default-features = false, features = ["close", "default", "hermit-abi", "libc", "windows-sys"] }
 "io-lifetimes-2_0_4" = { package = "io-lifetimes", version = "^2.0.4", default-features = false, features = ["default"] }
@@ -2880,7 +2898,6 @@ doc = false
 "is-docker-0_2_0" = { package = "is-docker", version = "^0.2.0", default-features = false, features = [] }
 "is-wsl-0_4_0" = { package = "is-wsl", version = "^0.4.0", default-features = false, features = [] }
 "is_terminal_polyfill-1_70_2" = { package = "is_terminal_polyfill", version = "^1.70.2", default-features = false, features = ["default"] }
-"itertools-0_12_1" = { package = "itertools", version = "^0.12.1", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_13_0" = { package = "itertools", version = "^0.13.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_14_0" = { package = "itertools", version = "^0.14.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_15_0" = { package = "itertools", version = "^0.15.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
@@ -2947,7 +2964,6 @@ doc = false
 "lock_api-0_4_14" = { package = "lock_api", version = "^0.4.14", default-features = false, features = ["atomic_usize", "default"] }
 "log-0_4_29" = { package = "log", version = "^0.4.29", default-features = false, features = ["max_level_debug", "release_max_level_info", "std"] }
 "logs" = { path = "../../../apps/logs", default-features = false, features = [] }
-"lru-0_12_5" = { package = "lru", version = "^0.12.5", default-features = false, features = ["default", "hashbrown"] }
 "lru-0_16_3" = { package = "lru", version = "^0.16.3", default-features = false, features = ["default", "hashbrown"] }
 "lru-0_18_3" = { package = "lru", version = "^0.18.3", default-features = false, features = ["default", "hashbrown"] }
 "lru-slab-0_1_2" = { package = "lru-slab", version = "^0.1.2", default-features = false, features = [] }
@@ -2963,7 +2979,7 @@ doc = false
 "md-5-0_11_0" = { package = "md-5", version = "^0.11.0", default-features = false, features = ["alloc", "default", "oid"] }
 "md5-0_8_1" = { package = "md5", version = "^0.8.1", default-features = false, features = ["default", "std"] }
 "mdns-sd-0_20_3" = { package = "mdns-sd", version = "^0.20.3", default-features = false, features = ["async", "default", "log", "logging"] }
-"measure_time-0_8_3" = { package = "measure_time", version = "^0.8.3", default-features = false, features = [] }
+"measure_time-0_9_0" = { package = "measure_time", version = "^0.9.0", default-features = false, features = [] }
 "mediatype-0_21_0" = { package = "mediatype", version = "^0.21.0", default-features = false, features = ["serde"] }
 "memchr-2_8_0" = { package = "memchr", version = "^2.8.0", default-features = false, features = ["alloc", "default", "std"] }
 "memmap2-0_9_11" = { package = "memmap2", version = "^0.9.11", default-features = false, features = [] }
@@ -2986,7 +3002,7 @@ doc = false
 "moq-pattern-0_1_0" = { package = "moq-pattern", version = "^0.1.0", default-features = false, features = ["serde"] }
 "moxcms-0_8_1" = { package = "moxcms", version = "^0.8.1", default-features = false, features = ["avx", "avx_luts", "avx_shaper_fixed_point_paths", "avx_shaper_paths", "default", "lut", "neon", "neon_luts", "neon_shaper_fixed_point_paths", "neon_shaper_paths", "sse", "sse_luts", "sse_shaper_fixed_point_paths", "sse_shaper_paths"] }
 "muldiv-1_0_1" = { package = "muldiv", version = "^1.0.1", default-features = false, features = [] }
-"murmurhash32-0_3_1" = { package = "murmurhash32", version = "^0.3.1", default-features = false, features = [] }
+"murmurhash32-0_4_0" = { package = "murmurhash32", version = "^0.4.0", default-features = false, features = [] }
 "music" = { path = "../../../apps/music", default-features = false, features = ["audio", "default", "live", "spotify-native"] }
 "mutate_once-0_1_2" = { package = "mutate_once", version = "^0.1.2", default-features = false, features = [] }
 "mysql-28_0_2" = { package = "mysql", version = "^28.0.2", default-features = false, features = ["minimal-rust"] }
@@ -3048,7 +3064,7 @@ doc = false
 "ordered-stream-0_2_0" = { package = "ordered-stream", version = "^0.2.0", default-features = false, features = [] }
 "os-actions" = { path = "../../../crates/system/os-actions", default-features = false, features = [] }
 "osk" = { path = "../../../apps/osk", default-features = false, features = [] }
-"ownedbytes-0_7_0" = { package = "ownedbytes", version = "^0.7.0", default-features = false, features = [] }
+"ownedbytes-0_9_0" = { package = "ownedbytes", version = "^0.9.0", default-features = false, features = [] }
 "p256-0_13_2" = { package = "p256", version = "^0.13.2", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "pem", "pkcs8", "sha2", "sha256", "std"] }
 "p256-0_14_0" = { package = "p256", version = "^0.14.0", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "getrandom", "pem", "pkcs8", "precomputed-tables", "sha2", "sha256", "std"] }
 "p384-0_13_1" = { package = "p384", version = "^0.13.1", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "pem", "pkcs8", "sha2", "sha384", "std"] }
@@ -3163,7 +3179,6 @@ doc = false
 "rand_core-0_10_0" = { package = "rand_core", version = "^0.10.0", default-features = false, features = [] }
 "rand_core-0_6_4" = { package = "rand_core", version = "^0.6.4", default-features = false, features = ["alloc", "getrandom", "std"] }
 "rand_core-0_9_5" = { package = "rand_core", version = "^0.9.5", default-features = false, features = ["os_rng", "std"] }
-"rand_distr-0_4_3" = { package = "rand_distr", version = "^0.4.3", default-features = false, features = ["alloc", "default", "std"] }
 "rand_distr-0_5_1" = { package = "rand_distr", version = "^0.5.1", default-features = false, features = ["alloc", "default", "std"] }
 "rand_pcg-0_10_2" = { package = "rand_pcg", version = "^0.10.2", default-features = false, features = [] }
 "rand_xorshift-0_4_0" = { package = "rand_xorshift", version = "^0.4.0", default-features = false, features = [] }
@@ -3231,10 +3246,9 @@ doc = false
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
 "russh-util-0_52_0" = { package = "russh-util", version = "^0.52.0", default-features = false, features = [] }
-"rust-stemmers-1_2_0" = { package = "rust-stemmers", version = "^1.2.0", default-features = false, features = [] }
 "rust_decimal-1_42_1" = { package = "rust_decimal", version = "^1.42.1", default-features = false, features = ["maths"] }
 "rustc-demangle-0_1_28" = { package = "rustc-demangle", version = "^0.1.28", default-features = false, features = [] }
-"rustc-hash-1_1_0" = { package = "rustc-hash", version = "^1.1.0", default-features = false, features = ["default", "std"] }
+"rustc-hash-1_1_0" = { package = "rustc-hash", version = "^1.1.0", default-features = false, features = [] }
 "rustc-hash-2_1_3" = { package = "rustc-hash", version = "^2.1.3", default-features = false, features = ["default", "std"] }
 "rustfft-6_4_1" = { package = "rustfft", version = "^6.4.1", default-features = false, features = ["avx", "default", "neon", "sse"] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
@@ -3277,6 +3291,7 @@ doc = false
 "semver-1_0_27" = { package = "semver", version = "^1.0.27", default-features = false, features = ["default", "std"] }
 "serde-1_0_228" = { package = "serde", version = "^1.0.228", default-features = false, features = ["alloc", "default", "derive", "rc", "serde_derive", "std"] }
 "serde-big-array-0_5_1" = { package = "serde-big-array", version = "^0.5.1", default-features = false, features = [] }
+"serde-tuple-vec-map-1_0_1" = { package = "serde-tuple-vec-map", version = "^1.0.1", default-features = false, features = ["default", "std"] }
 "serde_bytes-0_11_19" = { package = "serde_bytes", version = "^0.11.19", default-features = false, features = ["default", "std"] }
 "serde_core-1_0_228" = { package = "serde_core", version = "^1.0.228", default-features = false, features = ["alloc", "default", "rc", "result", "std"] }
 "serde_json-1_0_151" = { package = "serde_json", path = "../../../vendor/serde_json", default-features = false, features = ["alloc", "default", "float_roundtrip", "indexmap", "preserve_order", "raw_value", "std"] }
@@ -3323,7 +3338,7 @@ doc = false
 "simple-dns-0_11_3" = { package = "simple-dns", version = "^0.11.3", default-features = false, features = ["default", "std"] }
 "simplecss-0_2_2" = { package = "simplecss", version = "^0.2.2", default-features = false, features = ["default", "std"] }
 "siphasher-1_0_3" = { package = "siphasher", version = "^1.0.3", default-features = false, features = ["default", "std"] }
-"sketches-ddsketch-0_2_2" = { package = "sketches-ddsketch", version = "^0.2.2", default-features = false, features = ["serde", "use_serde"] }
+"sketches-ddsketch-0_4_2" = { package = "sketches-ddsketch", version = "^0.4.2", default-features = false, features = ["serde", "use_serde"] }
 "skrifa-0_42_1" = { package = "skrifa", version = "^0.42.1", default-features = false, features = ["autohint_shaping", "default", "std"] }
 "skrifa-0_44_0" = { package = "skrifa", version = "^0.44.0", default-features = false, features = ["autohint_shaping", "default", "std"] }
 "slab-0_4_12" = { package = "slab", version = "^0.4.12", default-features = false, features = ["default", "std"] }
@@ -3389,15 +3404,15 @@ doc = false
 "system-extension" = { path = "../../../crates/system/system-extension", default-features = false, features = [] }
 "taffy-0_10_1" = { package = "taffy", version = "^0.10.1", default-features = false, features = ["alloc", "block_layout", "calc", "content_size", "default", "detailed_layout_info", "flexbox", "float_layout", "grid", "std", "taffy_tree"] }
 "tagptr-0_2_0" = { package = "tagptr", version = "^0.2.0", default-features = false, features = [] }
-"tantivy-0_22_1" = { package = "tantivy", version = "^0.22.1", default-features = false, features = ["fs4", "memmap2", "mmap", "tempfile"] }
-"tantivy-bitpacker-0_6_0" = { package = "tantivy-bitpacker", version = "^0.6.0", default-features = false, features = [] }
-"tantivy-columnar-0_3_0" = { package = "tantivy-columnar", version = "^0.3.0", default-features = false, features = [] }
-"tantivy-common-0_7_0" = { package = "tantivy-common", version = "^0.7.0", default-features = false, features = [] }
+"tantivy-0_27_0" = { package = "tantivy", version = "^0.27.0", default-features = false, features = ["fs4", "memmap2", "mmap", "tempfile"] }
+"tantivy-bitpacker-0_27_0" = { package = "tantivy-bitpacker", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-columnar-0_27_0" = { package = "tantivy-columnar", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-common-0_27_0" = { package = "tantivy-common", version = "^0.27.0", default-features = false, features = [] }
 "tantivy-fst-0_5_0" = { package = "tantivy-fst", version = "^0.5.0", default-features = false, features = ["default", "regex", "regex-syntax"] }
-"tantivy-query-grammar-0_22_0" = { package = "tantivy-query-grammar", version = "^0.22.0", default-features = false, features = [] }
-"tantivy-sstable-0_3_0" = { package = "tantivy-sstable", version = "^0.3.0", default-features = false, features = [] }
-"tantivy-stacker-0_3_0" = { package = "tantivy-stacker", version = "^0.3.0", default-features = false, features = [] }
-"tantivy-tokenizer-api-0_3_0" = { package = "tantivy-tokenizer-api", version = "^0.3.0", default-features = false, features = [] }
+"tantivy-query-grammar-0_27_0" = { package = "tantivy-query-grammar", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-sstable-0_27_0" = { package = "tantivy-sstable", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-stacker-0_27_0" = { package = "tantivy-stacker", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-tokenizer-api-0_7_0" = { package = "tantivy-tokenizer-api", version = "^0.7.0", default-features = false, features = [] }
 "tar-0_4_46" = { package = "tar", version = "^0.4.46", default-features = false, features = ["default", "xattr"] }
 "tasks" = { path = "../../../apps/tasks", default-features = false, features = [] }
 "tempfile-3_27_0" = { package = "tempfile", version = "^3.27.0", default-features = false, features = ["default", "getrandom"] }
@@ -3418,6 +3433,7 @@ doc = false
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
 "tilo-agent-models" = { path = "../../../crates/platform/tilo-agent-models", default-features = false, features = [] }
 "tilo-agent-participant" = { path = "../../../crates/agent/agent-participant", default-features = false, features = [] }
+"tilo-ai-bench" = { path = "../../../crates/dev/ai-bench", default-features = false, features = [] }
 "tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "chrono", "default", "gpu-video", "mpris", "native", "priority-contacts", "realtime-video", "test-support", "webview-adblock"] }
 "tilo-app-cli" = { path = "../../../crates/dev/tilo-app-cli", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../../crates/packaging/tilo-app-package", default-features = false, features = [] }
@@ -3481,6 +3497,7 @@ doc = false
 "tilo-environment" = { path = "../../../crates/runtime/environment", default-features = false, features = [] }
 "tilo-esp-write" = { path = "../../../crates/system/esp-write", default-features = false, features = [] }
 "tilo-extension" = { path = "../../../crates/system/extension-helper", default-features = false, features = [] }
+"tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-feedback" = { path = "../../../crates/collab/feedback", default-features = false, features = [] }
 "tilo-feedback-review" = { path = "../../../crates/collab/feedback-review", default-features = false, features = [] }
 "tilo-file-provider" = { path = "../../../crates/runtime/tilo-file-provider", default-features = false, features = [] }
@@ -3575,6 +3592,7 @@ doc = false
 "tilo-secret-vault" = { path = "../../../crates/system/secret-vault", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }
 "tilo-segment" = { path = "../../../crates/media/segment", default-features = false, features = ["infer"] }
+"tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
 "tilo-sibling-unlock" = { path = "../../../crates/system/tilo-sibling-unlock", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
@@ -3585,7 +3603,7 @@ doc = false
 "tilo-subject" = { path = "../../../crates/platform/tilo-subject", default-features = false, features = [] }
 "tilo-system-info" = { path = "../../../crates/platform/tilo-system-info", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = ["udisks"] }
-"tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = [] }
+"tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = ["document"] }
 "tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = ["default", "video"] }
 "tilo-tray-host" = { path = "../../../crates/session/tray-host", default-features = false, features = [] }
 "tilo-tts" = { path = "../../../crates/system/tts", default-features = false, features = [] }
@@ -3593,6 +3611,7 @@ doc = false
 "tilo-ui" = { path = "../../../crates/sdk/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "mpris", "native", "portal", "priority-contacts", "realtime-video", "syntax-definitions", "test-support", "ux-bench", "webview-adblock"] }
 "tilo-ui-graph" = { path = "../../../crates/dev/ui-graph", default-features = false, features = [] }
 "tilo-ui-paint" = { path = "../../../crates/sdk/ui-paint", default-features = false, features = [] }
+"tilo-unicode-emoji" = { path = "../../../crates/platform/tilo-unicode-emoji", default-features = false, features = [] }
 "tilo-unlock-protocol" = { path = "../../../crates/collab/tilo-unlock-protocol", default-features = false, features = [] }
 "tilo-user-identity" = { path = "../../../crates/collab/tilo-user-identity", default-features = false, features = [] }
 "tilo-vello-0_9_0" = { package = "tilo-vello", path = "../../../vendor/vello", default-features = false, features = ["default", "wgpu", "wgpu_default"] }
@@ -3660,6 +3679,7 @@ doc = false
 "typed-path-0_12_3" = { package = "typed-path", version = "^0.12.3", default-features = false, features = ["default", "std"] }
 "typeid-1_0_3" = { package = "typeid", version = "^1.0.3", default-features = false, features = [] }
 "typenum-1_20_1" = { package = "typenum", version = "^1.20.1", default-features = false, features = ["const-generics"] }
+"typetag-0_2_23" = { package = "typetag", version = "^0.2.23", default-features = false, features = [] }
 "typst-0_15_1" = { package = "typst", version = "^0.15.1", default-features = false, features = [] }
 "typst-assets-0_15_1" = { package = "typst-assets", version = "^0.15.1", default-features = false, features = ["fonts"] }
 "typst-editor" = { path = "../../../apps/typst-editor", default-features = false, features = [] }
@@ -3698,6 +3718,7 @@ doc = false
 "unsafe-libyaml-0_2_11" = { package = "unsafe-libyaml", version = "^0.2.11", default-features = false, features = [] }
 "unscanny-0_1_0" = { package = "unscanny", version = "^0.1.0", default-features = false, features = [] }
 "untrusted-0_9_0" = { package = "untrusted", version = "^0.9.0", default-features = false, features = [] }
+"unwrap-infallible-1_0_0" = { package = "unwrap-infallible", version = "^1.0.0", default-features = false, features = ["default"] }
 "url-2_5_8" = { package = "url", version = "^2.5.8", default-features = false, features = ["default", "serde", "std"] }
 "urlencoding-2_1_3" = { package = "urlencoding", version = "^2.1.3", default-features = false, features = [] }
 "ush" = { path = "../../../crates/runtime/ush", default-features = false, features = [] }
@@ -3807,9 +3828,9 @@ doc = false
 "zip-9_0_4" = { package = "zip", version = "^9.0.4", default-features = false, features = ["_deflate-any", "deflate-flate2", "deflate-flate2-zlib-rs"] }
 "zlib-rs-0_6_8" = { package = "zlib-rs", version = "^0.6.8", default-features = false, features = ["rust-allocator", "std"] }
 "zmij-1_0_21" = { package = "zmij", version = "^1.0.21", default-features = false, features = [] }
-"zstd-0_13_3" = { package = "zstd", version = "^0.13.3", default-features = false, features = ["arrays", "default", "experimental", "legacy", "zdict_builder"] }
-"zstd-safe-7_2_4" = { package = "zstd-safe", version = "^7.2.4", default-features = false, features = ["arrays", "experimental", "legacy", "std", "zdict_builder"] }
-"zstd-sys-2_0_16_zstd_1_5_7" = { package = "zstd-sys", version = "^2.0.16+zstd.1.5.7", default-features = false, features = ["experimental", "legacy", "std", "zdict_builder"] }
+"zstd-0_14_3" = { package = "zstd", version = "^0.14.3", default-features = false, features = ["arrays", "default", "legacy", "zdict_builder"] }
+"zstd-safe-8_2_0" = { package = "zstd-safe", version = "^8.2.0", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
+"zstd-sys-2_1_2_zstd_1_5_7" = { package = "zstd-sys", version = "^2.1.2+zstd.1.5.7", default-features = false, features = ["legacy", "std", "zdict_builder"] }
 "zune-core-0_5_1" = { package = "zune-core", version = "^0.5.1", default-features = false, features = ["std"] }
 "zune-jpeg-0_5_12" = { package = "zune-jpeg", version = "^0.5.12", default-features = false, features = ["default", "neon", "std", "x86"] }
 "zvariant-5_12_0" = { package = "zvariant", version = "^5.12.0", default-features = false, features = ["default", "enumflags2"] }
@@ -3860,6 +3881,7 @@ doc = false
 "base16ct-0_2_0" = { package = "base16ct", version = "^0.2.0", default-features = false, features = ["alloc"] }
 "base16ct-1_0_0" = { package = "base16ct", version = "^1.0.0", default-features = false, features = ["alloc"] }
 "base64-0_22_1" = { package = "base64", version = "^0.22.1", default-features = false, features = ["alloc", "default", "std"] }
+"base64-0_23_1" = { package = "base64", version = "^0.23.1", default-features = false, features = ["alloc", "default", "simd-unsafe", "std"] }
 "base64ct-1_8_3" = { package = "base64ct", version = "^1.8.3", default-features = false, features = ["alloc"] }
 "bcrypt-pbkdf-0_11_0" = { package = "bcrypt-pbkdf", version = "^0.11.0", default-features = false, features = ["alloc"] }
 "binary-merge-0_1_2" = { package = "binary-merge", version = "^0.1.2", default-features = false, features = [] }
@@ -3878,6 +3900,7 @@ doc = false
 "block-devices" = { path = "../../../crates/system/block-devices", default-features = false, features = [] }
 "block-padding-0_4_2" = { package = "block-padding", version = "^0.4.2", default-features = false, features = [] }
 "blowfish-0_10_0" = { package = "blowfish", version = "^0.10.0", default-features = false, features = ["bcrypt"] }
+"bon-3_10_2" = { package = "bon", version = "^3.10.2", default-features = false, features = ["alloc", "default", "std"] }
 "bon-macros-3_10_2" = { package = "bon-macros", version = "^3.10.2", default-features = false, features = ["alloc", "default", "std"] }
 "bounded-command" = { path = "../../../crates/system/bounded-command", default-features = false, features = [] }
 "brotli-8_0_2" = { package = "brotli", version = "^8.0.2", default-features = false, features = ["alloc-stdlib", "default", "std"] }
@@ -3973,6 +3996,7 @@ doc = false
 "data-encoding-macro-0_1_19" = { package = "data-encoding-macro", version = "^0.1.19", default-features = false, features = [] }
 "data-encoding-macro-internal-0_1_17" = { package = "data-encoding-macro-internal", version = "^0.1.17", default-features = false, features = [] }
 "data-url-0_3_2" = { package = "data-url", version = "^0.3.2", default-features = false, features = ["alloc", "default", "std"] }
+"datasketches-0_5_0" = { package = "datasketches", version = "^0.5.0", default-features = false, features = ["default", "hll"] }
 "delegate-0_13_5" = { package = "delegate", version = "^0.13.5", default-features = false, features = [] }
 "der-0_7_10" = { package = "der", version = "^0.7.10", default-features = false, features = ["alloc", "derive", "flagset", "oid", "pem", "std", "zeroize"] }
 "der-0_8_1" = { package = "der", version = "^0.8.1", default-features = false, features = ["alloc", "oid", "pem", "std", "zeroize"] }
@@ -3992,7 +4016,7 @@ doc = false
 "displaydoc-0_2_5" = { package = "displaydoc", version = "^0.2.5", default-features = false, features = ["default", "std"] }
 "dlib-0_5_3" = { package = "dlib", version = "^0.5.3", default-features = false, features = [] }
 "document-features-0_2_12" = { package = "document-features", version = "^0.2.12", default-features = false, features = ["default"] }
-"downcast-rs-1_2_1" = { package = "downcast-rs", version = "^1.2.1", default-features = false, features = ["default", "std"] }
+"downcast-rs-2_0_2" = { package = "downcast-rs", version = "^2.0.2", default-features = false, features = ["default", "std", "sync"] }
 "ecdsa-0_16_9" = { package = "ecdsa", version = "^0.16.9", default-features = false, features = ["alloc", "arithmetic", "der", "digest", "hazmat", "pem", "pkcs8", "rfc6979", "signing", "spki", "std", "verifying"] }
 "ecdsa-0_17_0" = { package = "ecdsa", version = "^0.17.0", default-features = false, features = ["algorithm", "alloc", "default", "der", "digest", "getrandom", "pem", "pkcs8", "spki", "std"] }
 "ed25519-3_0_0" = { package = "ed25519", version = "^3.0.0", default-features = false, features = ["alloc", "pem", "pkcs8", "serde"] }
@@ -4008,6 +4032,7 @@ doc = false
 "enumflags2-0_7_12" = { package = "enumflags2", version = "^0.7.12", default-features = false, features = ["serde"] }
 "enumflags2_derive-0_7_12" = { package = "enumflags2_derive", version = "^0.7.12", default-features = false, features = [] }
 "equivalent-1_0_2" = { package = "equivalent", version = "^1.0.2", default-features = false, features = [] }
+"erased-serde-0_4_11" = { package = "erased-serde", version = "^0.4.11", default-features = false, features = ["alloc"] }
 "errno-0_3_14" = { package = "errno", version = "^0.3.14", default-features = false, features = ["default", "std"] }
 "euclid-0_22_14" = { package = "euclid", version = "^0.22.14", default-features = false, features = [] }
 "event-listener-5_4_1" = { package = "event-listener", version = "^5.4.1", default-features = false, features = ["default", "parking", "std"] }
@@ -4048,7 +4073,7 @@ doc = false
 "fs-content" = { path = "../../../crates/system/fs-content", default-features = false, features = [] }
 "fs-protocol" = { path = "../../../crates/system/fs-protocol", default-features = false, features = [] }
 "fs-set-times-0_20_3" = { package = "fs-set-times", version = "^0.20.3", default-features = false, features = [] }
-"fs4-0_8_4" = { package = "fs4", version = "^0.8.4", default-features = false, features = ["default", "sync"] }
+"fs4-0_13_1" = { package = "fs4", version = "^0.13.1", default-features = false, features = ["default", "sync"] }
 "futures-0_3_32" = { package = "futures", version = "^0.3.32", default-features = false, features = ["alloc", "async-await", "default", "executor", "futures-executor", "std"] }
 "futures-buffered-0_2_12" = { package = "futures-buffered", version = "^0.2.12", default-features = false, features = [] }
 "futures-channel-0_3_32" = { package = "futures-channel", version = "^0.3.32", default-features = false, features = ["alloc", "default", "futures-sink", "sink", "std"] }
@@ -4090,7 +4115,7 @@ doc = false
 "harfrust-0_12_0" = { package = "harfrust", version = "^0.12.0", default-features = false, features = ["default", "std"] }
 "hash32-0_2_1" = { package = "hash32", version = "^0.2.1", default-features = false, features = [] }
 "hashbrown-0_14_5" = { package = "hashbrown", version = "^0.14.5", default-features = false, features = ["raw"] }
-"hashbrown-0_15_5" = { package = "hashbrown", version = "^0.15.5", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry", "serde"] }
+"hashbrown-0_15_5" = { package = "hashbrown", version = "^0.15.5", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
 "hashbrown-0_16_1" = { package = "hashbrown", version = "^0.16.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry"] }
 "hashbrown-0_17_1" = { package = "hashbrown", version = "^0.17.1", default-features = false, features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry"] }
 "hashify-0_2_9" = { package = "hashify", version = "^0.2.9", default-features = false, features = [] }
@@ -4160,9 +4185,9 @@ doc = false
 "inout-0_1_4" = { package = "inout", version = "^0.1.4", default-features = false, features = [] }
 "inout-0_2_2" = { package = "inout", version = "^0.2.2", default-features = false, features = ["block-padding"] }
 "inplace-vec-builder-0_1_1" = { package = "inplace-vec-builder", version = "^0.1.1", default-features = false, features = ["smallvec"] }
-"instant-0_1_13" = { package = "instant", version = "^0.1.13", default-features = false, features = ["inaccurate", "js-sys", "wasm-bindgen", "wasm-bindgen_rs", "web-sys"] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
+"inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }
 "io-enum-1_2_1" = { package = "io-enum", version = "^1.2.1", default-features = false, features = [] }
 "io-extras-0_18_4" = { package = "io-extras", version = "^0.18.4", default-features = false, features = ["default"] }
 "io-lifetimes-2_0_4" = { package = "io-lifetimes", version = "^2.0.4", default-features = false, features = ["default"] }
@@ -4181,7 +4206,6 @@ doc = false
 "irpc-0_17_0" = { package = "irpc", version = "^0.17.0", default-features = false, features = ["derive", "spans", "stream", "varint-util"] }
 "irpc-derive-0_17_0" = { package = "irpc-derive", version = "^0.17.0", default-features = false, features = [] }
 "is_terminal_polyfill-1_70_2" = { package = "is_terminal_polyfill", version = "^1.70.2", default-features = false, features = ["default"] }
-"itertools-0_12_1" = { package = "itertools", version = "^0.12.1", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_13_0" = { package = "itertools", version = "^0.13.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_14_0" = { package = "itertools", version = "^0.14.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_15_0" = { package = "itertools", version = "^0.15.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
@@ -4215,7 +4239,6 @@ doc = false
 "litrs-1_0_0" = { package = "litrs", version = "^1.0.0", default-features = false, features = [] }
 "lock_api-0_4_14" = { package = "lock_api", version = "^0.4.14", default-features = false, features = ["atomic_usize", "default"] }
 "log-0_4_29" = { package = "log", version = "^0.4.29", default-features = false, features = ["max_level_debug", "release_max_level_info", "std"] }
-"lru-0_12_5" = { package = "lru", version = "^0.12.5", default-features = false, features = ["default", "hashbrown"] }
 "lru-0_16_3" = { package = "lru", version = "^0.16.3", default-features = false, features = ["default", "hashbrown"] }
 "lru-0_18_3" = { package = "lru", version = "^0.18.3", default-features = false, features = ["default", "hashbrown"] }
 "lru-slab-0_1_2" = { package = "lru-slab", version = "^0.1.2", default-features = false, features = [] }
@@ -4224,7 +4247,7 @@ doc = false
 "matchers-0_2_0" = { package = "matchers", version = "^0.2.0", default-features = false, features = [] }
 "maybe-owned-0_3_4" = { package = "maybe-owned", version = "^0.3.4", default-features = false, features = [] }
 "md5-0_8_1" = { package = "md5", version = "^0.8.1", default-features = false, features = ["default", "std"] }
-"measure_time-0_8_3" = { package = "measure_time", version = "^0.8.3", default-features = false, features = [] }
+"measure_time-0_9_0" = { package = "measure_time", version = "^0.9.0", default-features = false, features = [] }
 "memchr-2_8_0" = { package = "memchr", version = "^2.8.0", default-features = false, features = ["alloc", "default", "std"] }
 "memmap2-0_9_11" = { package = "memmap2", version = "^0.9.11", default-features = false, features = [] }
 "memoffset-0_9_1" = { package = "memoffset", version = "^0.9.1", default-features = false, features = ["default"] }
@@ -4235,7 +4258,7 @@ doc = false
 "module-lattice-0_2_3" = { package = "module-lattice", version = "^0.2.3", default-features = false, features = ["alloc", "ctutils"] }
 "moka-0_12_15" = { package = "moka", version = "^0.12.15", default-features = false, features = ["default", "sync"] }
 "moxcms-0_8_1" = { package = "moxcms", version = "^0.8.1", default-features = false, features = ["avx", "avx_luts", "avx_shaper_fixed_point_paths", "avx_shaper_paths", "default", "lut", "neon", "neon_luts", "neon_shaper_fixed_point_paths", "neon_shaper_paths", "sse", "sse_luts", "sse_shaper_fixed_point_paths", "sse_shaper_paths"] }
-"murmurhash32-0_3_1" = { package = "murmurhash32", version = "^0.3.1", default-features = false, features = [] }
+"murmurhash32-0_4_0" = { package = "murmurhash32", version = "^0.4.0", default-features = false, features = [] }
 "n0-error-1_0_0" = { package = "n0-error", version = "^1.0.0", default-features = false, features = ["anyhow", "default"] }
 "n0-error-macros-1_0_0" = { package = "n0-error-macros", version = "^1.0.0", default-features = false, features = [] }
 "n0-future-0_3_2" = { package = "n0-future", version = "^0.3.2", default-features = false, features = [] }
@@ -4273,9 +4296,9 @@ doc = false
 "oneshot-0_1_13" = { package = "oneshot", version = "^0.1.13", default-features = false, features = ["async", "default", "std"] }
 "opaque-debug-0_3_1" = { package = "opaque-debug", version = "^0.3.1", default-features = false, features = [] }
 "openmls_serialization_helpers-0_1_0" = { package = "openmls_serialization_helpers", version = "^0.1.0", default-features = false, features = [] }
-"ordered-float-5_0_0" = { package = "ordered-float", version = "^5.0.0", default-features = false, features = [] }
+"ordered-float-5_0_0" = { package = "ordered-float", version = "^5.0.0", default-features = false, features = ["default", "std"] }
 "ordered-stream-0_2_0" = { package = "ordered-stream", version = "^0.2.0", default-features = false, features = [] }
-"ownedbytes-0_7_0" = { package = "ownedbytes", version = "^0.7.0", default-features = false, features = [] }
+"ownedbytes-0_9_0" = { package = "ownedbytes", version = "^0.9.0", default-features = false, features = [] }
 "p256-0_13_2" = { package = "p256", version = "^0.13.2", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "pem", "pkcs8", "sha2", "sha256", "std"] }
 "p256-0_14_0" = { package = "p256", version = "^0.14.0", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "getrandom", "pem", "pkcs8", "precomputed-tables", "sha2", "sha256", "std"] }
 "p384-0_13_1" = { package = "p384", version = "^0.13.1", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "pem", "pkcs8", "sha2", "sha384", "std"] }
@@ -4362,7 +4385,6 @@ doc = false
 "rand_core-0_10_0" = { package = "rand_core", version = "^0.10.0", default-features = false, features = [] }
 "rand_core-0_6_4" = { package = "rand_core", version = "^0.6.4", default-features = false, features = ["alloc", "getrandom", "std"] }
 "rand_core-0_9_5" = { package = "rand_core", version = "^0.9.5", default-features = false, features = ["os_rng", "std"] }
-"rand_distr-0_4_3" = { package = "rand_distr", version = "^0.4.3", default-features = false, features = ["alloc", "default", "std"] }
 "rand_distr-0_5_1" = { package = "rand_distr", version = "^0.5.1", default-features = false, features = ["alloc", "default", "std"] }
 "rand_pcg-0_10_2" = { package = "rand_pcg", version = "^0.10.2", default-features = false, features = [] }
 "range-collections-0_4_6" = { package = "range-collections", version = "^0.4.6", default-features = false, features = ["default", "new_unchecked", "serde"] }
@@ -4402,8 +4424,7 @@ doc = false
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
 "russh-util-0_52_0" = { package = "russh-util", version = "^0.52.0", default-features = false, features = [] }
-"rust-stemmers-1_2_0" = { package = "rust-stemmers", version = "^1.2.0", default-features = false, features = [] }
-"rustc-hash-1_1_0" = { package = "rustc-hash", version = "^1.1.0", default-features = false, features = ["default", "std"] }
+"rustc-hash-1_1_0" = { package = "rustc-hash", version = "^1.1.0", default-features = false, features = [] }
 "rustc-hash-2_1_3" = { package = "rustc-hash", version = "^2.1.3", default-features = false, features = ["default", "std"] }
 "rustc_version-0_4_1" = { package = "rustc_version", version = "^0.4.1", default-features = false, features = [] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
@@ -4434,6 +4455,7 @@ doc = false
 "self_cell-1_2_2" = { package = "self_cell", version = "^1.2.2", default-features = false, features = [] }
 "semver-1_0_27" = { package = "semver", version = "^1.0.27", default-features = false, features = ["default", "std"] }
 "serde-1_0_228" = { package = "serde", version = "^1.0.228", default-features = false, features = ["alloc", "default", "derive", "rc", "serde_derive", "std"] }
+"serde-tuple-vec-map-1_0_1" = { package = "serde-tuple-vec-map", version = "^1.0.1", default-features = false, features = ["default", "std"] }
 "serde_bytes-0_11_19" = { package = "serde_bytes", version = "^0.11.19", default-features = false, features = ["default", "std"] }
 "serde_core-1_0_228" = { package = "serde_core", version = "^1.0.228", default-features = false, features = ["alloc", "default", "rc", "result", "std"] }
 "serde_derive-1_0_228" = { package = "serde_derive", version = "^1.0.228", default-features = false, features = ["default"] }
@@ -4464,7 +4486,7 @@ doc = false
 "simple-dns-0_11_3" = { package = "simple-dns", version = "^0.11.3", default-features = false, features = ["default", "std"] }
 "simplecss-0_2_2" = { package = "simplecss", version = "^0.2.2", default-features = false, features = ["default", "std"] }
 "siphasher-1_0_3" = { package = "siphasher", version = "^1.0.3", default-features = false, features = ["default", "std"] }
-"sketches-ddsketch-0_2_2" = { package = "sketches-ddsketch", version = "^0.2.2", default-features = false, features = ["serde", "use_serde"] }
+"sketches-ddsketch-0_4_2" = { package = "sketches-ddsketch", version = "^0.4.2", default-features = false, features = ["serde", "use_serde"] }
 "skrifa-0_42_1" = { package = "skrifa", version = "^0.42.1", default-features = false, features = ["autohint_shaping", "default", "std"] }
 "skrifa-0_44_0" = { package = "skrifa", version = "^0.44.0", default-features = false, features = ["autohint_shaping", "default", "std"] }
 "slab-0_4_12" = { package = "slab", version = "^0.4.12", default-features = false, features = ["default", "std"] }
@@ -4503,15 +4525,15 @@ doc = false
 "sysinfo-0_36_1" = { package = "sysinfo", version = "^0.36.1", default-features = false, features = ["component", "default", "disk", "network", "objc2-io-kit", "system", "user"] }
 "system-deps-7_0_8" = { package = "system-deps", version = "^7.0.8", default-features = false, features = [] }
 "tagptr-0_2_0" = { package = "tagptr", version = "^0.2.0", default-features = false, features = [] }
-"tantivy-0_22_1" = { package = "tantivy", version = "^0.22.1", default-features = false, features = ["fs4", "memmap2", "mmap", "tempfile"] }
-"tantivy-bitpacker-0_6_0" = { package = "tantivy-bitpacker", version = "^0.6.0", default-features = false, features = [] }
-"tantivy-columnar-0_3_0" = { package = "tantivy-columnar", version = "^0.3.0", default-features = false, features = [] }
-"tantivy-common-0_7_0" = { package = "tantivy-common", version = "^0.7.0", default-features = false, features = [] }
+"tantivy-0_27_0" = { package = "tantivy", version = "^0.27.0", default-features = false, features = ["fs4", "memmap2", "mmap", "tempfile"] }
+"tantivy-bitpacker-0_27_0" = { package = "tantivy-bitpacker", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-columnar-0_27_0" = { package = "tantivy-columnar", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-common-0_27_0" = { package = "tantivy-common", version = "^0.27.0", default-features = false, features = [] }
 "tantivy-fst-0_5_0" = { package = "tantivy-fst", version = "^0.5.0", default-features = false, features = ["default", "regex", "regex-syntax"] }
-"tantivy-query-grammar-0_22_0" = { package = "tantivy-query-grammar", version = "^0.22.0", default-features = false, features = [] }
-"tantivy-sstable-0_3_0" = { package = "tantivy-sstable", version = "^0.3.0", default-features = false, features = [] }
-"tantivy-stacker-0_3_0" = { package = "tantivy-stacker", version = "^0.3.0", default-features = false, features = [] }
-"tantivy-tokenizer-api-0_3_0" = { package = "tantivy-tokenizer-api", version = "^0.3.0", default-features = false, features = [] }
+"tantivy-query-grammar-0_27_0" = { package = "tantivy-query-grammar", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-sstable-0_27_0" = { package = "tantivy-sstable", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-stacker-0_27_0" = { package = "tantivy-stacker", version = "^0.27.0", default-features = false, features = [] }
+"tantivy-tokenizer-api-0_7_0" = { package = "tantivy-tokenizer-api", version = "^0.7.0", default-features = false, features = [] }
 "tar-0_4_46" = { package = "tar", version = "^0.4.46", default-features = false, features = ["default", "xattr"] }
 "target-lexicon-0_13_5" = { package = "target-lexicon", version = "^0.13.5", default-features = false, features = ["default"] }
 "tempfile-3_27_0" = { package = "tempfile", version = "^3.27.0", default-features = false, features = ["default", "getrandom"] }
@@ -4537,6 +4559,7 @@ doc = false
 "tilo-delivery-protocol" = { path = "../../../crates/hosting/tilo-delivery-protocol", default-features = false, features = [] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = [] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = [] }
+"tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["test-support", "watch"] }
 "tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
 "tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = [] }
@@ -4558,6 +4581,7 @@ doc = false
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
 "tilo-seal" = { path = "../../../crates/system/tilo-seal", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }
+"tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-startup-metrics" = { path = "../../../crates/system/tilo-startup-metrics", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = [] }
@@ -4604,7 +4628,10 @@ doc = false
 "tungstenite-0_28_0" = { package = "tungstenite", version = "^0.28.0", default-features = false, features = ["__rustls-tls", "data-encoding", "handshake", "http", "httparse", "rustls", "rustls-pki-types", "sha1"] }
 "type-map-0_5_1" = { package = "type-map", version = "^0.5.1", default-features = false, features = [] }
 "typed-path-0_12_3" = { package = "typed-path", version = "^0.12.3", default-features = false, features = ["default", "std"] }
+"typeid-1_0_3" = { package = "typeid", version = "^1.0.3", default-features = false, features = [] }
 "typenum-1_20_1" = { package = "typenum", version = "^1.20.1", default-features = false, features = ["const-generics"] }
+"typetag-0_2_23" = { package = "typetag", version = "^0.2.23", default-features = false, features = [] }
+"typetag-impl-0_2_23" = { package = "typetag-impl", version = "^0.2.23", default-features = false, features = [] }
 "typst-macros-0_15_1" = { package = "typst-macros", version = "^0.15.1", default-features = false, features = [] }
 "unic-langid-0_9_6" = { package = "unic-langid", version = "^0.9.6", default-features = false, features = ["default", "macros", "serde", "unic-langid-macros"] }
 "unic-langid-impl-0_9_6" = { package = "unic-langid-impl", version = "^0.9.6", default-features = false, features = ["serde"] }
@@ -4625,6 +4652,7 @@ doc = false
 "universal-hash-0_5_1" = { package = "universal-hash", version = "^0.5.1", default-features = false, features = [] }
 "universal-hash-0_6_1" = { package = "universal-hash", version = "^0.6.1", default-features = false, features = [] }
 "untrusted-0_9_0" = { package = "untrusted", version = "^0.9.0", default-features = false, features = [] }
+"unwrap-infallible-1_0_0" = { package = "unwrap-infallible", version = "^1.0.0", default-features = false, features = ["default"] }
 "url-2_5_8" = { package = "url", version = "^2.5.8", default-features = false, features = ["default", "serde", "std"] }
 "usvg-0_47_0" = { package = "usvg", version = "^0.47.0", default-features = false, features = ["default", "fontdb", "memmap-fonts", "rustybuzz", "system-fonts", "text", "ttf-parser", "unicode-bidi", "unicode-script", "unicode-vo"] }
 "utf-8-0_7_6" = { package = "utf-8", version = "^0.7.6", default-features = false, features = [] }
@@ -4700,9 +4728,9 @@ doc = false
 "zip-9_0_4" = { package = "zip", version = "^9.0.4", default-features = false, features = ["_deflate-any", "deflate-flate2", "deflate-flate2-zlib-rs"] }
 "zlib-rs-0_6_8" = { package = "zlib-rs", version = "^0.6.8", default-features = false, features = ["rust-allocator", "std"] }
 "zmij-1_0_21" = { package = "zmij", version = "^1.0.21", default-features = false, features = [] }
-"zstd-0_13_3" = { package = "zstd", version = "^0.13.3", default-features = false, features = ["arrays", "default", "experimental", "legacy", "zdict_builder"] }
-"zstd-safe-7_2_4" = { package = "zstd-safe", version = "^7.2.4", default-features = false, features = ["arrays", "experimental", "legacy", "std", "zdict_builder"] }
-"zstd-sys-2_0_16_zstd_1_5_7" = { package = "zstd-sys", version = "^2.0.16+zstd.1.5.7", default-features = false, features = ["experimental", "legacy", "std", "zdict_builder"] }
+"zstd-0_14_3" = { package = "zstd", version = "^0.14.3", default-features = false, features = ["arrays", "default", "legacy", "zdict_builder"] }
+"zstd-safe-8_2_0" = { package = "zstd-safe", version = "^8.2.0", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
+"zstd-sys-2_1_2_zstd_1_5_7" = { package = "zstd-sys", version = "^2.1.2+zstd.1.5.7", default-features = false, features = ["legacy", "std", "zdict_builder"] }
 "zune-core-0_5_1" = { package = "zune-core", version = "^0.5.1", default-features = false, features = ["std"] }
 "zune-jpeg-0_5_12" = { package = "zune-jpeg", version = "^0.5.12", default-features = false, features = ["default", "neon", "std", "x86"] }
 "zvariant-5_12_0" = { package = "zvariant", version = "^5.12.0", default-features = false, features = ["default", "enumflags2"] }

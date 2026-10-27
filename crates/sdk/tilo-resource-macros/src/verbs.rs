@@ -12,6 +12,10 @@ use crate::{CRATE, doc_lines, humanize, is_action_cx, krate, last_ident, owned_t
 pub(crate) struct ResourceOptions {
     kind: String,
     label: String,
+    /// The app that publishes records of this kind, which its typed
+    /// references name their actions by (`#[resource(app = "…")]`); the
+    /// framework app's id where the record names none.
+    app: Option<String>,
     params: Option<syn::Ident>,
     search: Option<syn::Path>,
     scopes: Option<syn::Path>,
@@ -23,6 +27,8 @@ pub(crate) struct ResourceOptions {
     document_child: Option<syn::Path>,
     /// A read that looks at the document too: `fn(&Self, &Doc, Option<&Id>)`.
     read_content_in_doc: Option<syn::Path>,
+    /// History renders this type's versions as text.
+    history_text: bool,
     /// The record's facts: `fn(&Self) -> Result<Value, String>`.
     facts: Option<syn::Path>,
     views: Option<syn::Path>,
@@ -39,17 +45,29 @@ pub(crate) struct ResourceOptions {
     item_views: Option<syn::Path>,
 }
 
-const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `params = name`, `search = path`, \
+const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `app = \"...\"`, `params = name`, `search = path`, \
      `scopes = path`, `children = path`, `initialize = path`, `seed = path`, `available = path`, \
-     `read_content = path`, `read_content_in_doc = path`, `document_child = path`, `facts = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
+     `read_content = path`, `read_content_in_doc = path`, `document_child = path`, `facts = path`, `history_text`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
      `locate = path`, `lands = path`, `queue = path`, `effects = Type`, `answer = path` or \
      `item_views = path`";
+
+/// The text of a string-literal attribute value, if that is what `value` is.
+fn str_value(value: &Expr) -> Option<String> {
+    match value {
+        Expr::Lit(ExprLit {
+            lit: Lit::Str(text),
+            ..
+        }) => Some(text.value()),
+        _ => None,
+    }
+}
 
 pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<ResourceOptions> {
     let metas = syn::parse::Parser::parse(Punctuated::<Meta, Token![,]>::parse_terminated, attr)?;
     let mut options = ResourceOptions {
         kind: String::new(),
         label: String::new(),
+        app: None,
         params: None,
         search: None,
         scopes: None,
@@ -60,6 +78,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
         read_content: None,
         document_child: None,
         read_content_in_doc: None,
+        history_text: false,
         facts: None,
         views: None,
         version: None,
@@ -75,6 +94,11 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
     let mut kind = None;
     let mut label = None;
     for meta in metas {
+        // A bare key names a declaration that takes no value.
+        if let Meta::Path(path) = &meta {
+            options.bare_key(path)?;
+            continue;
+        }
         let Meta::NameValue(pair) = meta else {
             return Err(syn::Error::new(meta.span(), RESOURCE_KEYS));
         };
@@ -83,21 +107,16 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
             .get_ident()
             .map(ToString::to_string)
             .unwrap_or_default();
+        if let Some(text) = str_value(&pair.value) {
+            match key.as_str() {
+                "kind" => kind = Some(text),
+                "label" => label = Some(text),
+                "app" => options.app = Some(text),
+                _ => return Err(syn::Error::new(pair.span(), RESOURCE_KEYS)),
+            }
+            continue;
+        }
         match (key.as_str(), &pair.value) {
-            (
-                "kind",
-                Expr::Lit(ExprLit {
-                    lit: Lit::Str(text),
-                    ..
-                }),
-            ) => kind = Some(text.value()),
-            (
-                "label",
-                Expr::Lit(ExprLit {
-                    lit: Lit::Str(text),
-                    ..
-                }),
-            ) => label = Some(text.value()),
             ("params", Expr::Path(path)) if path.path.get_ident().is_some() => {
                 options.params = path.path.get_ident().cloned();
             }
@@ -153,6 +172,11 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
 struct ActionOptions {
     id: Option<String>,
     label: Option<String>,
+    /// `keywords = "mkdir, make directory"`: the other words people use
+    /// for the action.
+    keywords: Vec<String>,
+    /// `icon = "folder-plus"`: the action's own picture, by its Lucide name.
+    icon: Option<String>,
     field: Option<String>,
     destructive: bool,
     irreversible: bool,
@@ -184,6 +208,8 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
     let mut options = ActionOptions {
         id: None,
         label: None,
+        keywords: Vec::new(),
+        icon: None,
         field: None,
         destructive: false,
         irreversible: false,
@@ -208,6 +234,10 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.id = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("label") {
             options.label = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+        } else if meta.path.is_ident("keywords") {
+            options.keywords = crate::keyword_list(&meta.value()?.parse::<syn::LitStr>()?)?;
+        } else if meta.path.is_ident("icon") {
+            options.icon = Some(crate::icon_name(&meta.value()?.parse::<syn::LitStr>()?)?);
         } else if meta.path.is_ident("field") {
             options.field = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("moderation") {
@@ -257,7 +287,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.audience = Some(crate::audience_option(&meta)?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `keywords`, `icon`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -272,7 +302,8 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
 mod tests;
 
 /// `#[param("description", name = "public", example = expr)]`, each part
-/// optional.
+/// optional. `resource = "kind"` has a person pick an existing resource of
+/// that kind, the parameter a reference to it (`ResourceAt`).
 #[derive(Default)]
 struct ParamOptions {
     description: Option<String>,
@@ -283,6 +314,8 @@ struct ParamOptions {
     role: Role,
     /// The collection whose items the place names (`place = "field"`).
     place_in: Option<String>,
+    /// The kind of existing resource a person picks (`resource = "kind"`).
+    picks: Option<String>,
 }
 
 impl ParamOptions {
@@ -346,10 +379,12 @@ impl syn::parse::Parse for ParamOptions {
                 options.name = Some(input.parse::<syn::LitStr>()?.value());
             } else if key == "example" {
                 options.example = Some(input.parse()?);
+            } else if key == "resource" {
+                options.picks = Some(input.parse::<syn::LitStr>()?.value());
             } else {
                 return Err(syn::Error::new(
                     key.span(),
-                    "expected `\"description\"`, `name = \"...\"`, `example = ...`, `place = \"field\"`, `content`, `place`, `flatten` or `secret`",
+                    "expected `\"description\"`, `name = \"...\"`, `example = ...`, `place = \"field\"`, `resource = \"kind\"`, `content`, `place`, `flatten` or `secret`",
                 ));
             }
             if input.is_empty() {
@@ -374,6 +409,8 @@ struct Param {
     role: Role,
     /// The collection a place parameter's items come from, when named.
     place_in: Option<String>,
+    /// The kind of existing resource a person picks for it, when one.
+    picks: Option<String>,
 }
 
 /// What part a verb's parameter plays.
@@ -510,6 +547,7 @@ fn item_param(ident: &syn::Ident) -> Param {
         secret: false,
         role: Role::Plain,
         place_in: None,
+        picks: None,
     }
 }
 
@@ -594,6 +632,7 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
                     secret: param_options.secret,
                     role,
                     place_in: param_options.place_in,
+                    picks: param_options.picks,
                 });
             }
         }
@@ -653,10 +692,11 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
         (None, false) => quote!(#krate::__private::PlaceIn::Nowhere),
     };
     let content = param.role == Role::Content;
-    let schema = crate::byte_param(ty).map_or_else(
-        || quote!(<#ty as #krate::JsonSchema>::json_schema),
-        |(_, schema)| schema,
-    );
+    let schema = match (&param.picks, crate::byte_param(ty)) {
+        (Some(kind), _) => quote!(|| #krate::__private::picked_resource_schema(#kind)),
+        (None, Some((_, schema))) => schema,
+        (None, None) => quote!(<#ty as #krate::JsonSchema>::json_schema),
+    };
     quote! {
         #krate::__private::ParamDecl {
             name: #name,
@@ -921,6 +961,13 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         .unwrap_or_else(|| format_ident!("{}", snake_case(&type_name)));
     let kind = &options.kind;
     let label = &options.label;
+    // The app whose `ActionKey`s its actions are published under. A record
+    // that names none is the framework app's, whose id replaces the
+    // placeholder at registration.
+    let app_id = options
+        .app
+        .as_ref()
+        .map_or_else(|| quote!(#krate::kind::DEFAULT_APP), |app| quote!(#app));
 
     let mut verbs = Vec::new();
     for impl_item in &mut item.items {
@@ -1157,7 +1204,15 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         consts.push(quote! {
             #[doc = #const_doc]
             pub const #const_ident: #krate::ActionRef<#self_ty, #params_mod::#variant> =
-                #krate::ActionRef::new(#id, &[]);
+                #krate::ActionRef::new(
+                    #id,
+                    &[],
+                    #krate::ResourceKind::declared::<#self_ty>(
+                        #kind,
+                        #label,
+                        <#self_ty as #krate::Resource>::APP_ID,
+                    ),
+                );
         });
 
         // What the verb may write: its item's unit and the fields it
@@ -1368,6 +1423,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             ),
         };
         let description = &verb.description;
+        let keywords = &verb.options.keywords;
+        let icon = crate::optional_str(verb.options.icon.as_deref());
         let field = verb.options.field.as_deref().map_or_else(
             || quote!(::core::option::Option::None),
             |field| {
@@ -1381,6 +1438,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #krate::__private::VerbDecl {
                 id: #id,
                 label: #label_text,
+                keywords: &[#(#keywords),*],
+                icon: #icon,
                 description: #description,
                 kind: #krate::ActionKind::#action_kind,
                 by_arguments: #by_arguments,
@@ -1624,6 +1683,13 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         },
     );
+    // A type that renders its record as text says so beside its read
+    // adapter: it needs one to have anything to render.
+    let history_text = options.history_text.then(|| {
+        quote! {
+            const HISTORY_READS_TEXT: bool = true;
+        }
+    });
     let read_content = options.read_content.as_ref().map_or_else(
         || quote!(),
         |path| {
@@ -1653,6 +1719,12 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     });
+    // Beside the adapter whichever read it uses: one `HISTORY_READS_TEXT`
+    // belongs in the impl, wherever `read_content` was emitted.
+    let read_content = quote! {
+        #read_content
+        #history_text
+    };
     let facts = options.facts.as_ref().map(|path| {
         quote! {
             const HAS_FACTS: bool = true;
@@ -1961,15 +2033,10 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
 
-        impl #self_ty {
-            #(#consts)*
-            #compensation_inherent
-            #queue_inherent
-        }
-
         impl #krate::Resource for #self_ty {
             const KIND: &'static str = #kind;
             const LABEL: &'static str = #label;
+            const APP_ID: &'static str = #app_id;
             const RECORD_TABLE: ::core::option::Option<&'static #krate::table::ModelTable> =
                 ::core::option::Option::Some(<Self as #krate::Model>::TABLE);
             type State = #self_ty;
@@ -2131,5 +2198,26 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 ::core::option::Option::Some(#krate::schema::record_action_schema::<Self>())
             }
         }
+
+        // After the `Resource` impl, so the constants read its own.
+        impl #self_ty {
+            #(#consts)*
+            #compensation_inherent
+            #queue_inherent
+        }
     })
+}
+
+impl ResourceOptions {
+    /// A key written without a value, naming a declaration that holds on its
+    /// own.
+    fn bare_key(&mut self, path: &syn::Path) -> syn::Result<()> {
+        match path.get_ident().map(ToString::to_string).as_deref() {
+            Some("history_text") => {
+                self.history_text = true;
+                Ok(())
+            }
+            _ => Err(syn::Error::new(path.span(), RESOURCE_KEYS)),
+        }
+    }
 }

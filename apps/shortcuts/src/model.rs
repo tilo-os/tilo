@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use tilo_automation::{
-    AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind, TriggerSpec,
+    Binding, Condition, Selector, Shortcut, Step, StepKind, StepPolicy, TriggerSpec,
 };
 use ui::prelude::*;
 use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
@@ -86,6 +86,9 @@ pub struct StepNode {
     pub head: Option<Head>,
     /// An action step's arguments, each bound on its own.
     pub args: BTreeMap<String, Binding>,
+    /// What the run does when the step fails; [`StepPolicy::Fail`], the
+    /// default, stops it.
+    pub on_error: StepPolicy,
 }
 
 /// A [`StepKind`] without the parts a [`StepNode`] stores apart: an action's
@@ -114,8 +117,26 @@ pub enum Head {
         param: ActionParam,
     },
     Ai {
-        transform: AiTransform,
-        input: Binding,
+        /// What to do, in the person's words.
+        prompt: String,
+        /// The step's own input; the step before it when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input: Option<Binding>,
+        /// The shape the answer must have, as a JSON Schema; text when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
+    },
+    Task {
+        /// What the task is to do, in the person's words.
+        instruction: String,
+        /// What it may use, as the grant node of each action. It narrows the
+        /// shortcut's own grant and never widens it. Held as the values the
+        /// policy layer reads, the shape the agent's task action takes them in.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        allow: Vec<serde_json::Value>,
+        /// The shape the summary must have, as a JSON Schema; text when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
     },
 }
 
@@ -176,10 +197,31 @@ impl Head {
                 BTreeMap::new(),
                 Vec::new(),
             ),
-            StepKind::Ai { transform, input } => (
+            StepKind::Ai {
+                prompt,
+                output,
+                input,
+            } => (
                 Self::Ai {
-                    transform: transform.clone(),
+                    prompt: prompt.clone(),
+                    output: output.clone(),
                     input: input.clone(),
+                },
+                BTreeMap::new(),
+                Vec::new(),
+            ),
+            StepKind::Task {
+                instruction,
+                allow,
+                output,
+            } => (
+                Self::Task {
+                    instruction: instruction.clone(),
+                    allow: allow
+                        .iter()
+                        .filter_map(|rule| serde_json::to_value(rule).ok())
+                        .collect(),
+                    output: output.clone(),
                 },
                 BTreeMap::new(),
                 Vec::new(),
@@ -217,7 +259,27 @@ impl Head {
             },
             Self::SetVar { name, value } => StepKind::SetVar { name, value },
             Self::Ask { param } => StepKind::Ask { param },
-            Self::Ai { transform, input } => StepKind::Ai { transform, input },
+            Self::Ai {
+                prompt,
+                output,
+                input,
+            } => StepKind::Ai {
+                prompt,
+                output,
+                input,
+            },
+            Self::Task {
+                instruction,
+                allow,
+                output,
+            } => StepKind::Task {
+                instruction,
+                allow: allow
+                    .iter()
+                    .filter_map(|rule| serde_json::from_value(rule.clone()).ok())
+                    .collect(),
+                output,
+            },
         }
     }
 }
@@ -262,7 +324,7 @@ impl Draft {
                 let head = node.head.clone()?;
                 let args = node.args.clone();
                 let kind = head.join(args, |branch| self.block(key.as_str(), branch));
-                Some(Step::new(node.id.0.clone(), kind))
+                Some(Step::new(node.id.0.clone(), kind).with_policy(node.on_error.clone()))
             })
             .collect()
     }
@@ -334,6 +396,7 @@ impl Draft {
                 id: Atom(step.id.clone()),
                 head: Some(head),
                 args,
+                on_error: step.on_error.clone(),
             };
             match self.steps.get_mut(&key) {
                 Some(stored) => {
@@ -385,6 +448,11 @@ fn place<T>(collection: &mut Collection<T>, order: &[Id]) {
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Workbench {
     pub drafts: Collection<Draft>,
+    /// The repeated work the person said no to: the sequence of actions
+    /// ([`crate::proposal::Proposal::key`]), so it is not offered again. It
+    /// says nothing about what the person did, only which proposals were
+    /// turned down.
+    pub ignored: Vec<String>,
 }
 
 /// `name`, numbered past the drafts that already go by it: "New shortcut",
@@ -444,6 +512,11 @@ pub fn upgrade(
 ) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::automerge::{ObjType, ReadDoc as _, Value};
     use ui::tilo_resource::evolution::{collection_items, retype_json, retype_json_items};
+    if from == 2 {
+        // Version 3 adds the proposals the person turned down; a workbench
+        // that predates it has turned none down.
+        return Ok(());
+    }
     if from != 1 {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Shortcuts workbench migration from {from}"
@@ -469,10 +542,66 @@ pub fn upgrade(
 #[resource(
     kind = "shortcuts.workbench",
     label = "Shortcuts",
-    version = 2,
+    version = 3,
     migrate = upgrade
 )]
 impl Workbench {
+    /// Open a shortcut the app proposed, named after the work it noticed, as
+    /// an unsaved draft for review. Never arms a trigger.
+    #[action]
+    pub fn draft_proposal(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The shortcut that does the repeated work, as JSON")] shortcut: serde_json::Value,
+    ) -> Result<(), Refusal> {
+        if shortcut.to_string().len() > 16 * 1024 {
+            return Err(Refusal::new("Shortcut draft is too large"));
+        }
+        let shortcut: Shortcut = serde_json::from_value(shortcut)
+            .map_err(|error| Refusal::new(format!("not a shortcut: {error}")))?;
+        if self
+            .drafts
+            .iter()
+            .any(|(_, draft)| draft.name.trim() == shortcut.name.trim())
+        {
+            return Err(Refusal::new(format!(
+                "A draft called “{}” is already open",
+                shortcut.name.trim()
+            )));
+        }
+        let id = cx.id();
+        let draft_id = format!("s{}", id.as_str().get(..16).unwrap_or(id.as_str()));
+        let program = Program {
+            inputs: shortcut.inputs,
+            steps: shortcut.steps,
+            output: shortcut.output,
+            triggers: Vec::new(),
+            step_timeout_secs: shortcut.step_timeout_secs,
+        };
+        let draft = Draft::new(shortcut.name, draft_id, &program, false, &mut || cx.id());
+        self.drafts.push(id, draft);
+        Ok(())
+    }
+
+    /// Do not offer this repeated work again.
+    #[action]
+    pub fn ignore_proposal(
+        &mut self,
+        #[param("The steps of the proposal, as its key")] key: String,
+    ) {
+        if key.trim().is_empty() {
+            return;
+        }
+        if !self.ignored.contains(&key) {
+            self.ignored.push(key);
+        }
+    }
+
+    /// Offer this repeated work again after all.
+    #[action]
+    pub fn allow_proposal(&mut self, #[param("The proposal's key")] key: String) {
+        self.ignored.retain(|ignored| *ignored != key);
+    }
     /// Start a new shortcut.
     ///
     /// A name another draft already has is numbered ("New shortcut 2"), so
@@ -752,6 +881,31 @@ impl Workbench {
         })
     }
 
+    /// Say what a run does when a step fails: stop (the default), try it
+    /// again a few times, do something else instead, or go on with a value
+    /// of the shortcut's own.
+    #[action]
+    pub fn set_step_policy(
+        &mut self,
+        cx: &mut ActionCx,
+        draft: &Id,
+        #[param("The step's position, like 0 or 2.then.1")] path: String,
+        #[param("What to do when it fails, as JSON; empty stops the run")] policy: String,
+    ) -> Result<(), Refusal> {
+        let policy: StepPolicy = if policy.trim().is_empty() {
+            StepPolicy::Fail
+        } else {
+            serde_json::from_str(&policy)
+                .map_err(|error| Refusal::new(format!("not a policy: {error}")))?
+        };
+        edit_program(self, cx, draft, |program| {
+            step_mut(&mut program.steps, &path)
+                .ok_or_else(|| format!("there is no step `{path}`"))?
+                .on_error = policy;
+            Ok(())
+        })
+    }
+
     /// Declare a value the shortcut is started with.
     #[action]
     pub fn add_input(
@@ -847,8 +1001,31 @@ fn fresh_step_id(steps: &[Step], kind: &StepKind) -> String {
         StepKind::SetVar { .. } => "set".into(),
         StepKind::Ask { .. } => "ask".into(),
         StepKind::Ai { .. } => "ai".into(),
+        StepKind::Task { .. } => "task".into(),
     };
     let base = if base.is_empty() { "step".into() } else { base };
+    unique_step_id(steps, &base, "step")
+}
+
+/// `base`, made readable ("letters, digits, - or _"), and numbered past every
+/// step id `steps` (at any depth) already has; `fallback` when it has nothing
+/// left.
+pub(crate) fn unique_step_id(steps: &[Step], base: &str, fallback: &str) -> String {
+    let base: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let base = if base.is_empty() {
+        fallback.to_owned()
+    } else {
+        base
+    };
     let mut taken = Vec::new();
     collect_ids(steps, &mut taken);
     if !taken.contains(&base) {
@@ -874,7 +1051,8 @@ fn collect_ids(steps: &[Step], out: &mut Vec<String>) {
             StepKind::Invoke { .. }
             | StepKind::SetVar { .. }
             | StepKind::Ask { .. }
-            | StepKind::Ai { .. } => {}
+            | StepKind::Ai { .. }
+            | StepKind::Task { .. } => {}
         }
     }
 }

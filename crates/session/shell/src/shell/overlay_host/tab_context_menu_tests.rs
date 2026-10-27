@@ -18,11 +18,13 @@ use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 /// The window menu of a tabbed window, top to bottom.
-const TABBED_LABELS: [&str; 10] = [
+const TABBED_LABELS: [&str; 12] = [
     "Full screen",
     "Maximize",
     "Move to strip",
     "Move to workspace",
+    "Move to display",
+    "Width",
     "New tab",
     "Split right",
     "Move to new group",
@@ -31,11 +33,13 @@ const TABBED_LABELS: [&str; 10] = [
     "Tell an agent…",
 ];
 /// The window menu of a window of one tab.
-const SINGLE_LABELS: [&str; 7] = [
+const SINGLE_LABELS: [&str; 9] = [
     "Full screen",
     "Maximize",
     "Move to strip",
     "Move to workspace",
+    "Move to display",
+    "Width",
     "New tab",
     "Close window",
     "Tell an agent…",
@@ -1067,6 +1071,69 @@ fn a_search_scoped_to_an_app_shows_only_that_app_until_the_scope_is_cleared() {
                 && row.id == "setting:appearance.high_contrast"
         }),
         "without the scope the system's high contrast switch is found again"
+    );
+}
+
+/// An app's search stands in that app's window, under its bar, where the
+/// app's own palette stands (`ui::action_palette::placement`), and its list
+/// ends inside the window; search over the desktop stands on the display.
+#[test]
+#[serial_test::serial(process_env)]
+fn an_apps_search_stands_in_its_window_under_its_bar() {
+    use crate::shell::chrome_state::SearchScope;
+    let config = tempfile::tempdir().expect("isolated settings");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", config.path());
+    let _settled = ui::motion::testing::settled();
+    let mut h = harness(2);
+    let workspace = h.chrome.borrow().tree().desktop.active;
+    h.chrome
+        .borrow_mut()
+        .focus_tab(workspace, h.strip, h.group, h.tabs[0]);
+    let lay_out = |h: &mut Harness| {
+        for _ in 0..3 {
+            let (taffy, root) = lay_out_host_with_theme(&mut h.host, VW, VH, &h.theme);
+            h.taffy = taffy;
+            h.root = root;
+        }
+    };
+    lay_out(&mut h);
+
+    h.host
+        .open_app_search(h.tabs[0], &ui::search::SearchRequest::this_app());
+    assert_eq!(h.chrome.borrow().search_scope, SearchScope::ActiveApp);
+    lay_out(&mut h);
+    let (window, bar) = {
+        let group = h
+            .host
+            .group_at_for_tests(h.strip, 0)
+            .expect("the fixture's window is live");
+        (group.get_rect(), group.bar_rect())
+    };
+    let searched = Rect::new(window.x0, bar.y1, window.x1, window.y1);
+    assert_eq!(h.host.searched_window(), Some(searched));
+    let (origin, width) = ui::action_palette::placement(searched, &h.theme);
+    let card = h.host.palette_rect_for_tests();
+    assert!(
+        (card.x0 - origin.x).abs() < 0.5
+            && (card.y0 - origin.y).abs() < 0.5
+            && (card.width() - width).abs() < 0.5,
+        "the card {card:?} stands where the app's own palette would: {origin:?}, {width}"
+    );
+    assert!(
+        card.y1 <= searched.y1,
+        "the card {card:?} ends inside the window {searched:?}"
+    );
+
+    // Widened to the desktop, it is the desktop's card again.
+    h.host.open_palette_with_scope(SearchScope::Workspace);
+    lay_out(&mut h);
+    assert_eq!(h.host.searched_window(), None);
+    let frame = h.host.palette_frame(h.theme.text_scale);
+    let card = h.host.palette_rect_for_tests();
+    assert!(
+        (card.x0 - frame.x0).abs() < 0.5 && (card.y0 - frame.y0).abs() < 0.5,
+        "search over the desktop stands on the display: {card:?} at {frame:?}"
     );
 }
 

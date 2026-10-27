@@ -86,7 +86,7 @@ export function createWorkspaceActions({
   const waiting = new Map();
   const inRoom = Boolean(peer?.room && peer.createInvitation);
   const actions = () => [
-    ...(ownHost(peer) || (!peer && machines().length) ? [NEW_WORKSPACE] : []),
+    ...(ownHost(peer) || machines().length ? [NEW_WORKSPACE] : []),
     ...(inRoom ? [publicLink() ? INVITE_PUBLIC : INVITE] : []),
     ...(lettingIn ? [WAITING] : []),
   ];

@@ -261,6 +261,38 @@ pub(crate) fn overlay(
             None => rendered.push((path, source)),
         }
     }
+    refresh_locale_keys(rendered, example)?;
+    Ok(())
+}
+
+/// Rewrite the copied app's `src/locales.rs` so its label keys name the
+/// messages of its own `locales/en-US.ftl`, which is the app's after the
+/// example's files replaced the template's.
+fn refresh_locale_keys(rendered: &mut Vec<(PathBuf, String)>, example: &Example) -> Result<()> {
+    let source = rendered
+        .iter()
+        .find(|(path, _)| path == std::path::Path::new("locales/en-US.ftl"))
+        .map(|(_, source)| source.clone());
+    let Some(source) = source else {
+        return Ok(());
+    };
+    let contract = crate::parse_fluent_catalog(&source)
+        .with_context(|| format!("the {} example's locales/en-US.ftl", example.name))?;
+    let locales = rendered
+        .iter()
+        .find(|(path, _)| path == std::path::Path::new("src/locales.rs"))
+        .and_then(|(_, registry)| crate::parse_locale_registry(registry).ok());
+    let Some(locales) = locales else {
+        return Ok(());
+    };
+    let registry =
+        crate::locale_registry_with_keys(&locales, &crate::catalog_message_ids(&contract));
+    let path = PathBuf::from("src/locales.rs");
+    let registry = crate::rustfmt_source(&registry, &path)?;
+    match rendered.iter_mut().find(|(rendered, _)| *rendered == path) {
+        Some((_, rendered)) => *rendered = registry,
+        None => rendered.push((path, registry)),
+    }
     Ok(())
 }
 

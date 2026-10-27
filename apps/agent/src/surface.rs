@@ -569,6 +569,29 @@ pub enum NoMatch {
     NeedsText(String),
 }
 
+impl NoMatch {
+    /// Why no single action answered the request, as a person reads it: what
+    /// the words did not settle, named where naming it is actionable.
+    #[must_use]
+    pub fn explanation(&self) -> String {
+        match self {
+            Self::Nothing => "No published action carries the words of the request.".to_owned(),
+            Self::Ambiguous(labels) if labels.is_empty() => {
+                "More than one published action answers it.".to_owned()
+            }
+            Self::Ambiguous(labels) => {
+                format!(
+                    "More than one published action answers it: {}.",
+                    labels.join(", ")
+                )
+            }
+            Self::NeedsText(label) => {
+                format!("“{label}” needs the text to work with, and the request quotes none.")
+            }
+        }
+    }
+}
+
 /// The floor: what the agent decides on its own when no model answered.
 ///
 /// A keyword vocabulary cannot enumerate an open-ended action set, so this
@@ -942,6 +965,8 @@ mod tests {
                     resource_kind: "calculator.document".into(),
                     resource_label: "Calculator".into(),
                     action_label: "Clear".into(),
+                    keywords: Vec::new(),
+                    icon: None,
                     description: None,
                     locus: tilo_actions::ExecutionLocus::ClientLocal,
                     kind: tilo_actions::OperationKind::Effect,
@@ -981,6 +1006,8 @@ mod tests {
                     resource_kind: APPLICATION_KIND.into(),
                     resource_label: "Diffmerge".into(),
                     action_label: "Open Diffmerge".into(),
+                    keywords: Vec::new(),
+                    icon: None,
                     description: None,
                     locus: tilo_actions::ExecutionLocus::ServerPreferred,
                     kind: tilo_actions::OperationKind::Effect,
@@ -1173,6 +1200,8 @@ mod tests {
                 resource_kind: format!("{app}.thing"),
                 resource_label: "a thing".to_string(),
                 action_label: label.to_string(),
+                keywords: Vec::new(),
+                icon: None,
                 description: None,
                 locus: tilo_actions::ExecutionLocus::ClientLocal,
                 kind: tilo_actions::OperationKind::Document,

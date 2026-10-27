@@ -30,6 +30,7 @@ impl TabBar {
     /// as. Returns whether the edit is open; a tab drawn as an icon alone
     /// has no title to edit.
     pub fn begin_rename(&mut self, id: u64, name: &str) -> bool {
+        self.touch();
         let Some(tab) = self.tabs.iter().find(|tab| tab.id == id) else {
             return false;
         };
@@ -87,6 +88,7 @@ impl TabBar {
         event: &WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) -> bool {
+        self.touch();
         let Some(rename) = self.rename.as_mut() else {
             return false;
         };
@@ -129,6 +131,7 @@ impl TabBar {
     /// Commit the name being edited, as Enter does. Returns whether a tab
     /// was being named.
     pub fn commit_rename(&mut self) -> bool {
+        self.touch();
         let Some(rename) = self.rename.as_mut() else {
             return false;
         };
@@ -140,6 +143,7 @@ impl TabBar {
     /// Put the title back, ending the edit, as Escape does. Returns whether
     /// a tab was being named.
     pub fn cancel_rename(&mut self) -> bool {
+        self.touch();
         let Some(rename) = self.rename.as_mut() else {
             return false;
         };
@@ -158,6 +162,7 @@ impl TabBar {
     /// from the title it started from is pending for the host, and shown at
     /// once so the pill does not flash the old title for a frame.
     fn settle_rename(&mut self) {
+        self.touch();
         let Some(rename) = self.rename.as_mut() else {
             return;
         };
@@ -182,6 +187,7 @@ impl TabBar {
     /// Stand the field where the tab's title stands now. A tab that went
     /// away, or is now drawn as an icon alone, ends the edit unchanged.
     pub(super) fn lay_out_rename(&mut self) {
+        self.touch();
         let Some(tab) = self.renaming() else {
             return;
         };
@@ -211,6 +217,7 @@ impl TabBar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.touch();
         self.lay_out_rename();
         if let Some(rename) = self.rename.as_mut() {
             rename

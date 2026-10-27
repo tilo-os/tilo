@@ -1,4 +1,5 @@
-//! The list: every issue, sub-issues nested under their parent.
+//! The list: every issue the sidebar's filter shows, sub-issues nested under
+//! their parent.
 //!
 //! Each row reads as the issue's reference and title, with its status
 //! beside it. Choosing a row opens the issue; dragging one onto another
@@ -11,7 +12,7 @@ use ui::prelude::*;
 use ui::reorder::{DropPlacement, ReorderDrop};
 use ui::widget::{TreeClickActivation, TreeRowDecoration, TreeRowTone};
 
-use crate::{Nav, reference, tr};
+use crate::{Filter, Nav, reference, tr};
 
 /// The root node's id; issues take ids from 1, by their place in the
 /// tracker.
@@ -26,16 +27,24 @@ struct Row {
 }
 
 pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
-    let tracker = cx.value(Tracker::clone);
+    let chosen = nav.filter.clone();
+    let me = cx.me().map(str::to_owned);
     let nav = nav.clone();
-    let list = cx.switch(&tracker, move |cx, tracker| tree(cx, tracker, &nav));
+    let list = cx.switch(&chosen, move |cx, chosen| {
+        let filter = chosen.as_deref().and_then(Filter::of).unwrap_or_default();
+        let tracker = cx.value(Tracker::clone);
+        let nav = nav.clone();
+        let me = me.clone();
+        cx.switch(&tracker, move |cx, tracker| {
+            tree(cx, tracker, &nav, &filter, me.as_deref())
+        })
+    });
+    // The list's name is the window's location: the bar says where the
+    // window is, so nothing here titles it a second time.
     Box::new(
         Column::new()
             .with_rhythm(ui::tokens::Rhythm::Group)
             .with_fill_remaining_height()
-            .push(Box::new(
-                Text::new("tasks-place-list").with_role(TextRole::Title),
-            ))
             .push(crate::new_issue(cx, None, "tasks-list-new"))
             .push(list),
     )
@@ -45,9 +54,18 @@ fn label(issue: &Issue) -> String {
     format!("{}  {}", reference(issue.number), issue.title)
 }
 
-fn node(tracker: &Tracker, parent: Option<&Id>, ids: &mut Vec<Id>) -> Vec<TreeNode<Option<Row>>> {
+/// The rows under `parent`, each with its own under it: only what the
+/// filter shows, and the issues above it so the tree stays whole.
+fn node(
+    tracker: &Tracker,
+    parent: Option<&Id>,
+    ids: &mut Vec<Id>,
+    filter: &Filter,
+    me: Option<&str>,
+) -> Vec<TreeNode<Option<Row>>> {
     tracker
         .children(parent)
+        .filter(|(id, issue)| filter.shows(tracker, id, issue, me))
         .map(|(id, issue)| {
             ids.push(id.clone());
             let key = u64::try_from(ids.len()).unwrap_or(u64::MAX);
@@ -56,7 +74,7 @@ fn node(tracker: &Tracker, parent: Option<&Id>, ids: &mut Vec<Id>) -> Vec<TreeNo
                 status: issue.status,
                 progress: tracker.progress(id),
             });
-            let children = node(tracker, Some(id), ids);
+            let children = node(tracker, Some(id), ids, filter, me);
             if children.is_empty() {
                 TreeNode::leaf(key, label(issue), data)
             } else {
@@ -66,7 +84,13 @@ fn node(tracker: &Tracker, parent: Option<&Id>, ids: &mut Vec<Id>) -> Vec<TreeNo
         .collect()
 }
 
-fn tree(cx: &ViewCx<Tracker>, tracker: &Tracker, nav: &Nav) -> Element {
+fn tree(
+    cx: &ViewCx<Tracker>,
+    tracker: &Tracker,
+    nav: &Nav,
+    filter: &Filter,
+    me: Option<&str>,
+) -> Element {
     if tracker.issues.is_empty() {
         return Box::new(
             EmptyState::new("tasks-empty-title")
@@ -75,7 +99,15 @@ fn tree(cx: &ViewCx<Tracker>, tracker: &Tracker, nav: &Nav) -> Element {
         );
     }
     let mut ids = Vec::new();
-    let children = node(tracker, None, &mut ids);
+    let children = node(tracker, None, &mut ids, filter, me);
+    if children.is_empty() {
+        // The tracker holds issues; this filter shows none of them.
+        return Box::new(
+            EmptyState::new("tasks-empty-filter-title")
+                .with_message("tasks-empty-filter-message")
+                .with_id("tasks-list-filter-empty"),
+        );
+    }
     let expanded: Vec<u64> = (ROOT..=u64::try_from(ids.len()).unwrap_or(u64::MAX)).collect();
     let ids = Rc::new(ids);
     let issue_of = {

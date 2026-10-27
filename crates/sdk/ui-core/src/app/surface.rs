@@ -888,6 +888,15 @@ impl App {
         self.needs_sync || self.layout.layout_dirty || self.layout.structure_dirty
     }
 
+    /// Whether the app's model woke the window for a frame it has not run
+    /// yet: background work that ended, or a read that goes on frame by
+    /// frame. A window that rests has none.
+    pub fn wake_pending(&self) -> bool {
+        self.wake_scope
+            .as_ref()
+            .is_some_and(crate::wake::WakeScope::is_pending)
+    }
+
     /// The modifier keys held, as the surface reports them.
     pub fn set_surface_modifiers(&mut self, modifiers: winit::event::Modifiers) {
         self.input.modifiers = modifiers;
@@ -924,6 +933,14 @@ impl App {
         let record_changed = self.pump_hosted_model_record_changed();
         #[cfg(test)]
         drop(pump_probe);
+        // The model's pass took in what landed from elsewhere; the frame
+        // builds, lays out and draws that state. Work landing meanwhile is
+        // the next frame's, which its wake asks for.
+        #[allow(
+            unused_variables,
+            reason = "a build without the window's own runner lays out in hosted frames only, and this guard is what the hosted frame's passes read"
+        )]
+        let laying_out = crate::motion::laying_out_frame();
         if self.layout.root_node.is_none() {
             self.init_layout();
         }
@@ -1050,6 +1067,7 @@ impl App {
         );
         #[cfg(test)]
         drop(draw_probe);
+        drop(laying_out);
         // The surface a handled input left for this frame, now that its sync
         // ran and the frame built the tree, as a window of its own pays it.
         #[cfg(test)]

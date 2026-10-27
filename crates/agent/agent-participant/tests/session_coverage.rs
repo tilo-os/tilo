@@ -2211,6 +2211,25 @@ impl RelayRoom {
 
     /// [`Self::start`], Ana granted `apps`.
     async fn granting(url: &str, apps: &[&str]) -> Self {
+        Box::pin(Self::granting_with(
+            url,
+            apps,
+            tilo_content::ContentStore::memory(),
+        ))
+        .await
+    }
+
+    /// [`Self::granting`], Ana keeping the room's content in `content`.
+    async fn granting_with(url: &str, apps: &[&str], content: tilo_content::ContentStore) -> Self {
+        Box::pin(Self::planned_by(endpoint_planner(url), apps, content)).await
+    }
+
+    /// [`Self::granting_with`], Ana planning with `planner`.
+    async fn planned_by(
+        planner: Box<dyn tilo_agent_participant::Planner>,
+        apps: &[&str],
+        content: tilo_content::ContentStore,
+    ) -> Self {
         let (ada, _) = UserIdentity::generate("Ada", 1);
         let host_device = enrol(&ada, "home-server", DeviceCapabilities::host());
         let state = tempfile::tempdir().unwrap();
@@ -2234,7 +2253,7 @@ impl RelayRoom {
             &ada,
             (&host, &host_device),
             apps,
-            (endpoint_planner(url), tilo_content::ContentStore::memory()),
+            (planner, content),
         )
         .await;
         let mut rae = planning_agent_labelled(
@@ -2813,3 +2832,11 @@ async fn a_plan_without_obligations_finishes_without_a_reminder() {
 /// Coordinated tasks: an agent per item of the checklist.
 #[path = "session_coverage/decompose.rs"]
 mod decompose;
+
+/// The room's pictures, read as content.
+#[path = "session_coverage/pictures.rs"]
+mod pictures;
+
+/// Plans told only the relevant apps' operations.
+#[path = "session_coverage/catalog.rs"]
+mod catalog;

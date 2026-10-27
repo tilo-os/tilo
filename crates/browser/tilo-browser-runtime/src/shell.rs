@@ -614,6 +614,9 @@ pub(crate) struct BrowserShell {
     /// them.
     hints: tilo_desktop::control_hints::ControlHints,
     hints_frame: tilo_desktop::control_hints::HintFrame,
+    /// How the person points, as the page last learned it: hints name what
+    /// a finger does once they touch the screen.
+    interaction: ui::InteractionEnvironment,
     /// What the hints painted in the frame before the last one drawn: a
     /// moving hint damages only there and where it is now.
     hints_painted_before: Option<Rect>,
@@ -630,6 +633,39 @@ pub struct ChromeSources {
 }
 
 impl BrowserShell {
+    /// The open People popover takes the keyboard and the pointer over it; a
+    /// press elsewhere closes it, and the bar's avatars toggle it. Answers
+    /// whether the popover took the event.
+    fn people_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        if !(self.people_open || self.people.wants_pointer_capture()) {
+            return false;
+        }
+        let on_bar = self
+            .cursor
+            .is_some_and(|point| point.y < f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX));
+        let hit = self
+            .people
+            .handle_event(event, ctx, self.people_open, self.cursor);
+        if let Some(hit) = hit {
+            if !(hit == CollaboratorsHit::Dismiss && on_bar) {
+                self.apply_people_hit(hit);
+            }
+            *ctx.handled = !(hit == CollaboratorsHit::Dismiss && on_bar);
+        }
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && self.people_open
+            && !*ctx.handled
+            && key.state == ElementState::Pressed
+            && let Some(hit) = self
+                .people
+                .key(&key.logical_key, ctx.modifiers.state().shift_key())
+        {
+            self.apply_people_hit(hit);
+            *ctx.handled = true;
+        }
+        *ctx.handled
+    }
+
     /// Whether anything of the page besides a hint changed since it was
     /// drawn: the clock's minute, a menu or picker in motion, or a child.
     fn page_needs_redraw(&self) -> bool {
@@ -733,6 +769,7 @@ impl BrowserShell {
             picker: crate::feedback_pick::PagePicker::default(),
             hints,
             hints_frame: tilo_desktop::control_hints::HintFrame::default(),
+            interaction: ui::InteractionEnvironment::default(),
             hints_painted_before: None,
         }
     }
@@ -1001,14 +1038,27 @@ impl BrowserShell {
         }
     }
 
+    /// The window in front, as a report about it names it: its app and
+    /// the record it shows, which a recording of it records.
+    fn front(&self) -> tilo_desktop::feedback::Focused {
+        self.handle.read(|tree| {
+            let focused = tilo_desktop::feedback::focused(tree, |app| {
+                crate::desktop::known_application(app).map(str::to_owned)
+            });
+            match focused {
+                tilo_desktop::feedback::Focused::App(mut subject) => {
+                    subject.record = tilo_desktop::feedback::focused_tab(tree)
+                        .and_then(|tab| self.chrome.shared.shown_record(tree, tab));
+                    tilo_desktop::feedback::Focused::App(subject)
+                }
+                other => other,
+            }
+        })
+    }
+
     /// Feedback about the window in front, in the one private composer.
     fn open_feedback(&self) {
-        let focused = self.handle.read(|tree| {
-            tilo_desktop::feedback::focused(tree, |app| {
-                crate::desktop::known_application(app).map(str::to_owned)
-            })
-        });
-        let subject = match focused {
+        let subject = match self.front() {
             // Asked again from the composer: it keeps its subject.
             tilo_desktop::feedback::Focused::Composer => None,
             tilo_desktop::feedback::Focused::Nothing => Some(None),
@@ -1094,13 +1144,18 @@ impl BrowserShell {
         let Some(report) = crate::feedback_crops::take_ready() else {
             return false;
         };
+        let subject = tilo_desktop::feedback::picked_subject(&report.draft, self.front());
         let started = self
             .chrome
             .shared
             .feedback
             .borrow()
             .as_ref()
-            .map(|feedback| feedback.services().begin_report(report));
+            .map(|feedback| {
+                feedback
+                    .about(subject)
+                    .and_then(|()| feedback.services().begin_report(report))
+            });
         match started {
             Some(Ok(())) => match self.handle.read(tilo_desktop::feedback::composer_tab) {
                 Some((.., tab)) => {
@@ -2126,7 +2181,14 @@ impl BrowserShell {
             LaunchpadAction::Invite => self.invite(),
             LaunchpadAction::Activity => self.activity(),
             other => {
-                if let Some((app, _)) = other.app_target() {
+                // A card that names an action of its app does it in one
+                // step, as on a native desktop: the session opens the app
+                // and hands it the action.
+                if let Some(target) = other.app_action()
+                    && crate::desktop::known_application(target.app_id).is_some()
+                {
+                    self.chrome.shared.ask_app_action(target);
+                } else if let Some((app, _)) = other.app_target() {
                     self.launch(app);
                 }
             }
@@ -2434,35 +2496,8 @@ impl Widget for BrowserShell {
             return;
         }
         self.hints.heard(event, ui::time::now());
-        // The open popover takes the keyboard and the pointer over it; a
-        // press elsewhere closes it, and the bar's avatars toggle it.
-        if self.people_open || self.people.wants_pointer_capture() {
-            let on_bar = self
-                .cursor
-                .is_some_and(|point| point.y < f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX));
-            let hit = self
-                .people
-                .handle_event(event, ctx, self.people_open, self.cursor);
-            if let Some(hit) = hit {
-                if !(hit == CollaboratorsHit::Dismiss && on_bar) {
-                    self.apply_people_hit(hit);
-                }
-                *ctx.handled = !(hit == CollaboratorsHit::Dismiss && on_bar);
-            }
-            if let WindowEvent::KeyboardInput { event: key, .. } = event
-                && self.people_open
-                && !*ctx.handled
-                && key.state == ElementState::Pressed
-                && let Some(hit) = self
-                    .people
-                    .key(&key.logical_key, ctx.modifiers.state().shift_key())
-            {
-                self.apply_people_hit(hit);
-                *ctx.handled = true;
-            }
-            if *ctx.handled {
-                return;
-            }
+        if self.people_event(event, ctx) {
+            return;
         }
         if self.pinned_people_event(event, ctx) {
             return;
@@ -2569,6 +2604,13 @@ impl Widget for BrowserShell {
             request.visit(child)?;
         }
         Ok(())
+    }
+
+    fn set_interaction_environment(&mut self, environment: ui::InteractionEnvironment) {
+        self.interaction = environment;
+        for child in self.children_mut() {
+            child.set_interaction_environment(environment);
+        }
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {

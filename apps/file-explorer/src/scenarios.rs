@@ -27,6 +27,7 @@ const ALL_SCENARIOS: &[&str] = &[
     "archive-file-menu",
     "extract-progress",
     "context-menu",
+    "deep-folder",
     "dropmove",
     "drives",
     "empty",
@@ -70,6 +71,7 @@ const PORTABLE_SCENARIOS: &[&str] = &[
     "archive-file-menu",
     "extract-progress",
     "context-menu",
+    "deep-folder",
     "dropmove",
     "drives",
     "empty",
@@ -160,6 +162,9 @@ fn write_scene(root: &Path, scenario: Option<&str>) -> std::io::Result<Scene> {
         }
         // A standard place with nothing in it yet.
         Some("empty") => (home.join("Videos"), Vec::new()),
+        // A folder many levels down: the bar's location has more levels
+        // than a narrow window shows.
+        Some("deep-folder") => (write_deep_folder(&home)?, Vec::new()),
         _ => (home.clone(), Vec::new()),
     };
     Ok(Scene {
@@ -248,6 +253,33 @@ fn write_home(home: &Path) -> std::io::Result<()> {
         make_dir(&home.join(folder))?;
     }
     std::fs::File::open(home)?.set_modified(scene_time())
+}
+
+/// A design folder five levels under the home, with a few files in it.
+fn write_deep_folder(home: &Path) -> std::io::Result<PathBuf> {
+    let folder = home
+        .join("Documents")
+        .join("Projects")
+        .join("Tilo")
+        .join("designs")
+        .join("app-language");
+    std::fs::create_dir_all(&folder)?;
+    for (name, body) in [
+        ("Grammar.md", b"# Grammar\n".as_slice()),
+        ("Open questions.md", b"# Open questions\n"),
+        ("Examples.txt", b"counter, checklist, notes\n"),
+    ] {
+        write_file(&folder.join(name), body)?;
+    }
+    let mut level = folder.clone();
+    while level != *home {
+        make_dir(&level)?;
+        match level.parent() {
+            Some(parent) => level = parent.to_path_buf(),
+            None => break,
+        }
+    }
+    Ok(folder)
 }
 
 /// A workspace whose files carry the three hydration states the Tilo

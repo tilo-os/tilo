@@ -123,7 +123,7 @@ mod tests {
         forged: u8,
     }
     impl HistoryHost for Host {
-        fn read(&self, _: Route, _: usize) -> HistoryFuture {
+        fn read(&self, _: Route, _: Option<crate::HistoryCursor>, _: usize) -> HistoryFuture {
             Box::pin(std::future::ready(Err(HistoryError::Unavailable)))
         }
     }

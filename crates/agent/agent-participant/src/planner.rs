@@ -508,6 +508,11 @@ pub struct PlanContext {
     /// ([`rendered_picture`]), oldest first: a re-plan's model that sees is
     /// shown the newest with its first turn.
     pub pictures: Vec<String>,
+    /// The content addresses of the pictures the task's steps read as
+    /// content since its last plan ([`crate::vision::read_picture`]),
+    /// oldest first: a re-plan's model that sees is shown them with its
+    /// first turn, the room's own only where [`Self::room_pictures`] allows.
+    pub read_pictures: Vec<String>,
     /// The content addresses apps rendered or made for this task (its
     /// steps' looks and exports): pictures shown to a model that sees,
     /// whatever [`Self::room_pictures`] says.
@@ -528,6 +533,14 @@ pub struct PlanContext {
     pub obligations: String,
     /// Which part of a coordinated task this plan is.
     pub role: Role,
+    /// How much of what the apps can do the plan is told: in
+    /// [`crate::profile::Catalog::Relevant`], [`Self::reference`] holds every
+    /// granted app, and only those the request is about are described in
+    /// full.
+    pub catalog: crate::profile::Catalog,
+    /// What each granted app is called (Sheets, PDF Viewer), by app id: a
+    /// request names an app by it.
+    pub app_names: Vec<(String, String)>,
 }
 
 impl PlanContext {
@@ -810,6 +823,25 @@ pub trait Planner: Send {
     fn decomposes(&self) -> bool {
         false
     }
+
+    /// Whether the model this planner plans with is shown pictures
+    /// ([`crate::PlanModel::sees`]): a step that reads a picture is refused
+    /// where it is not. A planner that does not say, is not.
+    fn sees(&self) -> bool {
+        false
+    }
+
+    /// How much of what the apps can do this planner's plans are told
+    /// ([`crate::profile::CATALOG_ENV`]). A planner that does not say, all.
+    fn catalog(&self) -> crate::profile::Catalog {
+        crate::profile::Catalog::All
+    }
+
+    /// What the plan this planner last made was told of the apps and how it
+    /// used it, taken once; `None` for a plan no model made.
+    fn take_catalog(&mut self) -> Option<crate::model::CatalogUse> {
+        None
+    }
 }
 
 /// Reads the steps from the task: one JSON object or an array of them.
@@ -1065,6 +1097,8 @@ mod tests {
             resource_kind: "document".into(),
             resource_label: "Document".into(),
             action_label: "Place image".into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: tilo_actions::ExecutionLocus::ClientLocal,
             kind: tilo_actions::OperationKind::Document,

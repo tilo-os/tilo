@@ -563,7 +563,7 @@ mod tests {
             .unwrap()
             .sign(b"proof")
             .unwrap();
-        prepared.update_profile("ada", [4, 5, 6]).unwrap();
+        prepared.update_profile("Ada", [4, 5, 6]).unwrap();
         let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![15, 80, 210, 255]).unwrap();
         prepared.update_photo(Some(photo.clone())).unwrap();
         assert_eq!(
@@ -601,7 +601,7 @@ mod tests {
         )
         .unwrap();
         let signer = runtime_identity::load_from_path(imported).unwrap();
-        assert_eq!(signer.display_name(), "ada");
+        assert_eq!(signer.display_name(), "Ada");
         assert_eq!(signer.avatar_color(), [4, 5, 6]);
         assert_eq!(signer.profile_photo(), Some(&photo));
         assert_eq!(signer.sign(b"proof").unwrap(), before);

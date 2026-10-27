@@ -15,10 +15,12 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::rc::Rc;
 
 use ui::LocalState;
 use ui::tokens::Spacing;
+use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::resizable_split::SplitOrientation;
 use ui::widget::{
     AppModel, Column, Dropdown, Element, ModelPath, NavShell, ResizableSplit, Spacer, Stack, Widget,
@@ -41,8 +43,9 @@ use ui::framework::{Actions, Dispatcher, EffectAnswer, EffectCx, Effected, Submi
 use ui::secrets::SecretStore;
 const CREDENTIAL: &str = "request-credential";
 const SECRET_VARIABLE: &str = "variable-value";
+use crate::palette::short_path;
 use crate::response;
-use crate::sidebar::{self, SidebarView};
+use crate::sidebar::{self, SidebarView, parse_history, parse_request};
 use crate::vars;
 use ui::widget::{Slot, SlotHandle};
 
@@ -187,6 +190,13 @@ struct OpenForm {
     fields: Fields,
 }
 
+/// The sidebar row whose actions are open, the menu that offers them and
+/// what each row of it does.
+struct OpenMenu {
+    menu: ContextMenu,
+    commands: Vec<Cmd>,
+}
+
 /// The model half of a freshly built [`ApiTesterApp`].
 struct BuiltModel {
     collections: Vec<Collection>,
@@ -232,11 +242,16 @@ pub struct ApiTesterApp {
     response_view: ResponseView,
     selected: Option<(usize, usize)>,
     form: Option<OpenForm>,
+    /// The open row menu, if one is: it belongs to the window, not to a row.
+    menu: Option<OpenMenu>,
     blanks: BlankRows,
     table: Option<(Table, KvQueue)>,
     stale: Stale,
     /// A shell state to take at the next paint, for `--shots`.
     pose: Option<Pose>,
+    /// The sidebar row menu to open at the next paint, once the window is
+    /// laid out, for `--shots`.
+    menu_pending: bool,
     slots: Slots,
     /// The active environment's variables, for the URL's variable hint.
     env_vars: Rc<RefCell<HashMap<String, String>>>,
@@ -354,10 +369,12 @@ impl ApiTesterApp {
             response_view: ResponseView::Pretty,
             selected,
             form: None,
+            menu: None,
             blanks,
             table: builtin.table,
             stale: Stale::default(),
             pose: None,
+            menu_pending: false,
             slots: Slots {
                 sidebar: sidebar_lists,
                 url_bar,
@@ -556,6 +573,12 @@ impl ApiTesterApp {
                 self.pose = Some(Pose::SidebarOpen);
                 true
             }
+            "history-actions" => {
+                // The menu of a sent request: replayed, kept as a request,
+                // or forgotten (`APP-api-tester-04`).
+                self.menu_pending = true;
+                true
+            }
             "sidebar-hidden" => {
                 self.pose = Some(Pose::SidebarClosed);
                 true
@@ -596,6 +619,7 @@ impl ApiTesterApp {
         "response-raw",
         "response-headers",
         "drawer",
+        "history-actions",
         "sidebar-hidden",
         "form-new-collection",
         "form-save-request",
@@ -883,6 +907,9 @@ impl ApiTesterApp {
                 Cmd::SetAuthKind(i) => self.set_auth_kind(i),
                 Cmd::LoadRequest(ci, ri) => self.load_request(ci, ri),
                 Cmd::ReplayHistory(hi) => self.replay_history(hi),
+                Cmd::SaveHistory(hi) => self.save_history(hi),
+                Cmd::DeleteHistory(hi) => self.delete_history(hi),
+                Cmd::RowMenu { id, lift, at } => self.open_row_menu(&id, lift, at),
                 Cmd::Edit { table, row, edit } => self.edit_rows(table, &row, &edit),
                 Cmd::PickEnvironment(choice) => self.pick_environment(&choice),
                 Cmd::OpenForm(mode, target) => self.open_form(mode, target),
@@ -895,19 +922,31 @@ impl ApiTesterApp {
         true
     }
 
+    /// Keep the sent request `target` names as a saved one under `name`.
+    fn submit_save_sent(&mut self, target: FormTarget, name: String) {
+        if let (Some(collection), Some(sent)) = (target.collection, target.sent) {
+            let name = (!name.is_empty()).then_some(name);
+            self.submit(Workspace::SAVE_SENT.with(verbs::SaveSent {
+                collection,
+                sent,
+                name,
+            }));
+            self.stale.sidebar = true;
+        }
+    }
+
     fn replay_history(&mut self, index: usize) {
         if let Some(entry) = self.history.get(index).cloned() {
             // The same verb the click runs: the entry's whole request comes
             // back through the record, so a collaborator sees the builder
             // change too. The local copy only saves a frame.
-            self.request = match entry.replay.as_ref() {
-                Some(replay) => replay.to_request(),
-                None => {
-                    let mut request = crate::seed::blank_request();
-                    request.method = entry.method;
-                    request.url = entry.url;
-                    request
-                }
+            self.request = if let Some(replay) = entry.replay.as_ref() {
+                replay.to_request()
+            } else {
+                let mut request = crate::seed::blank_request();
+                request.method = entry.method;
+                request.url = entry.url;
+                request
             };
             self.selected = None;
             self.error = None;
@@ -917,6 +956,124 @@ impl ApiTesterApp {
             self.stale.header = true;
             self.stale.sidebar = true;
             self.dismiss_drawer();
+        }
+    }
+
+    /// Keep the sent request at `index` as a saved one: the sheet takes its
+    /// name and the collection it goes in. The builder keeps what is in it.
+    fn save_history(&mut self, index: usize) {
+        let Some(entry) = self.history.get(index) else {
+            return;
+        };
+        let route = entry.url.split(['?', '#']).next().unwrap_or_default();
+        let suggested = format!("{} {}", entry.method.as_str(), short_path(route));
+        let target = FormTarget {
+            sent: Some(entry.id.clone()),
+            ..self.resolve_target(FormTarget::default())
+        };
+        self.open_form_with(FormMode::SaveSent, target, &suggested);
+    }
+
+    /// Forget the sent request at `index`. Undo takes it back, so the window
+    /// asks nothing first.
+    fn delete_history(&mut self, index: usize) {
+        if let Some(entry) = self.history.get(index) {
+            self.submit(Workspace::DELETE_SENT.with(verbs::DeleteSent {
+                sent: entry.id.clone(),
+            }));
+        }
+        self.dirty = true;
+    }
+
+    /// The actions of the sidebar row `id`, under its `lift`, at `at`: a
+    /// saved request is renamed or deleted, a sent one is replayed, kept as a
+    /// request, or forgotten (`APP-api-tester-04`).
+    fn open_row_menu(&mut self, id: &str, lift: vello::kurbo::Rect, at: vello::kurbo::Point) {
+        let mut menu = ContextMenu::new();
+        let mut commands: Vec<Cmd> = Vec::new();
+        let push = |menu: &mut ContextMenu, commands: &mut Vec<Cmd>, item: MenuItem, cmd: Cmd| {
+            menu.push(item);
+            commands.push(cmd);
+        };
+        if let Some((ci, ri)) = parse_request(id) {
+            let target = FormTarget {
+                collection: self
+                    .collections
+                    .get(ci)
+                    .map(|collection| collection.id.clone()),
+                sent: None,
+                request: self
+                    .collections
+                    .get(ci)
+                    .and_then(|collection| collection.requests.get(ri))
+                    .map(|request| request.id.clone()),
+            };
+            push(
+                &mut menu,
+                &mut commands,
+                MenuItem::action("Rename request", || {}).with_icon(ui::icons::Icon::Pencil),
+                Cmd::OpenForm(FormMode::RenameRequest, target.clone()),
+            );
+            push(
+                &mut menu,
+                &mut commands,
+                MenuItem::destructive_action("Delete request", || {})
+                    .with_icon(ui::icons::Icon::Trash),
+                Cmd::DeleteRequest(target),
+            );
+        } else if let Some(index) = parse_history(id) {
+            push(
+                &mut menu,
+                &mut commands,
+                MenuItem::action("Replay request", || {}).with_icon(ui::icons::Icon::RotateCcw),
+                Cmd::ReplayHistory(index),
+            );
+            push(
+                &mut menu,
+                &mut commands,
+                MenuItem::action("Save as request…", || {}).with_icon(ui::icons::Icon::Bookmark),
+                Cmd::SaveHistory(index),
+            );
+            push(
+                &mut menu,
+                &mut commands,
+                MenuItem::destructive_action("Delete from history", || {})
+                    .with_icon(ui::icons::Icon::Trash),
+                Cmd::DeleteHistory(index),
+            );
+        }
+        if commands.is_empty() {
+            return;
+        }
+        menu.anchor_row(lift);
+        let bounds = ui::widget::Widget::get_rect(&self.nav);
+        menu.open_anchored(vello::kurbo::Rect::from_points(at, at), bounds);
+        self.menu = Some(OpenMenu { menu, commands });
+        self.dirty = true;
+    }
+
+    /// Route an event to the open menu, and apply what it chose.
+    fn route_menu_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if matches!(event, WindowEvent::Focused(false)) {
+            self.menu = None;
+            self.dirty = true;
+            return;
+        }
+        let Some(open) = self.menu.as_mut() else {
+            return;
+        };
+        open.menu.handle_event(event, ctx);
+        let chosen = open
+            .menu
+            .take_selection()
+            .and_then(|index| open.commands.get(index).cloned());
+        let closed = !open.menu.is_open();
+        if closed {
+            self.menu = None;
+            self.dirty = true;
+        }
+        if let Some(command) = chosen {
+            self.sink.borrow_mut().push(command);
         }
     }
 
@@ -1012,6 +1169,7 @@ impl ApiTesterApp {
                 .collection
                 .or_else(|| selected.as_ref().map(|(collection, _)| collection.clone()))
                 .or_else(|| self.current_collection_id()),
+            sent: target.sent,
             request: target
                 .request
                 .or_else(|| selected.map(|(_, request)| request)),
@@ -1033,6 +1191,16 @@ impl ApiTesterApp {
 
     fn open_form(&mut self, mode: FormMode, target: FormTarget) {
         let target = self.resolve_target(target);
+        let suggested = match mode {
+            FormMode::SaveRequest => self.request.name.clone(),
+            _ => String::new(),
+        };
+        self.open_form_with(mode, target, &suggested);
+    }
+
+    /// [`Self::open_form`] with the name its field starts from, for a row
+    /// whose subject the window already knows.
+    fn open_form_with(&mut self, mode: FormMode, target: FormTarget, suggested: &str) {
         let initial = match mode {
             FormMode::RenameCollection => target
                 .collection
@@ -1045,7 +1213,7 @@ impl ApiTesterApp {
             FormMode::RenameEnvironment => self
                 .active_environment()
                 .map_or(String::new(), |e| e.name.clone()),
-            FormMode::SaveRequest => self.request.name.clone(),
+            FormMode::SaveRequest | FormMode::SaveSent => suggested.to_owned(),
             FormMode::NewCollection
             | FormMode::NewEnvironment
             | FormMode::NewVariable
@@ -1163,6 +1331,7 @@ impl ApiTesterApp {
                     self.stale.sidebar = true;
                 }
             }
+            FormMode::SaveSent => self.submit_save_sent(target, name),
             FormMode::RenameRequest => {
                 if let (Some(collection), Some(request)) = (target.collection, target.request)
                     && !name.is_empty()
@@ -1353,6 +1522,28 @@ impl ui::widget::Decorator for ApiTesterApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // An open row menu takes the event first: it is over the window, and
+        // the row it belongs to is still there under it.
+        let menu_open = self.menu.is_some();
+        let replaces = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Right,
+                ..
+            }
+        );
+        if menu_open && !replaces {
+            self.route_menu_event(event, ctx);
+            if !matches!(event, WindowEvent::CursorMoved { .. }) {
+                *ctx.handled = true;
+            }
+            return;
+        }
+        if menu_open {
+            self.menu = None;
+            self.dirty = true;
+        }
         self.nav.handle_event(event, ctx);
     }
 
@@ -1364,6 +1555,13 @@ impl ui::widget::Decorator for ApiTesterApp {
         theme: &ui::theme::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
+        if std::mem::take(&mut self.menu_pending) && !self.history.is_empty() {
+            // Staged after layout: the menu opens under the newest sent
+            // request, where its row is.
+            let window = Widget::get_rect(&self.nav);
+            let at = vello::kurbo::Point::new(window.x0 + 60.0, (window.y1 - 120.0).max(window.y0));
+            self.open_row_menu("history:0", vello::kurbo::Rect::ZERO, at);
+        }
         match self.pose.take() {
             Some(Pose::SidebarOpen) => {
                 self.nav.open_sidebar();
@@ -1377,10 +1575,61 @@ impl ui::widget::Decorator for ApiTesterApp {
         }
         self.nav
             .draw(scene, transform, text_renderer, theme, presence);
+        if let Some(open) = self.menu.as_mut() {
+            open.menu.layout_within(text_renderer, theme);
+            Widget::draw_overlay(
+                &mut open.menu,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+        }
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.sending || self.pose.is_some() || self.nav.needs_redraw()
+        self.dirty
+            || self.sending
+            || self.pose.is_some()
+            || self.menu_pending
+            || self.nav.needs_redraw()
+    }
+
+    /// What the window says to assistive technology: the shell's own tree,
+    /// and the open row menu over it. The menu's rows are read out where they
+    /// are; the arrows and Enter pick one, as they do for a pointer.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut node = self.nav.accessibility()?;
+        if let Some(open) = &self.menu {
+            let items = open
+                .commands
+                .iter()
+                .enumerate()
+                .filter_map(|(index, _)| {
+                    let item = open.menu.items().get(index)?;
+                    Some(
+                        AccessNode::new(Role::MenuItem)
+                            .with_name(item.label().unwrap_or_default().to_string())
+                            .with_hashed_key(format!("api.row-menu:{index}").as_str())
+                            .with_bounds(open.menu.item_rect(index).unwrap_or_default())
+                            .with_state(
+                                AccessState::new()
+                                    .focused(open.menu.hovered() == Some(index))
+                                    .disabled(!item.is_enabled()),
+                            ),
+                    )
+                })
+                .collect();
+            node.children.push(
+                AccessNode::new(Role::Menu)
+                    .with_name("Row actions")
+                    .with_hashed_key("api.row-menu")
+                    .with_children(items),
+            );
+        }
+        Some(node)
     }
 
     fn mark_drawn(&mut self) {
@@ -1503,6 +1752,41 @@ impl ApiTesterApp {
         ))
     }
 
+    /// Seal `secret` as the open request's credential, keeping only its
+    /// reference in the document.
+    fn set_credential(&self, secret: String, cx: &mut EffectCx<Workspace, Self>) -> EffectAnswer {
+        let id = self.request.id.clone();
+        let before = self.workspace.request.auth.clone();
+        let auth = self.request.auth.with_secret(&secret);
+        let secrets = self.secrets.clone().ok_or("this window keeps no secrets")?;
+        // Build storage futures on their owning runtime thread: browser
+        // storage handles must never move between threads.
+        let stored = ui::rt::app().spawn_pinned(move || async move {
+            crate::credentials::seal_async(&auth, &secrets)
+                .await
+                .map_err(str::to_owned)
+        });
+        Ok(cx.spawn(
+            move |_| async move {
+                stored
+                    .await
+                    .map_err(|_| "credential storage task failed".to_string())?
+            },
+            move |app: &mut Self, sealed, cx| {
+                let Auth::SecretRef { id: reference, .. } = sealed? else {
+                    return Err("choose an authentication scheme first".into());
+                };
+                if app.request.id != id || app.workspace.request.auth != before {
+                    return Err("request changed while saving authentication; try again".into());
+                }
+                cx.submit(Workspace::paths().request.auth.reference.replace(reference));
+                app.request.auth = app.request.auth.with_secret(&secret);
+                app.dirty = true;
+                Ok(Effected::done())
+            },
+        ))
+    }
+
     pub(crate) fn answer_effect(
         &mut self,
         effect: ApiTesterEffect,
@@ -1552,40 +1836,7 @@ impl ApiTesterApp {
                 };
                 copied.map(|()| Effected::done())
             }
-            ApiTesterEffect::SetCredential { secret } => {
-                let id = self.request.id.clone();
-                let before = self.workspace.request.auth.clone();
-                let auth = self.request.auth.with_secret(&secret);
-                let secrets = self.secrets.clone().ok_or("this window keeps no secrets")?;
-                // Build storage futures on their owning runtime thread: browser
-                // storage handles must never move between threads.
-                let stored = ui::rt::app().spawn_pinned(move || async move {
-                    crate::credentials::seal_async(&auth, &secrets)
-                        .await
-                        .map_err(str::to_owned)
-                });
-                Ok(cx.spawn(
-                    move |_| async move {
-                        stored
-                            .await
-                            .map_err(|_| "credential storage task failed".to_string())?
-                    },
-                    move |app: &mut Self, sealed, cx| {
-                        let Auth::SecretRef { id: reference, .. } = sealed? else {
-                            return Err("choose an authentication scheme first".into());
-                        };
-                        if app.request.id != id || app.workspace.request.auth != before {
-                            return Err(
-                                "request changed while saving authentication; try again".into()
-                            );
-                        }
-                        cx.submit(Workspace::paths().request.auth.reference.replace(reference));
-                        app.request.auth = app.request.auth.with_secret(&secret);
-                        app.dirty = true;
-                        Ok(Effected::done())
-                    },
-                ))
-            }
+            ApiTesterEffect::SetCredential { secret } => self.set_credential(secret, cx),
             ApiTesterEffect::SetSecretValue { variable, value } => {
                 let secret = self
                     .environments
@@ -1637,27 +1888,18 @@ impl ApiTesterApp {
     /// Copy the response body exactly as the pane shows it — the text a bug
     /// report or a colleague needs.
     fn copy_body(&mut self) -> Result<(), String> {
-        match &self.response {
-            Some(response) => self.copy_to_clipboard(response.body.clone(), "api-copied-body"),
-            None => {
-                let reason = "There is no response to copy yet.";
-                self.error = Some(reason.to_owned());
-                self.dirty = true;
-                self.stale.response = true;
-                Err(reason.to_owned())
-            }
-        }
+        let Some(response) = &self.response else {
+            return self.no_response_to_copy();
+        };
+        let body = response.body.clone();
+        self.copy_to_clipboard(&body, "api-copied-body")
     }
 
     /// Copy every response header, one `Name: value` per line, so a token in
     /// one of them can be taken without retyping it.
     fn copy_headers(&mut self) -> Result<(), String> {
         let Some(response) = &self.response else {
-            let reason = "There is no response to copy yet.";
-            self.error = Some(reason.to_owned());
-            self.dirty = true;
-            self.stale.response = true;
-            return Err(reason.to_owned());
+            return self.no_response_to_copy();
         };
         let text = response
             .headers
@@ -1668,7 +1910,15 @@ impl ApiTesterApp {
                 "
 ",
             );
-        self.copy_to_clipboard(text, "api-copied-headers")
+        self.copy_to_clipboard(&text, "api-copied-headers")
+    }
+
+    fn no_response_to_copy(&mut self) -> Result<(), String> {
+        let reason = "There is no response to copy yet.";
+        self.error = Some(reason.to_owned());
+        self.dirty = true;
+        self.stale.response = true;
+        Err(reason.to_owned())
     }
 
     /// Copy the request as it was authored (**with its `{{variables}}`, and
@@ -1678,7 +1928,7 @@ impl ApiTesterApp {
         let request = &self.request;
         let mut text = format!("{} {}", request.method.as_str(), request.url);
         for row in request.headers.iter().filter(|row| row.enabled) {
-            text.push_str(&format!("\n{}: {}", row.key, row.value));
+            let _ = write!(text, "\n{}: {}", row.key, row.value);
         }
         text.push('\n');
         if !request.body_text.trim().is_empty() {
@@ -1686,12 +1936,12 @@ impl ApiTesterApp {
             text.push_str(&request.body_text);
             text.push('\n');
         }
-        self.copy_to_clipboard(text, "api-copied-request")
+        self.copy_to_clipboard(&text, "api-copied-request")
     }
 
     /// Put `text` on the clipboard and say so, or say it did not take.
-    fn copy_to_clipboard(&mut self, text: String, done: &str) -> Result<(), String> {
-        let copied = self.copy.watch(ui::try_clipboard_copy(&text));
+    fn copy_to_clipboard(&mut self, text: &str, done: &str) -> Result<(), String> {
+        let copied = self.copy.watch(ui::try_clipboard_copy(text));
         if copied {
             self.error = None;
             self.notice = Some(ui::i18n::I18nManager::format(done, &[]));

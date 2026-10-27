@@ -2,6 +2,7 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::indexing_slicing,
+    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -197,6 +198,78 @@ impl ui::tilo_actions::remote::ActionHost for Door {
     {
         ui::tilo_actions::remote::Pending::ready(Ok(()))
     }
+}
+
+/// "Link a note" takes a note already written as the reference the system
+/// palette picks by its title (and an agent passes): it publishes what it
+/// picks, so nobody types an id, and links the note it names, never
+/// something else.
+#[test]
+fn a_note_picked_by_its_title_is_linked_as_it_reads() {
+    let mut app = open();
+    app.call("create", json!({ "title": "Plan the launch" }))
+        .expect("create");
+    let issue = only(&app);
+    app.call_on(&issue_resource(&issue), "open", json!({}))
+        .expect("open the issue");
+    let picked = app
+        .actions()
+        .expect("the actions")
+        .into_iter()
+        .find(|action| {
+            action.address.resource == issue_resource(&issue)
+                && action.address.action == "link-note"
+        })
+        .and_then(|action| action.params.into_iter().find(|p| p.name == "note"))
+        .and_then(|param| param.pick());
+    assert_eq!(
+        picked,
+        Some(ui::tilo_actions::Pick::Resource {
+            kind: "notes.notebook.pages".into()
+        }),
+        "the note is picked, never typed"
+    );
+    let note = json!({
+        "app": tasks::NOTES,
+        "kind": "notes.notebook.pages",
+        "id": "notes.notebook/pages/7",
+        "label": "Launch checklist",
+    });
+    app.call_on(
+        &issue_resource(&issue),
+        "link-note",
+        json!({ "note": note }),
+    )
+    .expect("link the note");
+    let links: Vec<_> = app
+        .state()
+        .issues
+        .get(&issue)
+        .unwrap()
+        .links
+        .values()
+        .cloned()
+        .collect();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].app, tasks::NOTES);
+    assert_eq!(links[0].kind, "notes.notebook.pages");
+    assert_eq!(links[0].resource, "notes.notebook/pages/7");
+    assert_eq!(links[0].label, "Launch checklist");
+    let issue_ref = json!({
+        "app": "so.tilo.tasks",
+        "kind": "tasks.tracker.issues",
+        "id": "tasks.tracker/issues/1",
+        "label": "Another issue",
+    });
+    assert!(
+        app.call_on(
+            &issue_resource(&issue),
+            "link-note",
+            json!({ "note": issue_ref })
+        )
+        .is_err(),
+        "only a note"
+    );
 }
 
 /// A link names the record of the app that keeps what it links to, and
@@ -507,33 +580,484 @@ fn semantic_nodes(snapshot: &serde_json::Value) -> Vec<(serde_json::Value, [f64;
 }
 
 #[test]
-fn the_places_tree_names_what_it_lists_and_the_heading_is_drawn_where_it_is() {
+fn the_sidebar_names_what_it_narrows_and_the_bar_names_the_place() {
     let mut app = open();
+    app.harness().present_in_window_bar();
     let snapshot: serde_json::Value =
         serde_json::from_str(&app.harness().inspection_json().expect("inspection")).expect("json");
     let nodes = semantic_nodes(&snapshot);
     let drawn = |at: &[f64; 4]| at[2] > 0.0 && at[3] > 0.0;
 
-    // The places tree is named for what it lists, apart from the app's
-    // title the heading and the window's tab carry, and keeps one identity.
+    // The sidebar is named for what it narrows, apart from the app's title
+    // the heading and the window's tab carry, and keeps one identity.
     let trees: Vec<_> = nodes.iter().filter(|(n, _)| n["role"] == "Tree").collect();
     assert_eq!(trees.len(), 1, "one tree: {trees:?}");
     let (tree, at) = trees[0];
-    assert_eq!(tree["name"], "Task views");
-    assert_eq!(tree["semantic_key"], "tasks.places");
+    assert_eq!(tree["name"], "Filters");
+    assert_eq!(tree["semantic_key"], "tasks.filters");
     assert!(drawn(at), "the tree is drawn: {at:?}");
 
-    // The page's heading is in the tree, at the rect it is drawn at. It
-    // shares its name with the place it heads ("Issues"), so assistive
-    // technology tells the two apart by role.
+    // Where the window is, the bar says: the place, since no issue is open,
+    // and nothing in the content titles it a second time.
+    let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+    assert_eq!(
+        bar.location.map(|location| location.label).as_deref(),
+        Some("Issues")
+    );
     let headings: Vec<_> = nodes
         .iter()
         .filter(|(n, _)| n["role"].get("Heading").is_some())
         .collect();
     assert!(
-        headings
+        !headings
             .iter()
             .any(|(n, at)| n["name"] == "Issues" && drawn(at)),
-        "the heading \"Issues\" is in the tree where it is drawn: {headings:?}"
+        "the place is the bar's location, not a heading of the list's: {headings:?}"
+    );
+}
+
+/// The sidebar narrows the list to what a person is looking for — their own
+/// issues, the ones nobody took, an agent's, and a label's — and the board
+/// follows the same choice.
+#[test]
+fn the_sidebar_narrows_the_list_and_the_board_to_a_filter() {
+    let mut app = open();
+    for (title, assignee, label) in [
+        ("Write the launch notes", Some("person:ada"), Some("launch")),
+        ("Record the demo", None, None),
+        ("Tidy the onboarding docs", Some("agent:claude"), None),
+    ] {
+        app.call("create", json!({ "title": title, "assignee": assignee }))
+            .expect("create");
+        if let Some(label) = label {
+            let issue = app
+                .state()
+                .issues
+                .iter()
+                .find(|(_, issue)| issue.title == title)
+                .map(|(id, _)| id.clone())
+                .expect("the issue just made");
+            app.call("add-label", json!({ "issue": issue, "label": label }))
+                .expect("label it");
+        }
+    }
+    let rows = |app: &mut TestApp<App>| -> Vec<String> {
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&app.harness().inspection_json().expect("inspection"))
+                .expect("json");
+        let nodes = semantic_nodes(&snapshot);
+        nodes
+            .iter()
+            .filter_map(|(node, _)| {
+                // The list's rows read as references (`#2 Record the demo`);
+                // the sidebar's rows are its filters, which have no number.
+                let name = node["name"].as_str().unwrap_or_default();
+                (name.starts_with('#')).then(|| name.to_owned())
+            })
+            .collect()
+    };
+
+    // Everything, to begin with.
+    assert_eq!(rows(&mut app).len(), 3, "every issue shows");
+
+    // Mine: the person reading, whose issues are their own.
+    choose(&mut app, "Mine");
+    let shown = rows(&mut app);
+    assert_eq!(shown.len(), 1, "and nothing assigned to anyone else");
+    assert!(
+        shown
+            .iter()
+            .any(|row| row.contains("Write the launch notes")),
+        "my own issue shows: {shown:?}"
+    );
+
+    // Nobody's: the issue without an assignee.
+    choose(&mut app, "Nobody's");
+    let shown = rows(&mut app);
+    assert_eq!(shown.len(), 1, "one issue is unassigned: {shown:?}");
+    assert!(shown[0].contains("Record the demo"), "{shown:?}");
+
+    // Todos: the tasks nobody has started. All three are as they were
+    // made, so all three are todos, an agent's included until its run
+    // takes the task up.
+    choose(&mut app, "Todos");
+    assert_eq!(rows(&mut app).len(), 3, "nothing has been started");
+
+    // An agent's: the one handed to the room's agent.
+    choose(&mut app, "An agent's");
+    let shown = rows(&mut app);
+    assert_eq!(shown.len(), 1, "one issue is an agent's: {shown:?}");
+    assert!(shown[0].contains("Tidy the onboarding docs"), "{shown:?}");
+
+    // A label: the issues carrying it.
+    choose(&mut app, "launch");
+    let shown = rows(&mut app);
+    assert_eq!(shown.len(), 1, "one issue carries the label: {shown:?}");
+
+    // The board follows the same choice: the agent's issue is the only card
+    // in a lane.
+    choose(&mut app, "An agent's");
+    press_view(&mut app, "Board");
+    let harness = app.harness();
+    assert!(
+        harness
+            .a11y_node_named("#3 Tidy the onboarding docs")
+            .is_some(),
+        "the agent's issue is a card on the board"
+    );
+    assert!(
+        harness.a11y_node_named("#2 Record the demo").is_none(),
+        "and nobody else's issue is drawn beside it"
+    );
+
+    // Back to the list and everything in it.
+    press_view(&mut app, "Issues");
+    choose(&mut app, "All issues");
+    assert_eq!(rows(&mut app).len(), 3, "every issue shows again");
+}
+
+/// One task, read through every view the app has: the conversation it is
+/// is the thread, and the card on the board and the row in the list open the
+/// same page rather than a copy of it.
+#[test]
+fn a_task_with_a_conversation_reads_in_the_thread_and_opens_its_own_page() {
+    let mut app = open();
+    app.call("create", json!({ "title": "Which venue seats 120?" }))
+        .expect("create");
+    let issue = only(&app);
+    app.call_on(
+        &issue_resource(&issue),
+        "comment",
+        json!({ "text": "The old depot on Mill Street does." }),
+    )
+    .expect("say something on it");
+
+    // The thread reads it as a conversation, saying who last spoke.
+    press_view(&mut app, "Thread");
+    app.settle();
+    let row = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.label().is_some_and(|label| {
+                label.contains("#1") && label.contains("Which venue seats 120?")
+            })
+        })
+        .map(|(id, _)| id)
+        .expect("the task reads in the thread");
+    app.harness()
+        .perform_a11y_action(row, &ui::a11y::Action::Activate)
+        .unwrap();
+    app.settle();
+
+    // Its row opens the issue's page, the same one the other views open.
+    assert!(
+        app.harness().targets().contains_key("tasks-issue-title"),
+        "the thread's row opens the issue"
+    );
+    assert!(
+        app.harness()
+            .a11y_node_named("The old depot on Mill Street does.")
+            .is_some(),
+        "and the page it opens is the issue that was read in the thread"
+    );
+}
+
+/// Press the window bar's view `name`, as a press on it does.
+fn press_view(app: &mut TestApp<App>, name: &str) {
+    let harness = app.harness();
+    let bar = ui::window_toolbar::declared().expect("the window declares its views");
+    let views = bar.views.expect("the window declares its views");
+    let view = views
+        .choices
+        .iter()
+        .find(|view| view.label == name)
+        .expect("the bar offers the view");
+    harness.press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+        id: view.id.clone(),
+    });
+    let _ = harness.poll_frame();
+}
+
+/// Choose the sidebar's `name` row, as a press on it does.
+fn choose(app: &mut TestApp<App>, name: &str) {
+    let harness = app.harness();
+    let node = harness
+        .a11y_node_named(name)
+        .unwrap_or_else(|| panic!("the sidebar offers {name:?}"));
+    harness
+        .perform_a11y_action(node, &ui::a11y::Action::Activate)
+        .unwrap_or_else(|error| panic!("{name} is chosen: {error}"));
+    let _ = harness.poll_frame();
+}
+
+/// Notes as the session's door reaches it: makes the note each call asks
+/// for and answers its resource, as `create-page` does.
+#[derive(Default)]
+struct NotesDoor {
+    asked: std::sync::Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
+}
+
+impl ui::tilo_actions::remote::ActionHost for NotesDoor {
+    fn query(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: ui::tilo_actions::remote::CatalogueQuery,
+    ) -> ui::tilo_actions::remote::Pending<
+        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionHostError>,
+    > {
+        ui::tilo_actions::remote::Pending::ready(Err(
+            ui::tilo_actions::remote::ActionHostError::NotPermitted,
+        ))
+    }
+
+    fn invoke(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        request: ui::tilo_actions::remote::InvokeRequest,
+    ) -> ui::tilo_actions::remote::Pending<
+        Result<
+            ui::tilo_actions::remote::InvocationReceipt,
+            ui::tilo_actions::remote::ActionHostError,
+        >,
+    > {
+        let invocation = request.invocation;
+        let count = {
+            let mut asked = self.asked.lock().unwrap();
+            asked.push(request);
+            asked.len()
+        };
+        let note = format!("notes.notebook/pages/{count}");
+        ui::tilo_actions::remote::Pending::ready(Ok(ui::tilo_actions::remote::InvocationReceipt {
+            invocation,
+            status: ui::tilo_actions::remote::ReceiptStatus::Completed {
+                output: ui::tilo_actions::ActionOutput {
+                    value: Some(json!({ "resource": note })),
+                    resources: vec![note],
+                },
+            },
+        }))
+    }
+
+    fn observe(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: &ui::tilo_actions::InvocationId,
+    ) -> Option<ui::tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: &ui::tilo_actions::InvocationId,
+    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
+    {
+        ui::tilo_actions::remote::Pending::ready(Ok(()))
+    }
+}
+
+/// Writing an issue's note asks Notes through its own published action, as
+/// whoever asked: an agent's invocation is continued, so the host decides
+/// the note as the agent's. The note Notes made is linked once, as theirs,
+/// and their undo takes the link back. Pressed here, it is the app's own
+/// request.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one story: the agent's note, its undo, then the person's press"
+)]
+fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
+    use ui::tilo_actions::{ActionInvoker, InvocationUpdate};
+    let mut env = tilo_test_env::ScopedEnv::new();
+    let room = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
+    env.set("TILO_WORKSPACE_ID", room);
+    let door = std::sync::Arc::new(NotesDoor::default());
+    let _served = ui::RemoteActions::enter(
+        door.clone(),
+        ui::tilo_actions::remote::Caller::local_person("ada"),
+    );
+    let mut app = open();
+    app.call("create", json!({ "title": "Plan the launch" }))
+        .expect("create");
+    let issue = only(&app);
+    let before = app.versions().len();
+
+    let scribe = ActionInvoker::actor("agent:scribe");
+    let address = ui::bound_dispatch::BoundActionAddress {
+        instance_id: app.harness().component_instance_id().unwrap(),
+        address: ui::tilo_resource::Effect::address_on(
+            &tasks::TasksEffect::WriteNote {
+                issue: issue.clone(),
+            },
+            "tasks.tracker",
+        ),
+    };
+    let (invocation, _) = app
+        .harness()
+        .start_bound_job_for(
+            Some(scribe.clone()),
+            &address,
+            json!({ "issue": issue }).as_object().unwrap(),
+            true,
+        )
+        .expect("the agent's invocation starts");
+    app.settle();
+
+    let asked = door.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1, "one call of Notes: {asked:?}");
+    let notebook = ui::tilo_reference::ResourceRef::whole("notes.notebook", "notes.notebook", "");
+    assert_eq!(
+        asked[0].target,
+        notebook.action_target(room, tasks::NOTES, None, "create-page")
+    );
+    assert_eq!(
+        asked[0].argument,
+        ui::tilo_actions::remote::InvokeArgument::Json(
+            json!({ "title": "#1 Plan the launch" })
+                .as_object()
+                .unwrap()
+                .clone()
+        )
+    );
+    assert_eq!(
+        asked[0].on_behalf_of,
+        Some(invocation),
+        "the call continues the agent's invocation"
+    );
+    assert!(
+        app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(
+                update,
+                InvocationUpdate::Succeeded { output, .. }
+                    if output.value == Some(json!({ "resource": "notes.notebook/pages/1" }))
+            )),
+        "{:?}",
+        app.harness().job_updates(invocation)
+    );
+
+    let links: Vec<_> = app
+        .state()
+        .issues
+        .get(&issue)
+        .unwrap()
+        .links
+        .values()
+        .cloned()
+        .collect();
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert_eq!(links[0].app, tasks::NOTES);
+    assert_eq!(links[0].kind, "notes.notebook.pages");
+    assert_eq!(links[0].resource, "notes.notebook/pages/1");
+    assert_eq!(links[0].label, "#1 Plan the launch");
+    assert_eq!(links[0].record, None);
+
+    let versions = app.versions();
+    assert_eq!(versions.len(), before + 1, "one step: {versions:?}");
+    let by = versions
+        .last()
+        .and_then(|version| version.context.as_ref())
+        .and_then(|context| context.invoker.as_ref())
+        .expect("the step names who made it");
+    assert_eq!(by.actor, "agent:scribe");
+
+    app.call_by(scribe, "tasks.tracker", "undo", json!({}))
+        .expect("the agent undoes its step");
+    assert!(app.state().issues.get(&issue).unwrap().links.is_empty());
+
+    // The person pressing it in the window: no invocation of anyone else's
+    // is behind it, so it is the app's own request of Notes.
+    app.call_on(&issue_resource(&issue), "open", json!({}))
+        .expect("open the issue");
+    let button = app
+        .harness()
+        .a11y_node_named("Write a note")
+        .expect("the issue offers to write its note");
+    app.harness()
+        .perform_a11y_action(button, &ui::a11y::Action::Activate)
+        .unwrap();
+    app.settle();
+    let asked = door.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked[1].on_behalf_of, None);
+    assert_eq!(
+        app.state().issues.get(&issue).unwrap().links.len(),
+        1,
+        "the note linked as the person's"
+    );
+}
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(|| {
+        ui::framework::testing::TestApp::<App>::for_person("ada")
+    })
+    .unwrap_or_else(|error| panic!("{error}"));
+}
+
+/// A project is a resource of its own above the tasks: it is made,
+/// listed in the sidebar, opened by the address it is published under, and
+/// holds the tasks that work towards it and the people involved.
+#[test]
+fn a_project_is_made_listed_and_opened_by_its_address() {
+    let mut app = open();
+    assert!(app.state().areas.is_empty(), "a tracker starts empty");
+
+    // The project page's own action makes one, with the kind it is given.
+    app.call("create-area", json!({ "name": "Launch", "kind": "area" }))
+        .expect("create the area");
+    let (area, made) = app
+        .state()
+        .areas
+        .iter()
+        .next()
+        .map(|(id, area)| (id.clone(), area.clone()))
+        .expect("the area just made");
+    assert_eq!(made.name, "Launch");
+    assert_eq!(made.kind, tasks::model::Kind::Area);
+
+    // Its address opens its page, as a row of the sidebar or a search hit
+    // does, and the page offers what it holds.
+    let address = tasks::model::area_resource(&area);
+    app.call_on(&address, "open", json!({}))
+        .expect("open the project");
+    assert!(app.harness().targets().contains_key("tasks-project-name"));
+    assert!(
+        app.harness()
+            .targets()
+            .contains_key("tasks-project-involve")
+    );
+    let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+    assert_eq!(
+        bar.location.map(|location| location.label).as_deref(),
+        Some("Launch"),
+        "the bar says which project the window shows"
+    );
+
+    // Someone involved is part of the project, in their own words.
+    app.call_on(
+        &address,
+        "involve",
+        json!({ "name": "Grace", "role": "Writes the launch notes" }),
+    )
+    .expect("involve Grace");
+    let people = app.state().area(&area).expect("the project").people.clone();
+    assert_eq!(people.len(), 1);
+    assert_eq!(people.iter().next().expect("Grace").1.name, "Grace");
+
+    // Undo takes the involvement back: it is an ordinary change, kept as
+    // any other, and the project stays.
+    assert!(app.undo());
+    assert!(
+        app.state()
+            .area(&area)
+            .expect("the project still stands")
+            .people
+            .is_empty()
     );
 }

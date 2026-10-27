@@ -289,6 +289,8 @@ mod tests {
             resource_kind: String::new(),
             resource_label: String::new(),
             action_label: label.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             operation_kind: OperationKind::Document,
             params: Vec::new(),

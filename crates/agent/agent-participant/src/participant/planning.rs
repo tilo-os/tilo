@@ -59,6 +59,9 @@ pub(super) struct Planned {
     pub obligations: Obligations,
     /// Who made it, in a coordinated task.
     pub role: Option<PlanRole>,
+    /// What it was told of the apps and how it used it, when a model made
+    /// it.
+    pub catalog: Option<crate::model::CatalogUse>,
 }
 
 /// A read the planner's thread asks of the loop while it plans.
@@ -187,6 +190,7 @@ impl Planning {
                         ready_at: Instant::now(),
                         by_model: planner.last_planned_by_model(),
                         obligations: planner.take_obligations(),
+                        catalog: planner.take_catalog(),
                         role: job.role,
                     };
                     if made.send(answer).is_err() {
@@ -259,6 +263,7 @@ impl Planning {
                 by_model: false,
                 obligations: Obligations::default(),
                 role: None,
+                catalog: None,
             },
         };
         if self.pending.as_deref() == Some(planned.task.as_str()) {

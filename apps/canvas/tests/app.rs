@@ -93,7 +93,8 @@ fn look_and_inspect_answer_through_the_host_door() {
         "a new revision after painting"
     );
 
-    let inspect: ActionRef<Artwork, ()> = ActionRef::new("inspect", &[]);
+    let inspect: ActionRef<Artwork, ()> =
+        ActionRef::new("inspect", &[], canvas::resource::ARTWORK_KIND);
     let listed = app
         .operate(inspect.invoke())
         .unwrap()
@@ -121,7 +122,11 @@ fn inspect_lists_the_newest_marks_within_a_limit() {
         group: None,
     }))
     .expect("paint");
-    let inspect: ActionRef<Artwork, (String, u32)> = ActionRef::new("inspect", &["layer", "limit"]);
+    let inspect: ActionRef<Artwork, (String, u32)> = ActionRef::new(
+        "inspect",
+        &["layer", "limit"],
+        canvas::resource::ARTWORK_KIND,
+    );
     let listed = app
         .operate(inspect.with(("layer-1".into(), 2)))
         .unwrap()
@@ -172,7 +177,8 @@ fn inspect_lists_the_newest_marks_within_a_limit() {
 fn render_shows_the_whole_app_through_the_host_door() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     app.harness().set_theme(ui::Theme::light());
-    let render: ActionRef<Artwork, ()> = ActionRef::new("render", &[]);
+    let render: ActionRef<Artwork, ()> =
+        ActionRef::new("render", &[], canvas::resource::ARTWORK_KIND);
     let output = app
         .operate(render.invoke())
         .unwrap()

@@ -7,6 +7,12 @@
 )]
 use super::*;
 
+/// A shortcut guide row's semantic target: `guide:chord:<index>` starts
+/// rebinding the action that row names.
+const CHORD_TARGET: &str = "guide:chord:";
+/// The guide's Done control: it leaves the guide.
+const GUIDE_DONE_TARGET: &str = "guide:done";
+
 impl ShellOverlayHost {
     #[allow(
         clippy::too_many_lines,
@@ -373,6 +379,39 @@ impl ShellOverlayHost {
                             ))
                             .with_state(AccessState::new().modal(true)),
                     );
+                    // The rows are real rebind targets for the pointer and
+                    // for the keyboard. A reader gets the same rows, one
+                    // button each, and the Done that leaves the guide.
+                    let mut guide = root
+                        .children
+                        .pop()
+                        .unwrap_or_else(|| AccessNode::new(Role::Dialog));
+                    for (index, (action, rect)) in self.shortcut_binding_rects.iter().enumerate() {
+                        let chord = chord(*action);
+                        guide.children.push(
+                            AccessNode::new(Role::Button)
+                                .with_semantic_key(format!("{CHORD_TARGET}{index}"))
+                                .with_action_target(format!("{CHORD_TARGET}{index}"))
+                                .with_name(shortcut_action_label(*action))
+                                .with_description(t_args(
+                                    "guide-chord-row",
+                                    &[("chord", chord.clone().into())],
+                                ))
+                                .with_bounds(*rect)
+                                .with_state(AccessState::new().focusable(true)),
+                        );
+                    }
+                    guide.children.push(
+                        AccessNode::new(Role::Button)
+                            .with_semantic_key(GUIDE_DONE_TARGET)
+                            .with_action_target(GUIDE_DONE_TARGET)
+                            .with_name(t("guide-done"))
+                            .with_bounds(self.shortcut_help_done_rect())
+                            .with_state(AccessState::new().focusable(true).focused(
+                                self.shortcut_guide_focus == Some(ShortcutGuideFocus::Done),
+                            )),
+                    );
+                    root.children.push(guide);
                 }
             }
         }
@@ -382,6 +421,16 @@ impl ShellOverlayHost {
         root.children.extend(self.strip_switcher_accessibility());
         // The control hint on screen, said politely.
         root.children.extend(self.control_hint_accessibility());
+        // Last, so the paths above keep their indices: the desk widgets a
+        // reader can open, fold and pin exactly as the pointer and Tab do.
+        let desk = self.desk_accessibility_children();
+        if !desk.is_empty() {
+            root.children.push(
+                AccessNode::new(Role::Group)
+                    .with_name(t("desk-widgets-a11y"))
+                    .with_children(desk),
+            );
+        }
         root
     }
 

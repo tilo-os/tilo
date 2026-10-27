@@ -9,15 +9,21 @@
     },
     {
       "file": "e2e-tab-drag-reorder-settled.png",
-      "sha256": "7513ec7d612ab17872c64391b1be9cc9b1b64f7bb66d0467fac9f6004b7a6c5a",
-      "bytes": 23634,
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/7513ec7d612ab17872c64391b1be9cc9b1b64f7bb66d0467fac9f6004b7a6c5a/e2e-tab-drag-reorder-settled.png"
+      "sha256": "a8028748b7c66f923f40ef87c3b726a8095f83eb873f6441463ce0b3f8a9f89d",
+      "bytes": 23162,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/a8028748b7c66f923f40ef87c3b726a8095f83eb873f6441463ce0b3f8a9f89d/e2e-tab-drag-reorder-settled.png"
     },
     {
       "file": "e2e-maximized-tile-controls.png",
       "sha256": "6144302c4c347492227b29cac6bbf21c27e2a5d30c1768777bfc38c58547d5bd",
       "bytes": 24295,
       "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/6144302c4c347492227b29cac6bbf21c27e2a5d30c1768777bfc38c58547d5bd/e2e-maximized-tile-controls.png"
+    },
+    {
+      "file": "e2e-narrow-window-bar-deep-folder.png",
+      "sha256": "07170171faae5646fa65486547fd5b1ad2685cdf4d4ecded0a59b277ed88fe72",
+      "bytes": 11526,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/07170171faae5646fa65486547fd5b1ad2685cdf4d4ecded0a59b277ed88fe72/e2e-narrow-window-bar-deep-folder.png"
     }
   ]
 }

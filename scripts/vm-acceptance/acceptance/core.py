@@ -162,6 +162,7 @@ def run_check(ctx, chk: Check) -> Result:
         res.evidence.append(f"errors/{chk.id}.txt")
     leave_running(ctx, chk, res)
     leave_unlocked(ctx, chk, res)
+    leave_no_stuck_windows(ctx, chk, res)
     leave_no_dialog(ctx, chk, res)
     restarted = session_restart(ctx, chk.id)
     if restarted:
@@ -205,6 +206,100 @@ def leave_running(ctx, chk: Check, res: Result) -> None:
         return
     res.detail = _join(res.detail, f"{LEFT_STOPPED} within {SESSION_RETURN_S} s; the harness "
                                    "restarted the slot session")
+
+
+LEFT_STUCK = "left a window that does not close"
+# The facts key under which a check names the window groups it hands on to later checks.
+KEPT_WINDOWS = "kept_windows"
+# How long the windows of an app the harness ended are given to go.
+STUCK_GONE_S = 15
+
+
+# Per thread of each pid: its name, the kernel function it sleeps in and the top of its
+# kernel stack, so a window that would not close says what its app was waiting for.
+_STUCK_THREADS = r'''for pid in __PIDS__; do for t in /proc/$pid/task/*; do
+  printf '%s/%s %s %s %s\n' "$pid" "${t##*/}" "$(cat $t/comm 2>/dev/null)" "$(cat $t/wchan 2>/dev/null)" \
+    "$(head -n 2 $t/stack 2>/dev/null | sed 's/^\[<[0-9a-f]*>\] //' | tr '\n' ' ')"
+done; done'''
+
+
+def stuck_threads(ctx, pids: list[int]) -> str | None:
+    """What the threads of `pids` sleep in, grouped by name and kernel function: e.g.
+    "store×3 futex_wait_queue; store-net poll_schedule_timeout". None when unreadable."""
+    try:
+        text = ctx.vm.root_exec(_STUCK_THREADS.replace("__PIDS__", " ".join(map(str, pids))), timeout=60)
+    except VmError:
+        return None
+    seen: dict[str, int] = {}
+    for line in text.splitlines():
+        parts = line.split(maxsplit=3)
+        if len(parts) < 3:
+            continue
+        key = f"{parts[1]} {parts[2]}" + (f" ({parts[3].strip()[:80]})" if len(parts) > 3 and parts[3].strip() else "")
+        seen[key] = seen.get(key, 0) + 1
+    return "; ".join(f"{k}×{n}" if n > 1 else k for k, n in list(seen.items())[:8]) or None
+
+
+def leave_no_stuck_windows(ctx, chk: Check, res: Result) -> None:
+    """No check may hand the next one a window that does not close: every later check
+    begins by closing every window, and one that survives fails all of them (after A05 left
+    the Store open, about 30 checks failed with "windows still open after closing every
+    group"). Windows a check leaves open are closed here, the way the next check would;
+    the app of one that survives its close has its processes ended, and the slot session
+    is restarted if its window still stays. The check that left it fails, however it ended."""
+    try:
+        left = {g.get("id") for g in all_groups(ctx.state())}
+    except (VmError, KeyError, TypeError):
+        return  # no state to read: leave_running owns that
+    # Windows a check hands on to the checks after it (W01's two for W02-W07) are not
+    # this check's leftovers: closing them broke every check that needs them.
+    if not left - set(ctx.facts.get(KEPT_WINDOWS, ())):
+        return
+    try:
+        ctx.close_all_windows()
+        return
+    except CheckFailed:
+        pass
+    except VmError:
+        return
+    res.status = "fail"
+    try:
+        stuck = sorted({tab_app(t) for g in all_groups(ctx.state()) for t in g.get("tabs", [])} - {None})
+    except (VmError, KeyError, TypeError):
+        stuck = []
+    ended = []
+    try:
+        procs = processes(ctx)["procs"]
+        pids = sorted(p["pid"] for p in procs.values() if p.get("app") in stuck)
+        if pids:
+            waiting = stuck_threads(ctx, pids)
+            if waiting:
+                res.detail = _join(res.detail, f"its processes were waiting in: {waiting}")
+            ctx.vm.root_exec("kill -KILL " + " ".join(map(str, pids)) + " 2>/dev/null; true")
+            ended = sorted({procs[pid]["app"] for pid in pids})
+    except VmError:
+        pass
+
+    def gone():
+        try:
+            return not all_groups(ctx.state()) or None
+        except (VmError, KeyError, TypeError):
+            return None
+
+    how = (f"the harness ended {', '.join(ended)}" if ended
+           else "no process of it was found to end")
+    if ended and wait_until(gone, STUCK_GONE_S, 1.0):
+        res.detail = _join(res.detail, f"{LEFT_STUCK} ({', '.join(stuck) or 'unknown app'}); {how}")
+        return
+    ctx.facts.setdefault("session_recovered_after", []).append(chk.id)
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        res.detail = _join(res.detail, f"{LEFT_STUCK} ({', '.join(stuck) or 'unknown app'}); {how}, "
+                                       f"and restarting the slot session failed: {exc.reason()}")
+        return
+    res.detail = _join(res.detail, f"{LEFT_STUCK} ({', '.join(stuck) or 'unknown app'}); {how}, "
+                                   "and the harness restarted the slot session")
 
 
 LEFT_LOCKED = "left the session locked"
@@ -334,9 +429,14 @@ def dismiss_surfaces(ctx) -> str:
     with none of them. Returns how it went; never raises."""
     for _ in range(DISMISS_ESCAPES):
         try:
+            before = open_surfaces(ctx.state())
+            if not before:
+                return "the harness closed it with Escape"
             ctx.vm.key("Escape")
-            time.sleep(0.6)
-            if not open_surfaces(ctx.state()):
+            # Escape closes the top surface; the next press is for what is still open.
+            now = wait_until(lambda: (left,) if (left := open_surfaces(ctx.state())) != before else None,
+                             3, 0.2)
+            if now is not None and not now[0]:
                 return "the harness closed it with Escape"
         except (VmError, KeyError, TypeError):
             break
@@ -542,6 +642,19 @@ def pump_lines_after(ctx, mark: int) -> list[str]:
     return [line.strip() for line in out.splitlines() if PUMP_STALL in line]
 
 
+SLOW_SCENE = re.compile(r"SLOW-SCENE total=([0-9.]+)(ms|µs|us|s) (.*)")
+
+
+def slowest_scenes(lines: list[str], n: int = 2) -> list[str]:
+    """The `n` slowest `SLOW-SCENE` lines (a retained scene build over 16 ms, split by phase
+    and by desktop section), slowest first, each as `total: phase=… section=…`."""
+    def ms(value: str, unit: str) -> float:
+        return float(value) * {"ms": 1.0, "µs": 1e-3, "us": 1e-3, "s": 1e3}[unit]
+
+    found = [(ms(m[1], m[2]), m[3]) for m in (SLOW_SCENE.search(line) for line in lines) if m]
+    return [f"{total:.1f} ms: {split[:400]}" for total, split in sorted(found, reverse=True)[:n]]
+
+
 def frame_pacing_evidence(ctx, check_id: str, log_mark: int, cpu_before) -> str:
     """What a failed frame-pacing scenario leaves to tell its stalls apart: the
     compositor's per-phase pump breakdown for every pump that held input up since
@@ -556,7 +669,15 @@ def frame_pacing_evidence(ctx, check_id: str, log_mark: int, cpu_before) -> str:
     else:
         shown = "; ".join(line[-320:] for line in lines[-3:])
         pumps = f"{len(lines)} pre-paint pump stall line(s), the last: {shown}"
-    return f" [guest CPU steal over the scenario {steal_text}; {pumps}; {check_id}-pump.log has them all]"
+    # The compositor names where a slow scene build went (`SLOW-SCENE`: its phases and the
+    # desktop sections drawn); a failed check keeps no files, so the slowest go here.
+    scenes = slowest_scenes((ctx.vm.exec(
+        f'tail -n +{log_mark + 1} "{SESSION_LOG}" 2>/dev/null | grep -a "SLOW-SCENE"; true',
+        check=False) or "").splitlines())
+    scene_text = (f"; slowest scene builds: {' | '.join(scenes)}" if scenes
+                  else "; no SLOW-SCENE line in the session log")
+    return (f" [guest CPU steal over the scenario {steal_text}; {pumps}{scene_text}; "
+            f"{check_id}-pump.log has them all]")
 
 
 def switch_lines_after(ctx, mark: int) -> list[dict]:
@@ -973,12 +1094,29 @@ def _mb(kib_or_bytes: str, unit: int) -> float | None:
     return None if kib_or_bytes == "-" else round(int(kib_or_bytes) * unit / 2**20, 1)
 
 
+# An app's unit below the launcher's scope: `.../app-<id>-<n>/...`, the id escaped the way
+# systemd escapes a unit name (`-` is `\x2d`).
+_APP_UNIT = re.compile(r"/tilo-apps-\d+\.scope/app-((?:[^/-]|\\x2d)+)-\d+(?:/|$)")
+
+
+def app_of_cgroup(path: str) -> str | None:
+    """The app a cgroup belongs to, from its unit name below the launcher's scope
+    (`.../tilo-apps-N.scope/app-so.tilo.file\x2dexplorer-5/main` is so.tilo.file-explorer),
+    or None for a cgroup that is no app's."""
+    found = _APP_UNIT.search(path or "")
+    if not found:
+        return None
+    return re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m[1], 16)), found[1])
+
+
 def parse_processes(text: str) -> dict:
     """`PROCESSES` output -> {"procs": {pid: ...}, "cgroups": {path: ...}, "meminfo_mb",
     "meminfo_kib", "zones", "page_size", "greeter_uid", "tmpfs"}.
 
     Each process carries `app`: the `--app-id` of the nearest `tilo-launcher` at or above it,
-    so an app is its launcher's whole process tree, whatever its processes are called. Each
+    so an app is its launcher's whole process tree, whatever its processes are called; or,
+    for an app the session's shared spawner started (no launcher of its own above it), the
+    app its cgroup's unit names (`app_of_cgroup`). Each
     cgroup carries `charged_at`: itself, or the nearest ancestor with a memory controller,
     where its memory is charged (None: nowhere the dump could read)."""
     procs, cgroups, kib, zones, tmpfs, greeter, page = {}, {}, {}, {}, [], None, None
@@ -1010,7 +1148,7 @@ def parse_processes(text: str) -> dict:
         while cur and cur["launches"] is None and cur["pid"] not in seen:
             seen.add(cur["pid"])
             cur = procs.get(cur["ppid"])
-        p["app"] = cur["launches"] if cur else None
+        p["app"] = (cur["launches"] if cur else None) or app_of_cgroup(p["cgroup"])
     return {"procs": procs, "cgroups": cgroups, "meminfo_kib": kib,
             "meminfo_mb": {k: v // 1024 for k, v in kib.items()}, "zones": zones, "page_size": page,
             "greeter_uid": greeter, "tmpfs": sorted(tmpfs, key=lambda t: -t["used_mib"])}
@@ -1169,10 +1307,14 @@ def assert_terminal_shell_performance(seconds: float | None) -> None:
 
 # Terminal's shells are not the app's processes: each runs in a guest the
 # `tilo-ush` user service starts, so they are found in its cgroup.
-_USH_SHELLS = ('cg=$(systemctl --user show -p ControlGroup --value tilo-ush.service 2>/dev/null); '
-               '[ -n "$cg" ] || exit 0; '
-               'for p in $(cat $(find "/sys/fs/cgroup$cg" -name cgroup.procs 2>/dev/null) 2>/dev/null); do '
-               '[ "$(cat /proc/$p/comm 2>/dev/null)" = bash ] && echo "$p"; done; true')
+# A guest's shell is a bash whose ancestors include the `tilo-ush run` that built its guest.
+# It runs as a job of the app that asked for it (the Terminal's cgroup), not in
+# tilo-ush.service's, so it is found by ancestry, not by cgroup.
+_USH_SHELLS = ('for p in $(pgrep -u "$(id -u)" -x bash); do q=$p; '
+               'for _ in 1 2 3 4 5 6; do q=$(awk \'/^PPid:/ {print $2}\' /proc/$q/status 2>/dev/null); '
+               '[ -n "$q" ] && [ "$q" -gt 1 ] || break; '
+               'case "$(tr \'\\0\' \' \' < /proc/$q/cmdline 2>/dev/null)" in *"tilo-ush run"*) echo "$p"; break;; esac; '
+               'done; done; true')
 
 
 def terminal_shells(ctx) -> set[int]:
@@ -1250,6 +1392,7 @@ _USH_EVIDENCE = r'''set +e
 echo "journal: $(journalctl --user -u tilo-ush.service --no-pager -o cat -n 200 2>&1 | grep -v '^$' | tail -n 4 | tr '\n' '|' | cut -c1-900)"
 echo "session log: $(grep -rIh -i -E "tilo-ush|ush\.sock|so\.tilo\.terminal" "$HOME/.local/state/tilo/session-logs" 2>/dev/null | grep -v APP-STARTUP | tail -n 3 | tr '\n' '|' | cut -c1-900)"
 echo "guests: $(ps -u "$(id -u)" -o pid=,etimes=,time=,args= 2>/dev/null | grep -E 'tilo-ush (run|guest-init)' | grep -v grep | cut -c1-160 | tr '\n' '|')"
+echo "guest threads waiting in: $(for p in $(pgrep -u "$(id -u)" -f 'tilo-ush (run|guest-init)'); do ps -L -o comm=,wchan:32= -p "$p" 2>/dev/null; done | sort | uniq -c | sort -rn | head -n 8 | awk '{$1=$1; print}' | tr '\n' '|')"
 '''
 
 

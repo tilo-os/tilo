@@ -32,7 +32,7 @@ use ui_core::application::{
 use ui_core::application_view::InstanceViewStore;
 use ui_core::collaboration::DocumentMutation;
 use ui_core::headless::FrameHarness;
-use ui_core::permissions::{PermissionContext, UserId};
+use ui_core::permissions::{PermissionContext, SharedPermissions, UserId};
 use ui_core::portable_storage::{PortableStorage, StorageKey};
 use ui_core::record::{RecordCheckout, RecordOwners, RecordStore};
 use ui_core::state::DocumentFrontier;
@@ -76,7 +76,7 @@ pub struct AttachedView {
     frame: Box<FrameHarness>,
     /// The record store the view reads and writes.
     records: RecordStore,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
     /// Who acts through the view: the invoker its operations are admitted for.
     me: String,
     /// The invoker as admitted: its kind and the person it acts for.
@@ -259,7 +259,7 @@ impl AttachedView {
             .map_err(|error| error.to_string())?;
         let views =
             Rc::new(InstanceViewStore::portable(cache, room).map_err(|error| error.to_string())?);
-        let permissions = Rc::new(RefCell::new(permissions));
+        let permissions = SharedPermissions::new(permissions);
         let target = LaunchTarget::Record {
             checkout: checkout.clone(),
             reveal: None,
@@ -300,8 +300,14 @@ impl AttachedView {
         if let Some(joined_at) = &joined_at {
             refuse_written_on_open(definition, &records, &checkout, joined_at)?;
         }
+        // A record joined starts where it was handed over: the only write
+        // its view may make on open is a storage migration, which is sent
+        // with the participant's first changes, as a window's is, so the
+        // room and its other holders take it rather than diverge.
         let mut frontier = DocumentFrontier::default();
-        if let Some(heads) = records.with(&checkout.id, ui_core::automerge::AutoCommit::get_heads) {
+        let start = joined_at
+            .or_else(|| records.with(&checkout.id, ui_core::automerge::AutoCommit::get_heads));
+        if let Some(heads) = start {
             frontier.advance(heads);
         }
         Ok(Self {
@@ -342,7 +348,7 @@ impl AttachedView {
 
     /// The participant's permissions changed: a role granted or taken away.
     pub fn set_permissions(&mut self, permissions: PermissionContext) {
-        *self.permissions.borrow_mut() = permissions;
+        self.permissions.set(permissions);
         self.frame.relayout();
     }
 
@@ -546,10 +552,14 @@ impl AttachedView {
         if let Some(refusal) = invoke.refusal() {
             return Err(DoorError::InvalidArguments(refusal.to_owned()));
         }
+        // The record this view draws is the one its actions are published
+        // under: one of another app's, kept here, is reached through the
+        // provider that keeps it.
+        let app = self.definition.app_id;
         let resource = self
             .resources()
             .into_iter()
-            .find(|resource| resource.kind == R::KIND)
+            .find(|resource| resource.kind == R::KIND && resource.app().is_none_or(|of| of == app))
             .ok_or_else(|| DoorError::Unknown(ActionAddress::new(R::KIND, invoke.id)))?;
         self.invoke(
             &ActionAddress::new(resource.id.as_str(), invoke.id),
@@ -911,9 +921,9 @@ fn refuse_written_on_open(
 /// migration, or the structure and identity every member derives the same
 /// way, is the framework's and none of the app's.
 ///
-/// Refused rather than kept: the view's write would land under the
-/// replication frontier the view starts from, so it would never be sent and
-/// the participant would see a record nobody else does. Deferring it until
+/// Refused rather than kept: the participant's own changes are sent from
+/// where it joined, so the view's write would be sent as if the participant
+/// had made it, which no member did. Deferring it until
 /// the record's content arrives would only move that fork later.
 fn written_on_open(
     doc: &mut ui_core::automerge::AutoCommit,

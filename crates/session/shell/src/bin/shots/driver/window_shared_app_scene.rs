@@ -13,7 +13,6 @@ use tilo_desktop_model::window_share::{
 
 /// This device's topology namespace, and the sharer's.
 const SALT: u16 = 0x0B52;
-const SHARER_SALT: u16 = 0x0A51;
 const SURFACE: u64 = 0x5a7f;
 const NOTES: &str = "so.tilo.notes";
 
@@ -31,7 +30,9 @@ impl ShellDriver {
         let sharer_device = iroh::SecretKey::from_bytes(&[5; 32]).public();
         let sharer_hex = hex::encode(sharer_device.as_bytes());
         let session = shell::network::behaviour::peer_liveness_handle(&sharer_device);
-        let tab = (u64::from(SHARER_SALT) << 48) | 4;
+        // Ana's window, minted under the salt her device's key derives.
+        let sharer_salt = tilo_desktop_model::ids::device_salt_of_key(sharer_device.as_bytes());
+        let tab = (u64::from(sharer_salt) << 48) | 4;
         let mut found = None;
         self.with_chrome(|st| {
             let mut tree = st.tree_mut();
@@ -56,12 +57,12 @@ impl ShellDriver {
                 projection::ROOM_LAYOUT_KEY,
                 projection::RoomLayout::Personal.id(),
             );
-            if let Ok(owners) = doc.put_object(
+            if let Ok(identities) = doc.put_object(
                 automerge::ROOT,
-                projection::ROOM_CONTENTS_OWNERS_KEY,
+                "peer_identities_v1",
                 automerge::ObjType::Map,
             ) {
-                let _ = doc.put(&owners, format!("{SHARER_SALT:04x}"), sharer_hex.as_str());
+                let _ = doc.put(&identities, sharer_hex.as_str(), "{}");
             }
             // Ana's share of her Notes window, at her note.
             let shows = WindowShows {

@@ -1729,6 +1729,8 @@ mod tests {
                 resource_kind: kind.to_string(),
                 resource_label: "a thing".to_string(),
                 action_label: label.to_string(),
+                keywords: Vec::new(),
+                icon: None,
                 description: None,
                 locus: ExecutionLocus::ClientLocal,
                 kind: tilo_actions::OperationKind::Document,

@@ -228,19 +228,27 @@ pub fn attach_display(
 }
 
 #[cfg(not(target_os = "android"))]
-struct SystemSpeech;
+use self::desktop_media::SystemSpeech;
 
+/// The desktop's speech and media sessions, which Android does not have: one
+/// platform boundary for both, so a reader sees a single "not here" rather than
+/// three.
 #[cfg(not(target_os = "android"))]
-impl SpeechFactory for SystemSpeech {
-    fn make(&self) -> Box<dyn tts::Speaker> {
-        tts::default_speaker()
+mod desktop_media {
+    use super::{MediaSession, MediaSessionFactory, MprisConfig, PlayerSnapshot, SpeechFactory};
+
+    pub(super) struct SystemSpeech;
+
+    impl SpeechFactory for SystemSpeech {
+        fn make(&self) -> Box<dyn tts::Speaker> {
+            tts::default_speaker()
+        }
     }
-}
 
-#[cfg(not(target_os = "android"))]
-impl MediaSessionFactory for super::mpris::DesktopMediaSessions {
-    fn start(&self, config: MprisConfig, initial: PlayerSnapshot) -> Option<MediaSession> {
-        super::mpris::start_desktop_session(config, initial)
+    impl MediaSessionFactory for super::super::mpris::DesktopMediaSessions {
+        fn start(&self, config: MprisConfig, initial: PlayerSnapshot) -> Option<MediaSession> {
+            super::super::mpris::start_desktop_session(config, initial)
+        }
     }
 }
 

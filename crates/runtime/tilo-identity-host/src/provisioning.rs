@@ -2079,7 +2079,7 @@ mod tests {
                 local_rooms: &dir.path().join("personal-rooms.json"),
             },
             user,
-            "ada",
+            "Ada",
             "orange-pi",
             1_000,
             |digest| Ok(root.sign(digest).to_bytes()),
@@ -2219,7 +2219,7 @@ mod tests {
         runtime_identity::update_identity_presentation(
             &local_identity,
             "primary",
-            "ada",
+            "Ada",
             [3, 4, 5],
             Some(photo.clone()),
         )
@@ -2254,7 +2254,7 @@ mod tests {
                 local_home_peers: &peers,
                 local_rooms: &dir.path().join("missing-rooms.json"),
             },
-            "ada",
+            "Ada",
             "orange-pi",
             1_000,
         )

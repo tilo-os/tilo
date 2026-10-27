@@ -127,6 +127,19 @@ capture the PIN (§7.4).
 
 On a machine without a TPM, the secret must be a strong passphrase.
 
+The initrd draws each person's face as the login screen does before anyone signs
+in: the initials of their name in the colour their account name derives
+(`tilo-face`), in the login screen's colours and sizes (`look.json`, which the
+greeter's own test keeps current). It shows no account picture. A picture would
+have to sit in the volume header beside the name, readable by anyone holding the
+disk, and the header carries only what the list of people needs: uid, account
+name, display name and the kind of secret. Names, initials and messages are set
+in the login screen's face, which the initrd carries cut from the greeter's own
+font file to the two weights the login screen uses for them (the
+`93tilo-boot-face` dracut module). Plymouth has no fallback face, so a display
+name in a script that face lacks is shown as the account name instead
+(`glyphs.txt`, which the build writes from the face).
+
 ### 3.3 What the person sees
 
 | Machine | First screen | Secrets typed |
@@ -436,9 +449,15 @@ open the volume, and the recovery key keeps working throughout.
 - The cost of a homed LUKS home inside the encrypted system volume on the Snapdragon,
   measured before step 3 switches anyone.
 - A boot-time login screen with the greeter's accessibility (screen reader, touch).
-  Plymouth can draw the layout but has no screen reader, so the initrd either carries
-  the greeter itself or this is a known gap until it does. Today it is the gap,
-  recorded with what closing it takes in [defects.md](defects.md) P1-13.
+  Plymouth can draw the layout but has no screen reader and no pointer or touch
+  input, so the initrd either carries the greeter itself or this is a known gap
+  until it does. Today it is the gap ([defects.md](defects.md) P1-13): every
+  choice there is reachable by keyboard, but nothing is spoken and a tablet without
+  a keyboard cannot enter anything. Closing it means the greeter in the initrd in
+  place of Plymouth: a minimal kiosk compositor on DRM, the greeter with its fonts
+  and AccessKit's AT-SPI path, a D-Bus session, `tilo-tts` with a voice, libinput
+  for touch, and `tilo-auth boot-unlock` behind it, within the boot's size and
+  first-frame budgets.
 - Whether the Windows-managed lockout parameters on a shared TPM still meet §1.3 for a
   six-digit PIN. `tilo-rollback tpm-status` decides per machine, and a machine that
   fails gets a longer PIN, not a weaker check.

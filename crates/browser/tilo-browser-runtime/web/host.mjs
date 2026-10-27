@@ -600,6 +600,8 @@ export async function mountDesktop(target,options={}) {
       offerHostAction:offer=>{if(active()&&runtime.desktop_offer_host_action)runtime.desktop_offer_host_action(id,JSON.stringify(offer));},
       // The picture `user` (root key, hex) chose, as a `data:` URL, shown on their avatars now; `null` takes it away.
       setPersonPhoto:(user,url)=>{photos.chose(user,url);return showPhoto(user,url);},
+      // On a desktop with no room (the person's own), who it shows as its person (`{user, label}`): a room's peer names its own.
+      setOwnPerson:({user,label})=>{if(active()&&!options.peer&&runtime.desktop_set_people)runtime.desktop_set_people(id,JSON.stringify({own:{publisher:'own',kind:'person',label:String(label??''),user},members:null}));},
       // What the page just did out of sight, said in passing ("Link copied").
       acknowledge:text=>{if(active()&&runtime.desktop_acknowledge)runtime.desktop_acknowledge(id,String(text));},
       // Who the desktop shows as here (`[{id, label, agent}]`, one row per person), or null for a single app.

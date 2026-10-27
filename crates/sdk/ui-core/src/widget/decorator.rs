@@ -638,6 +638,7 @@ decorator_trait! {
 // `concrete::Decorator` instead of `Decorator`.
 concrete_decorator_widget!(super::nav_list::NavList);
 concrete_decorator_widget!(super::media_transport::MediaTransport);
+concrete_decorator_widget!(super::window_search::QueryView);
 
 #[cfg(test)]
 #[path = "decorator_tests.rs"]

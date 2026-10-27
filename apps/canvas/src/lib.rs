@@ -124,16 +124,22 @@ impl ResourceApp for App {
                 stage_open.set(true);
             }
         });
-        let window = Box::new(
-            NavShell::new()
-                .content_kind(ui::widget::ContentKind::Canvas)
-                .with_id("canvas-shell")
-                .with_inspector_state(&inspector_open)
-                .content(work)
-                .content_header_leading(panels::header::title(cx, &tools, &compact))
-                .content_header("", panels::header::header(cx, &tools, &compact))
-                .inspector(Box::new(Group::new(sidebar(cx, &tools, &dock)))),
-        );
+        // The window's own row is the title, the artwork's menu and its
+        // commands: the bar carries them as slots, so the canvas keeps the
+        // height the row took and a narrow window keeps every command.
+        let window: Element = Box::new(panels::bar::WindowBar::new(
+            Box::new(
+                NavShell::new()
+                    .content_kind(ui::widget::ContentKind::Canvas)
+                    .with_id("canvas-shell")
+                    .with_window_toolbar()
+                    .with_inspector_state(&inspector_open)
+                    .content(work)
+                    .inspector(Box::new(Group::new(sidebar(cx, &tools, &dock)))),
+            ),
+            &tools,
+            cx.dispatcher(),
+        ));
         // Over a blank artwork, a welcome saying what can be done here and
         // by whom; then the dialogs.
         let mut layers = Stack::new().push(window);

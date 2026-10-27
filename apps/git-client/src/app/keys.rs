@@ -32,11 +32,9 @@ impl GitClientApp {
     ) -> bool {
         let command = self.conventions.command_modifier_down(modifiers.state());
         if command {
-            if matches!(logical, Key::Named(NamedKey::Enter)) {
-                if self.screen == Screen::Changes {
-                    self.do_commit();
-                    return true;
-                }
+            if matches!(logical, Key::Named(NamedKey::Enter)) && self.screen == Screen::Changes {
+                self.do_commit();
+                return true;
             }
             return false;
         }

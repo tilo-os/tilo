@@ -9,7 +9,9 @@ use tilo_ui::application::{
 use tilo_ui::application_view::InstanceViewStore;
 use tilo_ui::launch::LaunchError;
 use tilo_ui::local_state::LocalState;
-use tilo_ui::permissions::{ActionKind, PermissionContext, PermissionScope, UserId};
+use tilo_ui::permissions::{
+    ActionKind, PermissionContext, PermissionScope, SharedPermissions, UserId,
+};
 use tilo_ui::record::{RecordCheckout, RecordKind, RecordOwners, RecordStore};
 use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
@@ -223,17 +225,23 @@ pub fn captured_handles() -> Vec<WakeHandle> {
 pub fn local_state() -> LocalState<String> {
     LOCAL.with_borrow(|v| v.clone().unwrap())
 }
-pub fn permissions() -> Rc<RefCell<PermissionContext>> {
-    Rc::new(RefCell::new(
-        PermissionContext::stranger("probe-author").at_unix_time(100),
-    ))
+pub fn permissions() -> SharedPermissions {
+    SharedPermissions::new(PermissionContext::stranger("probe-author").at_unix_time(100))
+}
+/// The author as the room's Owner: everything is allowed, so an outside
+/// effect runs without asking.
+pub fn owner_permissions() -> SharedPermissions {
+    SharedPermissions::new(
+        PermissionContext::member("probe-author", tilo_ui::permissions::Role::Owner)
+            .at_unix_time(100),
+    )
 }
 /// The author as an Editor of the room: may make undoable changes.
-pub fn editor_permissions() -> Rc<RefCell<PermissionContext>> {
-    Rc::new(RefCell::new(
+pub fn editor_permissions() -> SharedPermissions {
+    SharedPermissions::new(
         PermissionContext::member("probe-author", tilo_ui::permissions::Role::Editor)
             .at_unix_time(100),
-    ))
+    )
 }
 pub fn author() -> UserId {
     UserId("probe-author".into())
@@ -276,11 +284,11 @@ pub fn runner_inputs() -> tilo_ui::application::ComponentRunnerInputs {
         text_renderer: tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap(),
     }
 }
-pub fn runner_permissions() -> Rc<RefCell<PermissionContext>> {
-    Rc::new(RefCell::new(
+pub fn runner_permissions() -> SharedPermissions {
+    SharedPermissions::new(
         PermissionContext::member("probe-author", tilo_ui::permissions::Role::Owner)
             .at_unix_time(100),
-    ))
+    )
 }
 pub struct ProbeHost {
     pub owners: RecordOwners,
@@ -348,7 +356,7 @@ impl ProbeHost {
         definition: &ApplicationDefinition,
         instance: u64,
         target: &LaunchTarget,
-        permissions: Rc<RefCell<PermissionContext>>,
+        permissions: SharedPermissions,
     ) -> Result<HostContext, LaunchError> {
         HostContext::prepare(
             definition,

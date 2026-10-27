@@ -1043,3 +1043,118 @@ fn downloads_read_and_answer_their_offer_through_resource_actions() {
         )));
     }
 }
+
+/// A busy or unanswered page used to report its refusal as retryable, which
+/// contradicts the at-most-once contract every Browser action is published
+/// under: the broker refused the answer, dropped the collaboration bridge and
+/// the tab then refused every later action for the rest of the run. A refused
+/// page action is reported as what it is, and the tab keeps working.
+#[test]
+fn a_refused_page_action_is_never_reported_retryable() {
+    use ui::tilo_resource::Effect as _;
+
+    /// `read-page`, as an agent invokes it.
+    fn read_page(widget: &BrowserWidget) -> BrowserOperation {
+        let published = widget.published();
+        let page = published
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "browser.page")
+            .expect("the browser publishes page actions");
+        let spec = page
+            .actions
+            .iter()
+            .find(|spec| spec.id == "read-page")
+            .expect("read-page is published");
+        let encoded = spec
+            .build_json(&serde_json::Map::new())
+            .expect("read-page takes no arguments");
+        crate::effects::BrowserEffect::from_payload(&encoded.payload)
+            .expect("a browser effect")
+            .operation()
+    }
+
+    for code in ["busy", "timeout"] {
+        let engine = TestEngine::new();
+        engine.send(WebViewCommand::Navigate("https://shop.test/".into()));
+        let mut widget = BrowserWidget::with_engine(engine, true);
+        tests::layout_keeping_tree(&mut widget, 1000.0, 700.0, &Theme::dark());
+        let operation = read_page(&widget);
+        let invocation = ui::tilo_actions::InvocationId::new();
+        widget.admit(invocation, operation).unwrap();
+        let request_id = widget
+            .page_operation
+            .as_ref()
+            .expect("the page request is sent")
+            .request_id;
+        widget.accept_page_result(
+            request_id,
+            Err(ui::webview::PageFailure::new(code, "the page is busy")),
+        );
+        let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
+            widget.poll_invocation(invocation)
+        else {
+            panic!("a refused page action fails its invocation");
+        };
+        assert_eq!(error.code, format!("browser.page.{code}"));
+        assert!(
+            !error.retryable,
+            "a {code} refusal must not be retryable under an at-most-once contract"
+        );
+        let again = ui::tilo_actions::InvocationId::new();
+        assert!(
+            widget.admit(again, read_page(&widget)).is_ok(),
+            "the tab still takes page actions after a {code} refusal"
+        );
+    }
+}
+
+/// A failure may only advertise a retry when the action it answers was
+/// published under a policy that allows one: the broker refuses the answer
+/// otherwise, and a single refused terminal update drops the collaboration
+/// bridge, so every later action on the tab is refused for the rest of the
+/// run. The mutating page actions are at-most-once, and the failures this app
+/// reports for them are never retryable.
+#[test]
+fn a_page_action_failure_is_retryable_only_where_its_contract_allows_it() {
+    use ui::tilo_actions::RetryPolicy;
+
+    fn walk(resource: &ui::tilo_actions::Resource, page_actions: &mut Vec<String>) {
+        for action in &resource.actions {
+            if resource.id.0 != "browser.page" {
+                continue;
+            }
+            page_actions.push(action.id.clone());
+            if matches!(
+                action.id.as_str(),
+                "click-page"
+                    | "fill-page"
+                    | "press-page"
+                    | "select-page-option"
+                    | "pointer-page"
+                    | "answer-page-dialog"
+                    | "type-page"
+                    | "fill-page-files"
+            ) {
+                assert_eq!(
+                    action.contract.retry,
+                    RetryPolicy::AtMostOnce,
+                    "browser.page.{} acts on the page, so its failures may never be retried",
+                    action.id
+                );
+            }
+        }
+        for child in &resource.children {
+            walk(child, page_actions);
+        }
+    }
+
+    let widget = BrowserWidget::with_engine(TestEngine::new(), true);
+    let published = widget.published();
+    let mut page_actions = Vec::new();
+    walk(&published, &mut page_actions);
+    assert!(
+        page_actions.iter().any(|id| id == "read-page"),
+        "the browser publishes page actions: {page_actions:?}"
+    );
+}

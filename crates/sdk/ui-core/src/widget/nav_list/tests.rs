@@ -107,7 +107,7 @@ fn the_keyboard_moves_the_selection_and_skips_headers() {
     let seen = Rc::clone(&chosen);
     let list = NavList::new(mailboxes())
         .selected("sent")
-        .on_select(move |id| seen.borrow_mut().push(id));
+        .on_view("places", move |id| seen.borrow_mut().push(id));
     let mut h = harness(list, Theme::dark());
     focus(&mut h);
     assert!(key(&mut h, Key::Named(NamedKey::ArrowDown)));
@@ -1860,7 +1860,7 @@ fn the_first_tap_after_pointer_use_chooses_the_row_it_landed_on() {
         .map(|row| NavItem::new(format!("row-{row}"), format!("Row {row}")))
         .collect();
     let list = NavList::new(vec![NavSection::untitled("all", items)])
-        .on_select(move |id| seen.borrow_mut().push(id));
+        .on_view("places", move |id| seen.borrow_mut().push(id));
     let mut h = harness(list, Theme::dark());
     let seen_row = h.root::<NavList>().row_rect("row-5").expect("row 5 shown");
 
@@ -1879,4 +1879,138 @@ fn the_first_tap_after_pointer_use_chooses_the_row_it_landed_on() {
                 >= f64::from(crate::InteractionEnvironment::TOUCH.minimum_collection_row()),
         "once the tap has landed the rows are touch-sized: {seen_row:?} then {touch_row:?}"
     );
+}
+
+/// Moving the pointer from one destination to the next repaints those two
+/// rows, not the sidebar, the content beside it or the window: each frame's
+/// damage stays within the two rows the hover moved between, and no frame
+/// asks for a layout.
+#[cfg(feature = "native")]
+#[test]
+fn a_hover_moving_between_destinations_damages_only_those_two_rows() {
+    assert_sidebar_hovers_damage_only_their_rows(Box::new(
+        crate::widget::Stack::new().push(Box::new(crate::widget::Text::new("A folder"))),
+    ));
+}
+
+/// The content beside the sidebar keeps what it painted while the pointer
+/// moves over the sidebar: a collapsible section's header and its chevron,
+/// and a month, repaint nothing a hover in the sidebar did not change.
+#[cfg(feature = "native")]
+#[test]
+fn a_sidebar_hover_repaints_no_section_header_or_month_beside_it() {
+    let section = crate::widget::Section::new(vec![
+        Box::new(crate::widget::ListRow::new("wifi", "Wi-Fi")),
+        Box::new(crate::widget::ListRow::new("vpn", "VPN")),
+    ])
+    .with_header(crate::widget::SectionHeader::group("Connections"))
+    .collapsible();
+    let month = crate::widget::DatePicker::new(
+        chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap_or_default(),
+    )
+    .with_today(chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap_or_default());
+    assert_sidebar_hovers_damage_only_their_rows(Box::new(
+        crate::widget::Column::new()
+            .push(Box::new(section))
+            .push(Box::new(month)),
+    ));
+}
+
+/// Move the pointer from one destination to the next of a sidebar beside
+/// `content`: each hover's damage stays within the two rows it moved
+/// between, and no hover asks for a layout.
+#[cfg(feature = "native")]
+fn assert_sidebar_hovers_damage_only_their_rows(content: crate::widget::Element) {
+    use crate::a11y::Role;
+    let shell = crate::widget::NavShell::new()
+        .sidebar(Box::new(NavList::new(destinations(12))))
+        .content(content);
+    let mut app = crate::app::App::new_with_controlled_inputs(State::new(), Box::new(shell));
+    let mut damage = crate::app::SurfaceDamage::default();
+    app.init_layout();
+    for _ in 0..4 {
+        host_frame(&mut app, &mut damage);
+    }
+    let rows: Vec<Rect> = app
+        .semantic_tree()
+        .iter()
+        .filter(|node| node.role == Role::TreeItem)
+        .filter_map(|node| node.bounds)
+        .take(8)
+        .collect();
+    assert!(rows.len() >= 4, "the sidebar shows its rows: {rows:?}");
+    let sidebar_right = rows.iter().map(|row| row.x1).fold(0.0, f64::max);
+    let mut hover = |app: &mut crate::app::App, at: Rect| {
+        let centre = at.center();
+        app.surface_input(
+            &Region,
+            crate::synthetic_input::cursor_moved(centre.x, centre.y),
+            false,
+        );
+        let unsettled = app.unsettled();
+        host_frame(app, &mut damage);
+        let rects = damage.take();
+        (unsettled, rects, damage.repainted())
+    };
+    let _ = hover(&mut app, rows[0]);
+    for pair in rows.windows(2) {
+        let (unsettled, rects, why) = hover(&mut app, pair[1]);
+        assert!(!unsettled, "a hover asked for a layout");
+        let rects = rects.unwrap_or_else(|| panic!("a hover repainted the window: {why:?}"));
+        let (top, bottom) = (pair[0].y0.min(pair[1].y0), pair[0].y1.max(pair[1].y1));
+        assert!(!rects.is_empty(), "the hover shows");
+        // An empty rect covers no pixel.
+        for rect in rects.iter().filter(|rect| rect.area() > 0.0) {
+            assert!(
+                rect.y0 >= top - 2.0 && rect.y1 <= bottom + 2.0 && rect.x1 <= sidebar_right + 16.0,
+                "hovering from {:?} to {:?} damaged {rect:?}, outside the two rows",
+                pair[0],
+                pair[1],
+            );
+        }
+    }
+}
+
+/// Choosing a destination is the list's published view action: an agent
+/// choosing one through it sees the list show it and the app hear of it,
+/// as a person's click does; a destination the list does not have is
+/// refused.
+#[test]
+fn an_agent_chooses_a_destination_through_the_published_view_action() {
+    let chosen = Rc::new(Cell2::new(Vec::<String>::new()));
+    let seen = Rc::clone(&chosen);
+    let list = NavList::new(mailboxes())
+        .selected("inbox")
+        .on_view("mail.places", move |id| seen.borrow_mut().push(id));
+    let mut h = harness(list, Theme::dark());
+    let resources = h.resources();
+    let control = resources
+        .iter()
+        .find(|resource| resource.id.0 == "tilo.control:mail.places")
+        .expect("the list publishes its selection");
+    let select = control
+        .actions
+        .iter()
+        .find(|action| action.id == "select")
+        .expect("a select action");
+    assert_eq!(select.kind, tilo_actions::OperationKind::View);
+    let choices: Vec<&str> = select.params()[0]
+        .choices
+        .iter()
+        .map(AsRef::as_ref)
+        .collect();
+    assert_eq!(choices, ["inbox", "sent", "work", "design", "travel"]);
+
+    let destination =
+        |id: &str| serde_json::Map::from_iter([("entry".into(), serde_json::json!(id))]);
+    h.invoke_published("tilo.control:mail.places", "select", &destination("travel"))
+        .expect("an agent chooses a destination");
+    assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("travel"));
+    assert_eq!(chosen.borrow().as_slice(), ["travel"]);
+    assert!(
+        h.invoke_published("tilo.control:mail.places", "select", &destination("spam"))
+            .is_err(),
+        "a destination the list does not have is refused"
+    );
+    assert_eq!(chosen.borrow().as_slice(), ["travel"]);
 }

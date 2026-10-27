@@ -10,6 +10,8 @@ use ui::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::strings::{self, format_all};
+
 const OWNER: &str = "/usr/libexec/tilo-windows-owner";
 const RECOVERY_CONSOLE: &str = "/usr/libexec/tilo-windows-recovery-console";
 const STATUS_INTERVAL: Duration = Duration::from_secs(2);
@@ -22,7 +24,7 @@ fn run_owner_command(
     timeout: Duration,
 ) -> Result<bounded_command::Output, String> {
     bounded_command::run_prepared(command, None, OWNER_OUTPUT_LIMIT, timeout)
-        .map_err(|error| format!("The Windows appliance command failed: {error}"))
+        .map_err(|error| format_all("windows-error-command", &[("error", error.to_string())]))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,11 +45,11 @@ pub enum EgressPurpose {
 
 impl EgressPurpose {
     #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Activation => "Windows activation",
-            Self::WindowsUpdate => "Windows Update",
-        }
+    pub fn label(self) -> String {
+        strings::t(match self {
+            Self::Activation => "windows-purpose-activation",
+            Self::WindowsUpdate => "windows-purpose-update",
+        })
     }
 }
 
@@ -59,15 +61,28 @@ pub struct TemporaryEgressLease {
 }
 
 impl TemporaryEgressLease {
+    /// How long the connection has left, said in the person's words: the
+    /// status the lease is read with follows it, so this counts down.
     #[must_use]
     pub fn expiry_label(&self) -> String {
         let now = ui::time::unix_now();
-        if self.expires_at_unix <= now {
-            "Expired; refreshing status…".into()
-        } else {
-            let remaining = self.expires_at_unix - now;
-            format!("Expires in {}m {}s", remaining / 60, remaining % 60)
+        let Some(remaining) = self.expires_at_unix.checked_sub(now) else {
+            return strings::t("windows-connection-expired");
+        };
+        let (minutes, seconds) = (remaining / 60, remaining % 60);
+        if minutes == 0 {
+            return format_all(
+                "windows-connection-expires-seconds",
+                &[("seconds", seconds.to_string())],
+            );
         }
+        format_all(
+            "windows-connection-expires",
+            &[
+                ("minutes", minutes.to_string()),
+                ("seconds", seconds.to_string()),
+            ],
+        )
     }
 }
 
@@ -84,14 +99,14 @@ pub enum AppliancePowerState {
 
 impl AppliancePowerState {
     #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Running => "Running",
-            Self::Suspended => "Suspended",
-            Self::Paused => "Paused",
-            Self::ShutDown => "Shut down",
-            Self::Unknown => "Power state unavailable",
-        }
+    pub fn label(self) -> String {
+        strings::t(match self {
+            Self::Running => "windows-power-running",
+            Self::Suspended => "windows-power-suspended",
+            Self::Paused => "windows-power-paused",
+            Self::ShutDown => "windows-power-shut-down",
+            Self::Unknown => "windows-power-unknown",
+        })
     }
 
     #[must_use]
@@ -115,15 +130,11 @@ impl EgressPurpose {
         }
     }
 
-    const fn ready_notice(self) -> &'static str {
-        match self {
-            Self::Activation => {
-                "Windows has a temporary activation connection. Opening the recovery desktop…"
-            }
-            Self::WindowsUpdate => {
-                "Windows has a temporary update connection. Opening the recovery desktop…"
-            }
-        }
+    fn ready_notice(self) -> String {
+        strings::t(match self {
+            Self::Activation => "windows-connection-opened-activation",
+            Self::WindowsUpdate => "windows-connection-opened-update",
+        })
     }
 }
 
@@ -138,14 +149,25 @@ impl LifecycleAction {
         }
     }
 
-    const fn complete_notice(self) -> &'static str {
-        match self {
-            Self::Start => "Windows is starting.",
-            Self::Restart => "Windows is restarting.",
-            Self::Suspend => "Windows has been suspended.",
-            Self::Resume => "Windows is resuming.",
-            Self::Shutdown => "Windows is shutting down.",
-        }
+    /// The action's own name, as its button says it.
+    fn label(self) -> String {
+        strings::t(match self {
+            Self::Start => "windows-start-appliance",
+            Self::Restart => "windows-restart-appliance",
+            Self::Suspend => "windows-suspend-appliance",
+            Self::Resume => "windows-resume-appliance",
+            Self::Shutdown => "windows-shutdown-appliance",
+        })
+    }
+
+    fn complete_notice(self) -> String {
+        strings::t(match self {
+            Self::Start => "windows-start-done",
+            Self::Restart => "windows-restart-done",
+            Self::Suspend => "windows-suspend-done",
+            Self::Resume => "windows-resume-done",
+            Self::Shutdown => "windows-shutdown-done",
+        })
     }
 }
 
@@ -234,59 +256,39 @@ impl ApplianceStatus {
     }
 
     #[must_use]
-    pub const fn phase_label(&self) -> &'static str {
-        match self.phase {
-            AppliancePhase::NotProvisioned => "Not set up",
-            AppliancePhase::Installing => "Windows is installing",
-            AppliancePhase::AwaitingGuestBridge => "Finishing Windows setup",
-            AppliancePhase::Ready => "Ready",
-            AppliancePhase::RepairRequired => "Needs recovery",
-            AppliancePhase::Unavailable => "Status unavailable",
-        }
+    pub fn phase_label(&self) -> String {
+        strings::t(match self.phase {
+            AppliancePhase::NotProvisioned => "windows-phase-not-set-up",
+            AppliancePhase::Installing => "windows-phase-installing",
+            AppliancePhase::AwaitingGuestBridge => "windows-phase-finishing-setup",
+            AppliancePhase::Ready => "windows-phase-ready",
+            AppliancePhase::RepairRequired => "windows-phase-needs-recovery",
+            AppliancePhase::Unavailable => "windows-phase-unavailable",
+        })
     }
 
     /// The one sentence the appliance page states its status in: how far
     /// setup is and, once Windows is ready, whether it is running.
     #[must_use]
-    pub const fn status_statement(&self) -> &'static str {
-        match (&self.phase, self.power_state) {
-            (AppliancePhase::Ready, AppliancePowerState::Running) => {
-                "Windows is running and ready for your apps."
-            }
-            (AppliancePhase::Ready, AppliancePowerState::Suspended) => {
-                "Windows is suspended. Resume it to open your apps."
-            }
-            (AppliancePhase::Ready, AppliancePowerState::Paused) => {
-                "Windows is paused. Resume it to open your apps."
-            }
-            (AppliancePhase::Ready, AppliancePowerState::ShutDown) => {
-                "Windows is shut down. Start it to open your apps."
-            }
-            (AppliancePhase::Ready, AppliancePowerState::Unknown) => {
-                "Windows is ready for your apps."
-            }
-            (AppliancePhase::NotProvisioned, _) => {
-                "Choose Windows installation media to set it up."
-            }
-            (AppliancePhase::Installing, _) => {
-                "Windows is installing. Finish setup in the setup desktop."
-            }
-            (AppliancePhase::AwaitingGuestBridge, _) => {
-                "Finish connecting Windows to Tilo in the recovery desktop."
-            }
-            (AppliancePhase::RepairRequired, _) => {
-                "Windows needs repair. Open the recovery desktop to fix it."
-            }
-            (AppliancePhase::Unavailable, _) => {
-                "Windows didn't report its status. Check it before making changes."
-            }
-        }
+    pub fn status_statement(&self) -> String {
+        strings::t(match (&self.phase, self.power_state) {
+            (AppliancePhase::Ready, AppliancePowerState::Running) => "windows-status-running",
+            (AppliancePhase::Ready, AppliancePowerState::Suspended) => "windows-status-suspended",
+            (AppliancePhase::Ready, AppliancePowerState::Paused) => "windows-status-paused",
+            (AppliancePhase::Ready, AppliancePowerState::ShutDown) => "windows-status-shut-down",
+            (AppliancePhase::Ready, AppliancePowerState::Unknown) => "windows-status-ready",
+            (AppliancePhase::NotProvisioned, _) => "windows-status-not-set-up",
+            (AppliancePhase::Installing, _) => "windows-status-installing",
+            (AppliancePhase::AwaitingGuestBridge, _) => "windows-status-finishing-setup",
+            (AppliancePhase::RepairRequired, _) => "windows-status-needs-recovery",
+            (AppliancePhase::Unavailable, _) => "windows-status-unavailable",
+        })
     }
 
     /// The appliance's status in a list row: its power state once Windows is
     /// ready, how far setup is before that.
     #[must_use]
-    pub const fn summary_label(&self) -> &'static str {
+    pub fn summary_label(&self) -> String {
         match (&self.phase, self.power_state) {
             (AppliancePhase::Ready, AppliancePowerState::Unknown) => self.phase_label(),
             (AppliancePhase::Ready, power) => power.label(),
@@ -297,37 +299,29 @@ impl ApplianceStatus {
     /// Tilo reports only what the authenticated guest said. It deliberately
     /// does not turn activation into a licensing determination.
     #[must_use]
-    pub const fn license_label(&self) -> &'static str {
-        match self.license {
-            LicenseState::Unknown => "Windows hasn't reported it yet",
-            LicenseState::DigitallyActivated => {
-                "Windows says it's activated with a digital license"
-            }
-            LicenseState::ProductKeyActivated => "Windows says it's activated with a product key",
-            LicenseState::OrganisationManaged => "Managed by your organization",
-            LicenseState::Evaluation => "Windows says it's an evaluation edition",
-            LicenseState::Unlicensed => "Windows says it isn't activated",
-        }
+    pub fn license_label(&self) -> String {
+        strings::t(match self.license {
+            LicenseState::Unknown => "windows-license-unknown",
+            LicenseState::DigitallyActivated => "windows-license-digital",
+            LicenseState::ProductKeyActivated => "windows-license-product-key",
+            LicenseState::OrganisationManaged => "windows-license-managed",
+            LicenseState::Evaluation => "windows-license-evaluation",
+            LicenseState::Unlicensed => "windows-license-unlicensed",
+        })
     }
 
     /// Additional context for unusual activation states. This stays in
     /// management UI and is intentionally absent for normal app launches.
     #[must_use]
-    pub const fn license_detail(&self) -> Option<&'static str> {
-        match self.license {
-            LicenseState::Unknown => {
-                Some("Finish Windows Setup, then return here to check its activation status.")
-            }
-            LicenseState::Unlicensed => Some(
-                "Activate Windows from the recovery desktop. Tilo doesn't keep product keys or decide whether a license is valid.",
-            ),
-            LicenseState::Evaluation => Some(
-                "Evaluation editions have their own terms and expiry date. Tilo doesn't keep product keys or decide whether a license is valid.",
-            ),
+    pub fn license_detail(&self) -> Option<String> {
+        Some(strings::t(match self.license {
+            LicenseState::Unknown => "windows-license-unknown-detail",
+            LicenseState::Unlicensed => "windows-license-unlicensed-detail",
+            LicenseState::Evaluation => "windows-license-evaluation-detail",
             LicenseState::DigitallyActivated
             | LicenseState::ProductKeyActivated
-            | LicenseState::OrganisationManaged => None,
-        }
+            | LicenseState::OrganisationManaged => return None,
+        }))
     }
 }
 
@@ -374,7 +368,7 @@ impl ApplianceOwnerClient {
             next_refresh: ui::time::now()
                 .checked_sub(STATUS_INTERVAL)
                 .unwrap_or_else(Instant::now),
-            status: ApplianceStatus::unavailable("Checking the Windows appliance…"),
+            status: ApplianceStatus::unavailable(strings::t("windows-appliance-checking")),
             checked: false,
             offline: false,
         };
@@ -404,10 +398,10 @@ impl ApplianceOwnerClient {
     /// reports a given status.
     fn ensure_idle(&self) -> Result<(), String> {
         if self.offline {
-            return Err("The Windows appliance can't be managed in this session.".into());
+            return Err(strings::t("windows-error-unmanageable"));
         }
         if self.action_pending {
-            return Err("A Windows appliance action is already in progress.".into());
+            return Err(strings::t("windows-error-busy"));
         }
         Ok(())
     }
@@ -463,10 +457,7 @@ impl ApplianceOwnerClient {
     pub fn open_recovery(&mut self) -> Result<(), String> {
         self.ensure_idle()?;
         if !self.status.recovery_available {
-            return Err(
-                "The Windows recovery desktop is unavailable until the appliance is provisioned."
-                    .into(),
-            );
+            return Err(strings::t("windows-error-recovery-unavailable"));
         }
         self.start_recovery()
     }
@@ -476,13 +467,12 @@ impl ApplianceOwnerClient {
     pub fn lifecycle(&mut self, action: LifecycleAction) -> Result<(), String> {
         self.ensure_idle()?;
         if !self.status.is_provisioned() {
-            return Err("Set up the Windows appliance before managing its power state.".into());
+            return Err(strings::t("windows-error-set-up-power"));
         }
         if !self.status.power_state.allows(action) {
-            return Err(format!(
-                "{} is not available while Windows is {}.",
-                action.argument(),
-                self.status.power_state.label().to_ascii_lowercase()
+            return Err(format_all(
+                "windows-error-power-state",
+                &[("action", action.label())],
             ));
         }
         self.action_pending = true;
@@ -503,10 +493,10 @@ impl ApplianceOwnerClient {
     pub fn open_temporary_egress(&mut self, purpose: EgressPurpose) -> Result<(), String> {
         self.ensure_idle()?;
         if !self.status.is_provisioned() {
-            return Err("Set up the Windows appliance before connecting it temporarily.".into());
+            return Err(strings::t("windows-error-set-up-connection"));
         }
         if self.status.power_state != AppliancePowerState::Running {
-            return Err("Windows must be running before it can be connected temporarily.".into());
+            return Err(strings::t("windows-error-not-running"));
         }
         self.action_pending = true;
         let sender = self.sender.clone();
@@ -529,7 +519,7 @@ impl ApplianceOwnerClient {
     pub fn revoke_temporary_egress(&mut self) -> Result<(), String> {
         self.ensure_idle()?;
         if self.status.temporary_egress.is_none() {
-            return Err("There is no active temporary Windows connection to revoke.".into());
+            return Err(strings::t("windows-error-connection-no-lease"));
         }
         self.action_pending = true;
         let sender = self.sender.clone();
@@ -561,7 +551,10 @@ impl ApplianceOwnerClient {
                         .spawn()
                         .map(|_| ())
                         .map_err(|error| {
-                            format!("Couldn't open the Windows recovery desktop: {error}")
+                            format_all(
+                                "windows-error-recovery-open",
+                                &[("error", error.to_string())],
+                            )
                         })
                 });
             let _ = sender.send(OwnerEvent::Recovery(result));
@@ -581,9 +574,8 @@ impl ApplianceOwnerClient {
                     self.checked = true;
                 }
                 OwnerEvent::Status(Ok(_)) => {
-                    self.status = ApplianceStatus::unavailable(
-                        "The Windows appliance returned an unsupported status schema.",
-                    );
+                    self.status =
+                        ApplianceStatus::unavailable(strings::t("windows-error-status-schema"));
                     self.status_pending = false;
                     self.checked = true;
                 }
@@ -594,9 +586,7 @@ impl ApplianceOwnerClient {
                 }
                 OwnerEvent::Imported(Ok(())) => {
                     self.action_pending = false;
-                    notice = Some(
-                        "Windows media was accepted. Opening the initial setup desktop…".into(),
-                    );
+                    notice = Some(strings::t("windows-media-accepted"));
                     // First provisioning intentionally uses the recovery-only
                     // desktop route, then normal apps return to app-focused
                     // guest windows.
@@ -607,7 +597,7 @@ impl ApplianceOwnerClient {
                 }
                 OwnerEvent::Recovery(Ok(())) => {
                     self.action_pending = false;
-                    let detail = "The Windows setup and recovery desktop is open.".to_string();
+                    let detail = strings::t("windows-recovery-open");
                     self.action_result = Some(Ok(detail.clone()));
                     notice = Some(detail);
                 }
@@ -622,13 +612,13 @@ impl ApplianceOwnerClient {
                 }
                 OwnerEvent::Lifecycle(action, Ok(())) => {
                     self.action_pending = false;
-                    let detail = action.complete_notice().to_string();
+                    let detail = action.complete_notice();
                     self.action_result = Some(Ok(detail.clone()));
                     notice = Some(detail);
                 }
                 OwnerEvent::Egress(purpose, Ok(())) => {
                     self.action_pending = false;
-                    notice = Some(purpose.ready_notice().into());
+                    notice = Some(purpose.ready_notice());
                     if let Err(error) = self.start_recovery() {
                         self.action_result = Some(Err(error.clone()));
                         notice = Some(error);
@@ -636,7 +626,7 @@ impl ApplianceOwnerClient {
                 }
                 OwnerEvent::EgressRevoked(Ok(())) => {
                     self.action_pending = false;
-                    notice = Some("The temporary Windows connection was revoked.".into());
+                    notice = Some(strings::t("windows-connection-revoked"));
                 }
             }
         }
@@ -656,19 +646,28 @@ fn command_with_stdin(mut command: Command, source: File) -> Result<std::process
     command
         .stdin(Stdio::from(source))
         .output()
-        .map_err(|error| format!("Couldn't ask for permission: {error}"))
+        .map_err(|error| {
+            format_all(
+                "windows-error-permission-ask",
+                &[("error", error.to_string())],
+            )
+        })
 }
 
 fn read_status() -> Result<ApplianceStatus, String> {
     let mut command = Command::new(OWNER);
     command.arg("status");
     let output = run_owner_command(command, STATUS_TIMEOUT)
-        .map_err(|error| format!("Could not read Windows appliance status: {error}"))?;
+        .map_err(|error| format_all("windows-error-status-read", &[("error", error)]))?;
     if !output.status.success() {
         return Err(output_error(&output.stderr));
     }
-    serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("Windows appliance returned invalid status: {error}"))
+    serde_json::from_slice(&output.stdout).map_err(|error| {
+        format_all(
+            "windows-error-status-invalid",
+            &[("error", error.to_string())],
+        )
+    })
 }
 
 fn success_output(output: &std::process::Output) -> Result<(), String> {
@@ -696,7 +695,7 @@ impl Default for ApplianceOwnerClient {
 fn output_error(stderr: &[u8]) -> String {
     let detail = String::from_utf8_lossy(stderr).trim().to_string();
     if detail.is_empty() {
-        "Permission wasn't granted.".into()
+        strings::t("windows-error-permission")
     } else {
         detail
     }

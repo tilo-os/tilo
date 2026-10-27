@@ -69,6 +69,9 @@ tilo-net = { path = "../../platform/tilo-net", features = ["http", "json"] }
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer", default-features = false }
 
 agent-provider-config = { path = "../../agent/provider-config" }
+# The model gateway connection the report review binds, made by the shell on
+# the composer's behalf as a launcher makes one for an app.
+tilo-model-client = { path = "../../agent/model-client", default-features = false, features = ["runtime-client"] }
 fnv.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
@@ -282,6 +285,10 @@ channel-crypto = { path = "../../collab/channel-crypto" }
 # format. `surface-decoder` is the peer-view receive path; `recording` the
 # MP4/MOV muxer behind screen recordings and `shots --mode recording`.
 tilo-callstream = { path = "../../collab/tilo-callstream", features = ["surface-decoder", "recording"] }
+# The on-screen keyboard's widget, which the `shots` capture draws in place of
+# the keyboard client's surface (it has no clients) and which reads the input
+# method's content type the way the keyboard app does.
+osk = { path = "../../../apps/osk" }
 # `firstboot` provisions a fresh single-device identity at first login
 # via `threshold-identity::ThresholdIdentity::bootstrap_single_device_seed`,
 # which yields the raw dalek-compatible seed + pubkey that the
@@ -434,8 +441,6 @@ tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-s
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
 # The hosted-terminal tests tee its PTY writes in any profile.
 terminal = { path = "../../../apps/terminal", features = ["test-support"] }
-# The on-screen keyboard's own reading of the input method's content type.
-osk = { path = "../../../apps/osk" }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
 # A browser in the room a node governs, for the node's own session to share
 # sealed records with.

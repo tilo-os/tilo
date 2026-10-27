@@ -267,6 +267,7 @@ impl NotificationsArea {
         sample: bool,
         per_app: &BTreeMap<String, AppNotificationRule>,
     ) -> Vec<InstalledNotificationApp> {
+        crate::device_read::off_ui_thread();
         if sample {
             sample_apps()
         } else {
@@ -288,6 +289,11 @@ impl NotificationsArea {
     /// Whether the read [`Self::start_read`] started has ended.
     pub(crate) fn read_finished(&self) -> bool {
         self.read.is_finished()
+    }
+
+    /// What waits off the UI thread for the started read to end.
+    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
+        self.read.wait()
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -544,14 +550,14 @@ impl NotificationsPane {
         section(&t("notif-dnd-title"), rows(content))
     }
 
+    /// Banners, and while they show, whether they show what a message
+    /// says.
     fn build_banners_card(&self) -> SettingsSection {
-        section(
-            &t("notif-banners-title"),
-            rows(vec![
-                banners(&self.cx, &self.prefs),
-                previews(&self.cx, &self.prefs),
-            ]),
-        )
+        let mut content = vec![banners(&self.cx, &self.prefs)];
+        if self.prefs().show_banners {
+            content.push(previews(&self.cx, &self.prefs));
+        }
+        section(&t("notif-banners-title"), rows(content))
     }
 
     fn build_delivery_card(&self) -> SettingsSection {
@@ -588,16 +594,19 @@ impl NotificationsPane {
                 self.cx
                     .row(t("notif-focus-from"))
                     .id("notifications.focus.start")
+                    .nested()
                     .of(&self.prefs, focus.start_minute)
                     .among(times(), focus_time),
                 self.cx
                     .row(t("notif-focus-until"))
                     .id("notifications.focus.end")
+                    .nested()
                     .of(&self.prefs, focus.end_minute)
                     .among(times(), focus_time),
                 self.cx
                     .row(t("notif-focus-days"))
                     .id("notifications.focus.days")
+                    .nested()
                     .of(&self.prefs, focus.weekdays)
                     .among(FOCUS_DAYS.iter().map(|(_, days)| *days), |days: &u8| {
                         focus_days_label(*days)
@@ -713,7 +722,17 @@ pub(crate) fn previews(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item
         .described(t("notif-previews-desc"))
         .id("notifications.previews")
         .of(prefs, NotificationPrefs::paths().show_previews)
-        .toggle()
+        .pictures(
+            [true, false],
+            |shown: &bool| {
+                t(if *shown {
+                    "notif-previews-shown"
+                } else {
+                    "notif-previews-hidden"
+                })
+            },
+            |shown: &bool| ui::widget::Picture::Banner { message: *shown },
+        )
 }
 
 pub(crate) fn lock_screen(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
@@ -841,8 +860,13 @@ mod tests {
     #[test]
     fn notification_edits_write_the_policy() {
         // A mute counts from when it was asked for: the clock stands still
-        // here, so the end it writes is exact.
-        tilo_clock::freeze_wall(tilo_clock::wall());
+        // for this scenario's app, so the end it writes is exact.
+        tilo_clock::testing::with_wall(tilo_clock::wall(), || {
+            notification_edits_write_the_policy_at_once();
+        });
+    }
+
+    fn notification_edits_write_the_policy_at_once() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         edit_field(&mut app, NOTIFICATIONS, "do_not_disturb", true).unwrap();
         edit_field(&mut app, NOTIFICATIONS, "show_banners", false).unwrap();
@@ -921,7 +945,12 @@ mod tests {
     /// writes nothing.
     #[test]
     fn apps_are_live_rows_offering_their_rules() {
-        tilo_clock::freeze_wall(tilo_clock::wall());
+        tilo_clock::testing::with_wall(tilo_clock::wall(), || {
+            apps_are_live_rows_offering_their_rules_at_once();
+        });
+    }
+
+    fn apps_are_live_rows_offering_their_rules_at_once() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let settings = app.settings::<NotificationPrefs>();
         assert!(

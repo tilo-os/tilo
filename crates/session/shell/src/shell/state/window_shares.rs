@@ -526,7 +526,7 @@ pub(super) fn window_shares_of(
 ) -> BTreeMap<TabId, WindowShare> {
     tilo_desktop_model::window_share::window_shares(
         &tilo_desktop_model::projection::room_policy_of(doc, &room.to_string()),
-        &tilo_desktop_model::projection::contents_owners_of(doc),
+        &tilo_desktop_model::window_share::device_salts(doc),
         now_ms,
     )
 }
@@ -615,3 +615,6 @@ pub(super) fn show_window_shares<'a>(
     }
     changed
 }
+
+#[cfg(test)]
+mod tests;

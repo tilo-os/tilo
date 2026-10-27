@@ -1418,12 +1418,6 @@ fn mouse_wheel_zoom_requests_frames_until_the_motion_settles() {
 
 #[test]
 fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
-    fn has_label(node: &ui::headless::InspectionNode, name: &str) -> bool {
-        node.semantics
-            .as_ref()
-            .is_some_and(|semantic| semantic.name.as_deref() == Some(name))
-            || node.children.iter().any(|child| has_label(child, name))
-    }
     // Drive icon/background completions deterministically; this exercises
     // motion policy, not the shared runner's worker scheduling latency.
     let pumped = ui::background::Pumped::new();
@@ -1457,9 +1451,20 @@ fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
     theme.reduce_motion = true;
     desk.app.harness().set_theme(theme);
     desk.hold(&[]);
+    // The zoom the canvas holds is the wheel's target at once. The readout
+    // that stood in the app's own header is the window bar's zoom slot now,
+    // so that is where the size is said.
+    desk.app.harness().render_rgba();
+    let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+    let zoom_name = declared
+        .actions
+        .iter()
+        .find(|action| action.id == "canvas.zoom")
+        .map(|action| action.name.clone())
+        .expect("the zoom is a slot in the window bar");
     assert!(
-        has_label(&desk.app.harness().inspection().root, "154%"),
-        "reduced motion immediately reaches the wheel's target zoom"
+        zoom_name.contains("154%"),
+        "reduced motion immediately reaches the wheel's target zoom: {zoom_name}"
     );
     pumped.run_pending();
     assert!(
@@ -1473,9 +1478,17 @@ fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
     desk.hold(&["ctrl"]);
     desk.app.harness().scroll(0.0, 1.0);
     desk.hold(&[]);
+    desk.app.harness().render_rgba();
+    let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+    let zoom_name = declared
+        .actions
+        .iter()
+        .find(|action| action.id == "canvas.zoom")
+        .map(|action| action.name.clone())
+        .expect("the zoom is a slot in the window bar");
     assert!(
-        has_label(&desk.app.harness().inspection().root, "190%"),
-        "subsequent wheel input immediately reaches its target zoom"
+        zoom_name.contains("190%"),
+        "subsequent wheel input immediately reaches its target zoom: {zoom_name}"
     );
     pumped.run_pending();
     assert!(

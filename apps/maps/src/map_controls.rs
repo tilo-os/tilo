@@ -116,14 +116,14 @@ impl MapControlAction {
     ];
 
     /// What the control is called: its accessible name and its tooltip.
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::History => "History",
-            Self::ZoomIn => "Zoom in",
-            Self::ZoomOut => "Zoom out",
-            Self::Locate => "My location",
-            Self::Layers => "Map layers",
-        }
+    pub(super) fn label(self) -> String {
+        crate::failure::t(match self {
+            Self::History => "maps-history",
+            Self::ZoomIn => "maps-zoom-in",
+            Self::ZoomOut => "maps-zoom-out",
+            Self::Locate => "maps-use-my-location",
+            Self::Layers => "maps-map-layers",
+        })
     }
 
     fn icon(self) -> Icon {
@@ -223,7 +223,7 @@ impl MapControls {
         &mut self,
         point: Point,
         suppressed: bool,
-        extra_targets: impl IntoIterator<Item = (Rect, &'static str)>,
+        extra_targets: impl IntoIterator<Item = (Rect, String)>,
         now: Instant,
     ) -> bool {
         let old_hover = self.hovered;
@@ -238,7 +238,7 @@ impl MapControls {
                 extra_targets
                     .into_iter()
                     .find(|(rect, _)| rect.contains(point))
-                    .map(|(rect, label)| (rect, label.to_string()))
+                    .map(|(rect, label)| (rect, label))
             })
         };
         let tooltip_changed = self.tooltip.on_pointer(target, now);
@@ -273,12 +273,13 @@ impl MapControls {
                 MapControlAction::History => self.history.is_some_and(HistoryControl::is_open),
                 _ => false,
             };
+            let label = action.label();
             Button::paint(
                 scene,
                 transform,
                 text,
                 theme,
-                &ButtonFace::icon_only(layout.rect(action), action.icon(), action.label())
+                &ButtonFace::icon_only(layout.rect(action), action.icon(), &label)
                     .role(ButtonRole::Secondary)
                     .hovered(self.hovered == Some(action))
                     .toggled(on),

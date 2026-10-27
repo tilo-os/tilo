@@ -101,6 +101,13 @@ fn semantic_exists(node: &crate::a11y::AccessNode, name: &str) -> bool {
                 .iter()
                 .any(|child| semantic_exists(child, name)))
 }
+
+/// Whether `node` answers to `name`, with or without the `semantic:` prefix
+/// a journey writes to say it means a semantic name rather than a path.
+fn names_node(node: &crate::a11y::AccessNode, name: &str) -> bool {
+    semantic_exists(node, name.strip_prefix("semantic:").unwrap_or(name))
+}
+
 fn semantic_node(driver: &FrameHarness, target: &str) -> Result<crate::a11y::AccessNode, String> {
     fn access(
         node: &crate::a11y::AccessNode,
@@ -164,6 +171,56 @@ fn target_exists(node: &InspectionNode, name: &str) -> bool {
         return true;
     }
     node.children.iter().any(|child| target_exists(child, name))
+}
+
+/// Whether `target` holds the keyboard focus, with the evidence behind the
+/// answer.
+///
+/// A surface can keep drawing the same values at every width while the
+/// keyboard stops reaching a control, so this asks the inspection rather than
+/// the pixels: the target's own widget is the runner's focus owner, or the
+/// target names a widget or semantic control inside that owner which reports
+/// it is focused.
+fn focused_target(driver: &FrameHarness, target: &str) -> (bool, Value) {
+    fn node_is_focused(node: &crate::a11y::AccessNode) -> bool {
+        !node.state.hidden && (node.state.focused || node.children.iter().any(node_is_focused))
+    }
+    fn holds_focus(node: &InspectionNode, name: &str) -> bool {
+        if node.semantics.as_ref().is_some_and(|s| s.state.hidden) {
+            return false;
+        }
+        let named = node.semantics.as_ref().is_some_and(|s| names_node(s, name));
+        if named && node.semantics.as_ref().is_some_and(node_is_focused) {
+            return true;
+        }
+        node.children.iter().any(|child| holds_focus(child, name))
+    }
+    fn inside<'a>(node: &'a InspectionNode, path: &str) -> Option<&'a InspectionNode> {
+        if node.path == path {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| inside(child, path))
+    }
+    let inspection = driver.inspection();
+    let owner = inspection.keyboard_focus_owner.as_deref();
+    let focused = owner.is_some_and(|path| {
+        inside(&inspection.root, path).is_some_and(|owner| {
+            // The widget holding the runner's focus is the target however it
+            // is titled: the keyboard is there, whatever the control publishes
+            // about its own state.
+            owner.path == target
+                || owner.test_id.as_deref() == Some(target)
+                || owner
+                    .semantics
+                    .as_ref()
+                    .is_some_and(|semantics| names_node(semantics, target))
+                || holds_focus(owner, target)
+        })
+    });
+    (
+        focused,
+        json!({"target": target, "focused": focused, "focus_owner": owner}),
+    )
 }
 
 fn targets(driver: &FrameHarness) -> BTreeMap<String, [f64; 4]> {
@@ -464,6 +521,10 @@ fn measure(
                 .get(target)
                 .ok_or_else(|| format!("no visible bounds for {target}"))?;
             Ok((r[2] >= min[0] && r[3] >= min[1], json!([r[2], r[3]])))
+        }
+        Check::Focus { target } => {
+            let (focused, evidence) = focused_target(driver, target);
+            Ok((focused, evidence))
         }
         Check::Moved {
             target,

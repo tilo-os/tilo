@@ -50,8 +50,11 @@ impl From<std::borrow::Cow<'_, str>> for ArgValue {
 /// The Fluent message a label, placeholder or button shows: looked up in
 /// the active locale when drawn, shown verbatim when no catalog has it.
 ///
-/// `tilo-app check` fails on a literal key that the app's
-/// `locales/en-US.ftl` lacks.
+/// A `tilo-app` app names its messages through the keys generated into
+/// `src/locales.rs` (`locales::keys::BOOKMARKS_ADD`), so a label its
+/// `locales/en-US.ftl` does not have is a compile error. `tilo-app check`
+/// also fails on a literal key that the source catalog lacks, and on keys
+/// the catalog has grown past.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LabelKey(std::borrow::Cow<'static, str>);
 
@@ -290,6 +293,20 @@ fn pseudo_expand(value: &str) -> String {
 fn apply_pseudo_locale(value: String, args: Option<&FluentArgs>, pseudo_language: bool) -> String {
     let mode = PSEUDO_LOCALE.with(Cell::get);
     if mode == PseudoLocale::Off && !pseudo_language {
+        return value;
+    }
+    // Nothing says nothing: a bound text with no words yet — a save status
+    // that has nothing to report — must not become a pair of markers, which
+    // is how a review finds copy that is too long rather than copy that is
+    // absent.
+    if value.is_empty() {
+        return value;
+    }
+    // Copy composed from copy already localised — a date heading, "⟦Tue⟧,
+    // ⟦Jun⟧ 30", a section header of two translated fragments — carries its
+    // marks inside it. Wrapping it again draws a doubled pair, which a
+    // review reads as a defect in the string rather than in the transform.
+    if value.contains(PSEUDO_OPEN) || value.contains(PSEUDO_CLOSE) {
         return value;
     }
     let data: Vec<&str> = args
@@ -1613,6 +1630,34 @@ mod tests {
         assert_eq!(pseudo_expand("⟦⟧"), "⟦⟧");
     }
 
+    /// Copy made of copy already localised keeps the one pair of marks it
+    /// has: a date heading reads `⟦Tue⟧, ⟦Jun⟧ 30`, never `⟦⟦Tue⟧, ⟦Jun⟧ 30⟧`.
+    #[test]
+    fn a_message_of_localised_fragments_is_not_marked_twice() {
+        let _restore = RestoreLookupState::capture();
+        install_plain("en-US", "en-US", &[("en-US", EN)]);
+        I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
+        let weekday = I18nManager::lookup("greeting", None);
+        let composed =
+            I18nManager::format("share", &[("person", ArgValue::from(weekday.as_str()))]);
+        assert_eq!(
+            composed.matches(PSEUDO_OPEN).count(),
+            1,
+            "one pair of markers: {composed}"
+        );
+    }
+
+    /// Nothing says nothing: an empty message is not two markers, which a
+    /// review would read as copy that is too long.
+    #[test]
+    fn an_empty_message_stays_empty_under_the_pseudo_locale() {
+        let _restore = RestoreLookupState::capture();
+        install_plain("en-US", "en-US", &[("en-US", EN)]);
+        I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
+        assert_eq!(I18nManager::lookup("", None), "");
+        assert_eq!(I18nManager::format("", &[]), "");
+    }
+
     #[test]
     fn pseudo_locales_expand_copy_but_not_data_and_invalidate_widgets() {
         let _restore = RestoreLookupState::capture();
@@ -1737,7 +1782,7 @@ mod tests {
                 participant_display_label("agent:"),
                 "Unbekannter Agent · Agent"
             );
-            assert_eq!(participant_display_label("ada"), "ada");
+            assert_eq!(participant_display_label("Ada"), "Ada");
         }
     }
 

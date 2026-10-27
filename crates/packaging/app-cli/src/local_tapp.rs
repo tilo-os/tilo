@@ -112,15 +112,8 @@ impl Verdict {
 /// or a download staged in the cache (removed when this drops).
 struct Source {
     path: PathBuf,
-    downloaded: bool,
-}
-
-impl Drop for Source {
-    fn drop(&mut self) {
-        if self.downloaded {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
+    /// The download's staging file, removed with this.
+    _downloaded: Option<app_cli::install::StagingFile>,
 }
 
 fn fetch(source: &str, on_progress: &mut dyn FnMut(DownloadProgress)) -> Result<Source, String> {
@@ -131,14 +124,16 @@ fn fetch(source: &str, on_progress: &mut dyn FnMut(DownloadProgress)) -> Result<
         }
         return Ok(Source {
             path,
-            downloaded: false,
+            _downloaded: None,
         });
     }
     let dir = staging_dir().ok_or("no cache directory to download the package into")?;
-    let path = dir.join(format!("download-{}.tapp", std::process::id()));
+    app_cli::install::sweep_abandoned_downloads(&dir);
+    let file = app_cli::install::StagingFile::claim(&dir, "download")
+        .map_err(|error| format!("{}: {error}", dir.display()))?;
     let staged = Source {
-        path,
-        downloaded: true,
+        path: file.path().to_path_buf(),
+        _downloaded: Some(file),
     };
     app_cli::install::download_reporting(source, &staged.path, on_progress)
         .map_err(|error| format!("could not download {source}: {error}"))?;

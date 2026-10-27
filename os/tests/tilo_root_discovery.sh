@@ -242,6 +242,11 @@ echo 'ok: a sibling unlock runs beside the prompt and is stopped once it is done
 # sign in, every existing path runs as before.
 cat >"$work/bin/signin" <<'EOF'
 #!/bin/bash
+if [ "$1" = unlock-prompt ]; then
+  [ "$2" = --device ] && [ "$3" = "$TILO_ROOT_DEVROOT/tilo-root" ] || exit 64
+  echo unlock-prompt >>"$TILO_TEST_ORDER_LOG"
+  exit 0
+fi
 if [ "$1" = other-ways ]; then
   [ "$2" = --device ] && [ "$3" = "$TILO_ROOT_DEVROOT/tilo-root" ] && [ "$4" = --pid ] && [ -n "$5" ]
   if [ "${TILO_TEST_RELAY_EXIT:-0}" = 3 ] && [ ! -e "$TILO_ROOT_RUNTIME/backed" ]; then
@@ -274,7 +279,7 @@ chmod +x "$work/bin/signin" "$work/bin/rollback-unlock"
 rm -rf "$work/run/tilo-root" "$work/order"
 TILO_TEST_SIGNIN="$work/bin/signin" TILO_TEST_SIGNIN_EXIT=0 TILO_TEST_EXPECT_KEY=1 \
   TILO_TEST_UNLOCK="$work/bin/rollback-unlock" TILO_TEST_SIBLING="$work/bin/sibling" encrypted_discover
-printf '%s\n' signin attach >"$work/expected-order"
+printf '%s\n' unlock-prompt signin attach >"$work/expected-order"
 cmp "$work/expected-order" "$work/order"
 test ! -e "$work/run/cryptsetup-keys.d/root.key"
 test "$(readlink "$work/run/tilo-root/device")" = "$work/dev/mapper/root"
@@ -283,8 +288,8 @@ agent=systemd-ask-password-plymouth
 rm -rf "$work/run/tilo-root" "$work/order"
 TILO_TEST_SIGNIN="$work/bin/signin" TILO_TEST_SIGNIN_EXIT=2 \
   TILO_TEST_UNLOCK="$work/bin/rollback-unlock" TILO_TEST_SIBLING="$work/bin/sibling" encrypted_discover
-printf '%s\n' signin "rollback-unlock $work/dev/tilo-root root" "start --no-block $sibling_unit" \
-  attach "stop $sibling_unit" >"$work/expected-order"
+printf '%s\n' unlock-prompt signin "rollback-unlock $work/dev/tilo-root root" \
+  "start --no-block $sibling_unit" attach "stop $sibling_unit" >"$work/expected-order"
 cmp "$work/expected-order" "$work/order"
 echo "ok: a root nobody can sign in to keeps every existing unlock path, unchanged"
 # Another way in: the same paths, with the volume's questions asked by the
@@ -293,8 +298,8 @@ for relayed in 0 2; do
   rm -rf "$work/run/tilo-root" "$work/order"
   TILO_TEST_SIGNIN="$work/bin/signin" TILO_TEST_SIGNIN_EXIT=3 TILO_TEST_RELAY_EXIT="$relayed" \
     TILO_TEST_UNLOCK="$work/bin/rollback-unlock" TILO_TEST_SIBLING="$work/bin/sibling" encrypted_discover
-  printf '%s\n' signin "rollback-unlock $work/dev/tilo-root root" "start --no-block $sibling_unit" \
-    "stop $agent.path $agent.service" attach relayed "start $agent.path" "stop $sibling_unit" \
+  printf '%s\n' unlock-prompt signin "rollback-unlock $work/dev/tilo-root root" \
+    "start --no-block $sibling_unit" "stop $agent.path $agent.service" attach relayed "start $agent.path" "stop $sibling_unit" \
     >"$work/expected-order"
   cmp "$work/expected-order" "$work/order"
   test "$(readlink "$work/run/tilo-root/device")" = "$work/dev/mapper/root"
@@ -305,8 +310,8 @@ rm -rf "$work/run/tilo-root" "$work/order" "$work/run/backed" "$work/run/attach-
 TILO_TEST_SIGNIN="$work/bin/signin" TILO_TEST_SIGNIN_EXIT=3 TILO_TEST_RELAY_EXIT=3 \
   TILO_TEST_ATTACH_HOLD=1 TILO_TEST_UNLOCK="$work/bin/rollback-unlock" \
   TILO_TEST_SIBLING="$work/bin/sibling" encrypted_discover
-printf '%s\n' signin "rollback-unlock $work/dev/tilo-root root" "start --no-block $sibling_unit" \
-  "stop $agent.path $agent.service" attach back "stop $sibling_unit" "start $agent.path" \
+printf '%s\n' unlock-prompt signin "rollback-unlock $work/dev/tilo-root root" \
+  "start --no-block $sibling_unit" "stop $agent.path $agent.service" attach back "stop $sibling_unit" "start $agent.path" \
   signin attach >"$work/expected-order"
 cmp "$work/expected-order" "$work/order"
 test ! -e "$work/run/cryptsetup-keys.d/root.key"

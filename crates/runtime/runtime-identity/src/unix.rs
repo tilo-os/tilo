@@ -1915,8 +1915,8 @@ mod tests {
         let before: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         let signature = signer.sign(b"profile-edit-proof").unwrap();
         let changed =
-            update_identity_profile(dir.path(), "personal", "  ada  ", [9, 8, 7]).unwrap();
-        assert_eq!(changed.display_name, "ada");
+            update_identity_profile(dir.path(), "personal", "  Ada  ", [9, 8, 7]).unwrap();
+        assert_eq!(changed.display_name, "Ada");
         assert_eq!(changed.avatar_color, [9, 8, 7]);
         assert_eq!(changed.group_public_key, signer.group_public_key());
         let after: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -2008,7 +2008,7 @@ mod tests {
         ] {
             assert_eq!(before[field], after[field]);
         }
-        update_identity_profile(dir.path(), "personal", "ada", [1, 2, 3]).unwrap();
+        update_identity_profile(dir.path(), "personal", "Ada", [1, 2, 3]).unwrap();
         assert_eq!(
             load_metadata_from_path(&path)
                 .unwrap()

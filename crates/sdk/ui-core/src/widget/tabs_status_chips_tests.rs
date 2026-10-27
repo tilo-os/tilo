@@ -1,4 +1,4 @@
-//! The bar's status chips: "Controls your desktop", "Dev build · by …" and
+//! The bar's status chips: "Controls your desktop", "Dev build by …" and
 //! "Shared with …".
 
 use super::super::tests::lay_out_at_width;
@@ -88,7 +88,7 @@ fn a_window_running_a_dev_build_says_who_installed_it() {
     assert!(bar.set_dev_build(1, Some("Ada".into())));
     assert!(!bar.set_dev_build(1, Some("Ada".into())), "unchanged");
     let (alone, label) = bar.dev_build_chip(&mut tr, &theme).expect("the mark shows");
-    assert_eq!(label, "Dev build · by Ada");
+    assert_eq!(label, "Dev build by Ada");
     assert!(alone.x0 >= bar.tab_rects[1].x1, "after the pills");
     bar.set_desktop_control(1, true);
     let (control, _) = bar.desktop_control_chip(&mut tr, &theme).unwrap();
@@ -104,7 +104,7 @@ fn a_window_running_a_dev_build_says_who_installed_it() {
     );
     assert_eq!(
         bar.dev_build_access().and_then(|node| node.name),
-        Some("Dev build · by Ada".to_owned())
+        Some("Dev build by Ada".to_owned())
     );
     // `TILO_SHOT_OUT=<file.png>` keeps a picture of the bar to look at.
     if let Some(out) = std::env::var_os("TILO_SHOT_OUT") {

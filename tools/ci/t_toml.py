@@ -202,11 +202,12 @@ def policy_checks(root: Path = ROOT) -> str:
 
 
 # What `t-toml` reads besides the files below, all of which t_toml_reads adds: t.toml, the
-# generators and their data, the workspace's manifests (cargo metadata), the apps and collections
-# the size checks are made from and the runtime's budget.
+# generators and their data, the workspace's manifests (cargo metadata), its Rust sources (which
+# packages differ between architectures, package_sets.per_arch), the apps and collections the size
+# checks are made from and the runtime's budget.
 T_TOML_READS = ["t.toml", "tools/ci/suites.toml", "tools/ci/products.toml", "tools/ci/publish/**",
                 "tools/policy/steps.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image",
-                "Cargo.toml", "**/Cargo.toml", "Cargo.lock", "apps/*/tilo-app.toml", "examples/apps/*/tilo-app.toml",
+                "Cargo.toml", "**/Cargo.toml", "Cargo.lock", "**/*.rs", "apps/*/tilo-app.toml", "examples/apps/*/tilo-app.toml",
                 "dist/apps/app-collections.toml", "tools/apps/app_release.py",
                 "tools/perf/runtime-size-budget/budget.toml", suites.SECURITY_MANIFEST]
 
@@ -225,7 +226,8 @@ def t_toml_reads(manifest: suites.Manifest, root: Path = ROOT) -> str:
     for step in policy_steps.load(root):
         if step.covered_by is None:
             reads |= set(policy_steps.own_files(step, root))
-    return f"inputs = {array([*T_TOML_READS, *sorted(reads - set(T_TOML_READS))])}\n"
+    reads = {path for path in reads - set(T_TOML_READS) if not path.endswith(".rs")}
+    return f"inputs = {array([*T_TOML_READS, *sorted(reads)])}\n"
 
 
 def array(values: list[str]) -> str:
@@ -459,11 +461,12 @@ CARGO_CHECKS: dict[str, dict] = {
     # and workflow, and the session scripts.
     "real-fuse": {
         "packages": lambda packages, root: {"tilo-relay", "tilo-fs", "tilo-runtime", "file-explorer",
-                                            "fs-protocol", "tilo-user-identity", "shell",
+                                            "fs-protocol", "tilo-user-identity",
                                             "tilo-session-record"},
         "tested": {"tilo-relay", "tilo-fs", "tilo-runtime", "file-explorer", "fs-protocol",
-                   "tilo-user-identity", "shell"},
-        "inputs": ["os/tests/tilo-session-lifecycle.sh", "os/usr/libexec/tilo-session",
+                   "tilo-user-identity"},
+        "inputs": ["os/tests/tilo-session-lifecycle.sh", "crates/session/shell/src/linux_main.rs",
+                   "os/usr/libexec/tilo-session",
                    "os/usr/lib/systemd/user/**", "os/usr/share/tilo/selinux/tilo-base.cil",
                    "os/usr/share/wayland-sessions/**", "os/dev-image/usr/lib/systemd/user/**",
                    "os/Containerfile", "dist/session/**",
@@ -484,12 +487,12 @@ CARGO_CHECKS: dict[str, dict] = {
         "packages": lambda packages, root: {"tilo-relay"},
         "inputs": [],
     },
-    # The imager's tests, archived for the micro-VM check that runs them on an ext4 of its own
-    # (imager-tests). Built beside workspace-unify, as the test family builds them, which
-    # decides only the features they are built with: its manifest counts, not the sources of
-    # every crate it names.
+    # The tests of the imager and its backend, archived for the micro-VM check that runs them on
+    # an ext4 of its own (imager-tests-<arch>). Built beside workspace-unify, as the test family
+    # builds them, which decides only the features they are built with: its manifest counts, not
+    # the sources of every crate it names.
     "imager-tests-build": {
-        "packages": lambda packages, root: {"imager"},
+        "packages": lambda packages, root: {"imager", "imager-backend"},
         "inputs": ["crates/dev/workspace-unify/Cargo.toml"],
     },
     # The browser desktop's wasm modules (tools/ci/publish/web-desktop-bundle.sh wasm): what wasm32
@@ -500,7 +503,7 @@ CARGO_CHECKS: dict[str, dict] = {
         "dev": False,
         "target": "wasm32-unknown-unknown",
         "unread": ["crates/browser/tilo-browser-runtime/web", "crates/browser/tilo-browser-compute/web"],
-        "inputs": ["tools/ci/publish/lib.sh", "tools/ci/publish/web-desktop-bundle.sh", "tools/font-catalog.py",
+        "inputs": ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/web-desktop-bundle.sh", "tools/font-catalog.py",
                    "tools/web/generate_web_desktop.py", "tools/web/crate_source.py", "tools/web/wasm-split/**",
                    "apps/*/tilo-app.toml", "apps/*/Cargo.toml", "apps/*/search/*.ftl",
                    "crates/agent/agent-participant/Cargo.toml", "crates/agent/agent-participant/src/web_apps.rs",
@@ -517,7 +520,7 @@ CARGO_CHECKS: dict[str, dict] = {
         "features": ["tilo-relay/agents"],
         "unread": [f"crates/hosting/tilo-room-service/{name}"
                    for name in ("README.md", "container", "dev", "grafana", "web")],
-        "inputs": ["tools/ci/publish/lib.sh", "tools/ci/publish/room-service-binaries.sh", ".cargo/**", "apps/*/surface.toml",
+        "inputs": ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/room-service-binaries.sh", ".cargo/**", "apps/*/surface.toml",
                    "apps/*/tilo-app.toml", "apps/*.rs", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py",
                    "tools/test-assets.py", "tools/test-assets-build.rs"],
     },
@@ -615,7 +618,7 @@ PUSH_GATE_SIZE_ARCH = "aarch64"
 # to compile: t-release.sh and what it sources, the app plan (app_release.py, which reads every
 # app's manifests and the collections), the architecture guard, package-apps.sh up to its
 # compile, build-thin-apps.sh and the rustc wrappers it puts in front of the compiler;
-SIZE_COMPILE = ["tools/apps/t-release.sh", "tools/apps/release-lib.sh", "tools/ci/publish/lib.sh",
+SIZE_COMPILE = ["tools/apps/t-release.sh", "tools/apps/release-lib.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh",
                 "tools/ci/python.py", "tools/ci/__init__.py", "tools/ci/runner_labels.py",
                 "tools/ci/workspace_graph.py", "tools/apps/app_release.py", "dist/apps/app-collections.toml",
                 "apps/*/tilo-app.toml", "os/dev/assert-native-arch.sh", "dist/apps/package-apps.sh",
@@ -902,10 +905,6 @@ def cargo_check(name: str, spec: dict, manifest: suites.Manifest, packages: dict
     ]) + "\n"
 
 
-# The packages the test family runs on x86_64 only, as `test-x86_64`.
-X86_64_ONLY_TESTS = ["launcher", "shell", "store", "tilo-sandbox", "tilo-vmd"]
-
-
 def untested(packages: dict[str, dict]) -> list[str]:
     """Packages with no test target of their own (`test = false` and no integration tests):
     another package's tests compile their code in, and nextest refuses to run them alone."""
@@ -915,7 +914,7 @@ def untested(packages: dict[str, dict]) -> list[str]:
 
 def micro_vm_tested() -> list[str]:
     """The packages .config/nextest-filters.toml's `micro_vm` filter names: their tests run in a
-    micro-VM check of their own (imager-tests), not in the test family."""
+    micro-VM check of their own (imager-tests-<arch>), not in the test family."""
     import tomllib
     filters = tomllib.loads((ROOT / ".config" / "nextest-filters.toml").read_text(encoding="utf-8"))
     return re.findall(r"package\(([\w-]+)\)", filters["micro_vm"])
@@ -929,13 +928,41 @@ IDLE_TESTS = ["canvas", "music", "pdf-viewer", "tilo-ui"]
 IDLE_LINTS = ["music", "tilo-messaging-protocol"]
 
 
+# The architectures a package whose code differs between them (package_sets.per_arch) is tested
+# and linted on, each by a family of its own (`test-<arch>`, `clippy-<arch>`): a result on one
+# says nothing about the other, which `arch=any` would let it stand for.
+ARCHES = ("x86_64", "aarch64")
+
+
+def nested_sandboxes() -> list[str]:
+    """The packages the `test` family runs with nested sandboxes, which t.toml names by hand."""
+    for family in tomllib.loads(T_TOML.read_text(encoding="utf-8")).get("cargo", []):
+        if family["name"] == "test":
+            return family["nested_sandboxes"]
+    raise ValueError("t.toml has no `test` family")
+
+
 def test_families(packages: dict[str, dict]) -> dict[str, str]:
-    excluded = {*X86_64_ONLY_TESTS, *IDLE_TESTS, *untested(packages), *micro_vm_tested()}
-    return {"test-exclude": f"exclude = {array(sorted(excluded))}\n",
-            "test-x86_64-packages": f"packages = {array(X86_64_ONLY_TESTS)}\n",
-            "test-idle-packages": f"packages = {array(IDLE_TESTS)}\n",
-            "clippy-exclude": f"exclude = {array(['workspace-unify', *IDLE_LINTS])}\n",
-            "clippy-idle-packages": f"packages = {array(IDLE_LINTS)}\n"}
+    per_arch = package_sets.per_arch(packages)
+    for kind, idle in (("tests", IDLE_TESTS), ("lints", IDLE_LINTS)):
+        both = sorted(per_arch & set(idle))
+        if both:
+            raise ValueError(f"{', '.join(both)}: idle {kind} of a package whose code differs between "
+                             "architectures would stand for both; give the idle family per-arch variants")
+    tested = sorted(per_arch - {*untested(packages), *micro_vm_tested()})
+    linted = sorted(per_arch - {"workspace-unify"})
+    nested = sorted(set(nested_sandboxes()) & set(tested))
+    excluded = {*per_arch, *IDLE_TESTS, *untested(packages), *micro_vm_tested()}
+    blocks = {"test-exclude": f"exclude = {array(sorted(excluded))}\n",
+              "test-idle-packages": f"packages = {array(IDLE_TESTS)}\n",
+              "clippy-exclude": f"exclude = {array(['workspace-unify', *IDLE_LINTS, *sorted(per_arch)])}\n",
+              "clippy-idle-packages": f"packages = {array(IDLE_LINTS)}\n",
+              "check-exclude": f"exclude = {array(['workspace-unify', *sorted(per_arch)])}\n"}
+    for arch in ARCHES:
+        blocks[f"test-{arch}-packages"] = (f"packages = {array(tested)}\n"
+                                           f"nested_sandboxes = {array(nested)}\n")
+        blocks[f"clippy-{arch}-packages"] = f"packages = {array(linted)}\n"
+    return blocks
 
 
 def cargo_checks(manifest: suites.Manifest, metadata: dict | None = None) -> dict[str, str]:
@@ -969,8 +996,10 @@ def generated(manifest: suites.Manifest) -> dict[str, str]:
     metadata = workspace_graph.cargo_metadata(ROOT)
     manifest = with_dependency_inputs(manifest, {p["name"]: p for p in metadata["packages"]}, ROOT)
     inputs = package_inputs(manifest)
-    return {"test-package-inputs": inputs, "test-x86_64-package-inputs": inputs, "test-idle-package-inputs": inputs,
-            "clippy-package-inputs": inputs, "clippy-idle-package-inputs": inputs, "check-package-inputs": inputs, "suites": suite_checks(manifest),
+    return {"test-package-inputs": inputs, "test-idle-package-inputs": inputs,
+            "clippy-package-inputs": inputs, "clippy-idle-package-inputs": inputs, "check-package-inputs": inputs,
+            **{f"{family}-{arch}-package-inputs": inputs for family in ("test", "clippy") for arch in ARCHES},
+            "suites": suite_checks(manifest),
             "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
             "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
             "security-reads": security_reads(), "policy-steps": policy_checks(),

@@ -135,6 +135,17 @@ impl DesktopTree {
             .min()
     }
 
+    /// The active workspace's selected strip: its recorded one while that
+    /// strip exists, else its first.
+    pub fn active_strip_id(&self) -> Option<StripId> {
+        let workspace = self.active_workspace()?;
+        self.active_strip
+            .get(&workspace.id)
+            .copied()
+            .filter(|id| workspace.strips.iter().any(|strip| strip.id == *id))
+            .or_else(|| workspace.strips.first().map(|strip| strip.id))
+    }
+
     pub fn active_workspace_mut(&mut self) -> Option<&mut Workspace> {
         self.workspaces.iter_mut().find(|w| w.id == self.active)
     }

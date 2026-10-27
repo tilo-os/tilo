@@ -48,6 +48,7 @@ pub static HINTS: &[HintSpec<Signal>] = &[
         ],
         gesture: Gesture::OpenFromSearch,
         words: "control-hint-open",
+        touch_words: None,
     },
     HintSpec {
         id: "move-window",
@@ -61,6 +62,7 @@ pub static HINTS: &[HintSpec<Signal>] = &[
         learned_by: &[Signal::Did(Performed::MovedWindow)],
         gesture: Gesture::MoveWindow,
         words: "control-hint-move",
+        touch_words: None,
     },
     HintSpec {
         id: "resize-window",
@@ -69,6 +71,7 @@ pub static HINTS: &[HintSpec<Signal>] = &[
         learned_by: &[Signal::Did(Performed::ResizedWindow)],
         gesture: Gesture::ResizeEdge,
         words: "control-hint-resize",
+        touch_words: None,
     },
     HintSpec {
         id: "pan-view",
@@ -76,7 +79,11 @@ pub static HINTS: &[HintSpec<Signal>] = &[
         only_while: &[Signal::WindowsOutOfView],
         learned_by: &[Signal::Did(Performed::PannedView)],
         gesture: Gesture::PanView,
+        // What moves the view is a sideways scroll (a touchpad's fingers,
+        // a mouse's sideways wheel) or a finger swiping a bar; dragging the
+        // empty canvas works too, but there is rarely any in sight.
         words: "control-hint-pan",
+        touch_words: Some("control-hint-pan-touch"),
     },
 ];
 
@@ -112,6 +119,10 @@ pub struct HintFrame {
     /// any setup. Hints that wait for a while in ([`Cue::After`]) count
     /// from the first frame that says so.
     pub presented: bool,
+    /// The person points by touch: the host lays its controls out for a
+    /// finger ([`ui::PointerPrecision::Coarse`]), as it does after a touch
+    /// on the screen. Hints then name what a finger does.
+    pub touch: bool,
 }
 
 /// The desktop's control hints on one host.
@@ -257,10 +268,15 @@ impl ControlHints {
         self.layer.needs_frame(now, self.motion)
     }
 
-    /// When the hints next need a frame.
+    /// When the hints next need a frame: a hint's own schedule, or the
+    /// pause in typing that lets a hint held back by it begin.
     #[must_use]
     pub fn next_wake_deadline(&self, now: Instant) -> Option<Instant> {
-        self.layer.next_wake(now, self.motion)
+        let pause = self.typing_until.filter(|until| *until > now);
+        match (self.layer.next_wake(now, self.motion), pause) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// The hint on screen, for assistive technology.
@@ -353,7 +369,11 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     if frame.area.is_zero_area() {
         return None;
     }
-    let words = crate::i18n::t(spec.words);
+    let words = crate::i18n::t(
+        spec.touch_words
+            .filter(|_| frame.touch)
+            .unwrap_or(spec.words),
+    );
     let row = &frame.row;
     let (anchor, side, edge, keys) = match spec.gesture {
         // Search comes down at the top of the desktop, at its middle: the
@@ -414,6 +434,7 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
         words,
         keys,
         points: spec.gesture != Gesture::OpenFromSearch,
+        touch: frame.touch,
     })
 }
 
@@ -445,9 +466,11 @@ mod tests {
     #[test]
     fn every_hint_has_words_in_every_language() {
         for spec in HINTS {
-            let words = crate::i18n::t(spec.words);
-            assert_ne!(words, spec.words, "{} has no words", spec.id);
-            assert!(words.split_whitespace().count() <= 4, "{words}");
+            for key in [Some(spec.words), spec.touch_words].into_iter().flatten() {
+                let words = crate::i18n::t(key);
+                assert_ne!(words, key, "{} has no words", spec.id);
+                assert!(words.split_whitespace().count() <= 4, "{words}");
+            }
         }
     }
 
@@ -473,6 +496,40 @@ mod tests {
             pan.side,
             PopoverSide::Left,
             "toward the windows out of view"
+        );
+    }
+
+    // The view moves by a sideways scroll on a computer (a touchpad's
+    // fingers, a mouse's sideways wheel) and by a swipe on a touchscreen:
+    // the words and picture name what the person's own hand does.
+    #[test]
+    fn moving_the_view_is_told_in_the_input_the_person_uses() {
+        let spec = HINTS
+            .iter()
+            .find(|s| s.gesture == Gesture::PanView)
+            .unwrap();
+        let mut frame = frame();
+        let pointer = place(spec, &frame).unwrap();
+        assert_eq!(pointer.words, crate::i18n::t("control-hint-pan"));
+        assert!(!pointer.touch);
+        assert!(
+            !pointer.words.to_lowercase().contains("drag"),
+            "{}",
+            pointer.words
+        );
+        frame.touch = true;
+        let touch = place(spec, &frame).unwrap();
+        assert_eq!(touch.words, crate::i18n::t("control-hint-pan-touch"));
+        assert!(touch.touch);
+        assert_ne!(touch.words, pointer.words);
+        // The other hints' words stay as they are on either.
+        let resize = HINTS
+            .iter()
+            .find(|s| s.gesture == Gesture::ResizeEdge)
+            .unwrap();
+        assert_eq!(
+            place(resize, &frame).unwrap().words,
+            crate::i18n::t("control-hint-resize")
         );
     }
 
@@ -525,6 +582,32 @@ mod tests {
         assert!(!hints.is_showing(), "too soon after it was seen");
         hints.update(&frame, seen + Duration::from_secs(18));
         assert!(hints.is_showing());
+    }
+
+    // Writing past a hint's moment holds the hint back without a frame on
+    // every frame: the desktop sleeps until the person pauses, and the
+    // frame then shows the hint.
+    #[test]
+    fn a_hint_held_back_by_typing_waits_for_the_pause_without_frames() {
+        let mut hints = ControlHints::new(Learned::default());
+        let start = ui::time::now();
+        let mut frame = frame();
+        frame.row.windows = 0;
+        frame.row.beyond = (false, false);
+        frame.row.focused_bar = None;
+        frame.row.focused_edge = None;
+        hints.update(&frame, start);
+        let typing = start + Duration::from_secs(16);
+        let typed = winit::event::WindowEvent::Ime(winit::event::Ime::Commit("a".into()));
+        hints.heard(&typed, typing);
+        let writing = start + Duration::from_secs(18);
+        hints.update(&frame, writing);
+        assert!(!hints.is_showing(), "no hint while the person types");
+        assert!(!hints.needs_animation_frame(writing));
+        let pause = typing + TYPING_PAUSE;
+        assert_eq!(hints.next_wake_deadline(writing), Some(pause));
+        hints.update(&frame, pause);
+        assert!(hints.is_showing(), "the pause shows it");
     }
 
     #[test]

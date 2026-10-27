@@ -113,6 +113,10 @@ pub enum GitClientEffect {
         path: String,
     },
     /// Discard file changes
+    ///
+    /// The worktree's edits to this file are thrown away and the file goes
+    /// back to what the index holds. Anything staged for it stays staged,
+    /// and edits that were never staged are gone.
     #[effect(row, destructive)]
     DiscardFile {
         #[param("Path of the file in the repository")]
@@ -149,6 +153,10 @@ pub enum GitClientEffect {
         name: String,
     },
     /// Delete branch
+    ///
+    /// The branch's name goes and any commit only this branch holds is left
+    /// with nothing pointing at it. Its commits stay in the repository for a
+    /// while, but nothing here names them again.
     #[effect(row, destructive)]
     DeleteBranch {
         #[param("Branch name")]
@@ -241,7 +249,7 @@ pub(crate) fn change_resource_id(area: ChangeArea, path: &str) -> String {
     )
 }
 
-fn commit_resource_id(id: &str) -> String {
+pub(crate) fn commit_resource_id(id: &str) -> String {
     format!("git_client.commit:{id}")
 }
 

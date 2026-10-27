@@ -20,7 +20,7 @@
 //! [`ResourceKind::Record`] on the provider scale ([`MAX_SCORE`]).
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -72,6 +72,8 @@ struct Snapshot {
     locked_index: SearchIndex,
     /// `(app, room, resource)` of every visible entry.
     covered: HashSet<(String, String, String)>,
+    /// The boost its app gave each visible entry that has one, by row id.
+    boosts: HashMap<String, i32>,
 }
 
 impl Snapshot {
@@ -87,6 +89,16 @@ impl Snapshot {
                 )
             })
             .collect();
+        let boosts = visible
+            .iter()
+            .filter(|indexed| indexed.entry.boost != 0)
+            .map(|indexed| {
+                (
+                    entry_id(&indexed.slot, &indexed.entry.key),
+                    indexed.entry.boost,
+                )
+            })
+            .collect();
         Self {
             generation,
             index: text_index(&visible),
@@ -94,6 +106,7 @@ impl Snapshot {
             visible,
             locked,
             covered,
+            boosts,
         }
     }
 }
@@ -647,6 +660,20 @@ impl SearchProvider for AppContentProvider {
         self.query_page(ctx, None, SearchBudget::PALETTE).results
     }
 
+    /// An app ranks its own rows as its own search does: how well each
+    /// matched plus the boost it gave it. Tube's row that searches
+    /// `YouTube` leads the videos it suggests, which follow in `YouTube`'s
+    /// order. The boost stays out of the row's score, so no app lifts its
+    /// rows over other providers'.
+    fn source_order(&self, result: &SearchResult) -> Option<(String, i64)> {
+        let (slot, _) = parse_entry_id(&result.id)?;
+        let boost = self.current().boosts.get(&result.id).copied().unwrap_or(0);
+        Some((
+            slot.app,
+            i64::from(result.score).saturating_add(i64::from(boost)),
+        ))
+    }
+
     fn query_page(
         &self,
         ctx: SearchContext<'_>,
@@ -679,9 +706,10 @@ impl SearchProvider for AppContentProvider {
                 if !shown.insert((indexed.slot.app.clone(), indexed.entry.key.clone())) {
                     return None;
                 }
-                let score = crate::shell::search::provider_score(hit.rank.unwrap_or(0))
-                    .saturating_add(indexed.entry.boost.clamp(0, 2))
-                    .clamp(1, MAX_SCORE);
+                // How well it matched; its app's boost orders it among the
+                // app's own rows only ([`SearchProvider::source_order`]).
+                let score =
+                    crate::shell::search::provider_score(hit.rank.unwrap_or(0)).clamp(1, MAX_SCORE);
                 Some(self.row(indexed, score))
             },
         );

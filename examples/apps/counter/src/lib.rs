@@ -113,7 +113,10 @@ impl ResourceApp for App {
         let step = |id: &str, label: &str, amount: i64| {
             actions.bind_invocation(Button::new(id, label), Counter::ADD.with(amount))
         };
-        let reset = cx.button("counter-reset-button", Counter::RESET.invoke());
+        let reset = cx.button(
+            crate::locales::keys::COUNTER_RESET_BUTTON,
+            Counter::RESET.invoke(),
+        );
         Box::new(ui::column![
             Text::new("counter-heading").with_role(TextRole::Title),
             count,

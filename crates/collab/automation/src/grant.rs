@@ -328,12 +328,16 @@ fn collect(steps: &[Step], catalog: &ActionCatalog, out: &mut Vec<Permission>) {
                 };
                 add(catalog, action, target, out);
             }
-            StepKind::Ai { transform, .. } => add(
-                catalog,
-                &transform.key(),
-                ResourceTarget::Kind(AGENT_TRANSFORM_KIND),
-                out,
-            ),
+            StepKind::Ai { .. } | StepKind::Task { .. } => {
+                if let Some(transform) = step.kind.ai_transform() {
+                    add(
+                        catalog,
+                        &transform.key(),
+                        ResourceTarget::Kind(AGENT_TRANSFORM_KIND),
+                        out,
+                    );
+                }
+            }
             StepKind::If {
                 then, otherwise, ..
             } => {
@@ -371,7 +375,9 @@ fn add(
             None => return,
         },
     };
-    let kind = descriptor.map_or(ActionKind::Undoable, |descriptor| descriptor.contract.kind);
+    let kind = descriptor.map_or(ActionKind::Undoable, |descriptor| {
+        descriptor.contract.need().kind
+    });
     let label = match (&reach, descriptor) {
         (Reach::Resource(_), Some(descriptor)) => format!(
             "{} in {}",
@@ -459,15 +465,42 @@ fn settle_rules(permissions: &[Permission]) -> Vec<Rule> {
         .collect()
 }
 
+/// The action bringing a record kept at an older storage version up to
+/// its kind's current one.
+pub const MIGRATE_ACTION: &str = "migrate";
+
+/// The rules for migrating the resources `permissions` change: a record
+/// kept at an older storage version is brought up when it is opened, and
+/// the bot sends that change before its own. A migration is the same
+/// change on every device holding the record, so whoever may change a
+/// resource may migrate it, reaching outside where its steps there do: a
+/// migration that rewrites an outbox is judged as reaching outside.
+fn migrate_rules(permissions: &[Permission]) -> Vec<Rule> {
+    let mut out: Vec<Rule> = Vec::new();
+    for permission in permissions
+        .iter()
+        .filter(|permission| permission.kind != ActionKind::Read)
+    {
+        let node = permission.resources().action(MIGRATE_ACTION);
+        let kinds = permission.rule().kinds;
+        match out.iter_mut().find(|rule| rule.node == node) {
+            Some(rule) => rule.kinds = rule.kinds.union(kinds),
+            None => out.push(Rule::new(node, kinds, Answer::Allow)),
+        }
+    }
+    out
+}
+
 /// The whole grant a program needs: its steps' least privilege, the
-/// settling of what they queue outside, then its triggers' reads. What a
-/// bot's stored grant must equal.
+/// settling of what they queue outside and the migrating of what they
+/// change, then its triggers' reads. What a bot's stored grant must equal.
 #[must_use]
 pub fn derived_rules(shortcut: &crate::Shortcut, catalog: &ActionCatalog) -> Vec<Rule> {
     let permissions = least_privilege(&shortcut.steps, catalog);
     let mut out = rules(&permissions);
     for rule in settle_rules(&permissions)
         .into_iter()
+        .chain(migrate_rules(&permissions))
         .chain(trigger_rules(&shortcut.triggers))
     {
         if !out.contains(&rule) {
@@ -496,8 +529,9 @@ pub fn unused_rules(shortcut: &crate::Shortcut) -> Vec<Rule> {
             }
             let app = rule.node.id_at(Level::App);
             let action = rule.node.id_at(Level::Action);
-            // Settling is judged by shape too: some step acts in the app.
-            let settles = action == Some(SETTLE_ACTION);
+            // Settling and migrating are judged by shape too: some step
+            // acts in the app.
+            let settles = action == Some(SETTLE_ACTION) || action == Some(MIGRATE_ACTION);
             !keys.iter().any(|key| {
                 app == Some(key.app.as_str()) && (settles || action == Some(key.action.as_str()))
             })
@@ -510,7 +544,11 @@ fn step_keys(steps: &[Step], out: &mut Vec<ActionKey>) {
     for step in steps {
         match &step.kind {
             StepKind::Invoke { action, .. } => out.push(action.clone()),
-            StepKind::Ai { transform, .. } => out.push(transform.key()),
+            StepKind::Ai { .. } | StepKind::Task { .. } => {
+                if let Some(transform) = step.kind.ai_transform() {
+                    out.push(transform.key());
+                }
+            }
             StepKind::If {
                 then, otherwise, ..
             } => {
@@ -781,6 +819,77 @@ mod tests {
             triggers: vec![],
             saved_by: None,
             saved_proof: None,
+        };
+        assert!(unused_rules(&shortcut).is_empty());
+    }
+
+    #[test]
+    fn whoever_changes_a_resource_may_migrate_it_as_far_as_its_steps_reach() {
+        let permission = |app: &str, kind: &str, action: &str, of| Permission {
+            app_id: app.into(),
+            reach: Reach::Kind(kind.into()),
+            action: action.into(),
+            kind: of,
+            label: String::new(),
+        };
+        let migrates = migrate_rules(&[
+            permission(
+                "so.tilo.discord",
+                "discord.guild",
+                "map",
+                ActionKind::Undoable,
+            ),
+            permission(
+                "so.tilo.discord",
+                "discord.guild",
+                "send",
+                ActionKind::Outside,
+            ),
+            permission(
+                "so.tilo.chat",
+                "chat.messages",
+                "post",
+                ActionKind::Undoable,
+            ),
+            permission(
+                "so.tilo.chat",
+                "chat.workspace",
+                "read-room",
+                ActionKind::Read,
+            ),
+        ]);
+        assert_eq!(
+            migrates.len(),
+            2,
+            "one rule per kind changed, none for a read"
+        );
+        // The guild's migration is decided at the record, the way the room
+        // claims it, and rewriting its outbox reaches outside as `send` does.
+        let guild = TreePath::room("r")
+            .app("so.tilo.discord")
+            .kind("discord.guild")
+            .resource("");
+        assert!(migrates[0].node.covers(&guild.action(MIGRATE_ACTION)));
+        assert_eq!(migrates[0].kinds, KindSet::ALL);
+        assert_eq!(migrates[1].kinds, KindSet::READ_UNDOABLE);
+        let shortcut = crate::Shortcut {
+            id: "bridge".into(),
+            name: "Bridge".into(),
+            inputs: vec![],
+            steps: vec![crate::Step::new(
+                "send",
+                crate::StepKind::Invoke {
+                    action: ActionKey::new("so.tilo.discord", "discord.guild", "send"),
+                    resource: crate::Selector::FirstOfKind("discord.guild".into()),
+                    args: std::collections::BTreeMap::default(),
+                    appearance: None,
+                },
+            )],
+            step_timeout_secs: None,
+            output: None,
+            grant: vec![migrates[0].clone()],
+            triggers: vec![],
+            saved_by: None,
         };
         assert!(unused_rules(&shortcut).is_empty());
     }

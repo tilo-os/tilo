@@ -112,6 +112,8 @@ pub(super) struct LayoutRuntime {
     /// What a host that draws only its frames' damage keeps from frame to
     /// frame ([`crate::draw_cull`]).
     pub(super) cull: crate::draw_cull::Culling,
+    /// What the frame's whole-tree walks last read.
+    pub(super) walks: TreeWalks,
 }
 
 impl LayoutRuntime {
@@ -141,6 +143,7 @@ impl LayoutRuntime {
             placed_all: None,
             placed_partly: false,
             cull: crate::draw_cull::Culling::default(),
+            walks: TreeWalks::default(),
         }
     }
 
@@ -154,6 +157,110 @@ impl LayoutRuntime {
         {
             self.undescribed_by = Some(std::panic::Location::caller());
         }
+    }
+}
+
+/// Which retained widgets, declaring what, a frame's whole-tree walks read.
+/// What the widgets declare moves on with the resource generation (an
+/// update, a sync or an input that changed it:
+/// `App::invalidate_widget_resource_cache`), the widgets themselves with a
+/// rebuild or a remount, what the local actor may do with the permission
+/// generation, and what the components in the tree may do with the
+/// revision of the permissions their hosts share with them
+/// ([`crate::permissions::shared_revision`]). Equal generations are the
+/// same tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct TreeGeneration {
+    pub(super) resources: u64,
+    pub(super) rebuilds: u64,
+    pub(super) remounts: u64,
+    pub(super) permissions: u64,
+    pub(super) shared_permissions: u64,
+}
+
+/// What a frame's walks of the whole widget tree last read. A walk whose
+/// inputs are all as it last read them would find what it found then, so
+/// a frame that changed none of them (one only an animation asked for)
+/// skips it. Emptied with the widget resource cache.
+#[derive(Default)]
+pub(super) struct TreeWalks {
+    /// What control availability was last pushed into the tree from.
+    pub(super) availability: Option<AvailabilityWalk>,
+    /// What the document routes were last reconciled against.
+    pub(super) routes: Option<RouteInputs>,
+    /// What the last walk for History surfaces in the tree read and found.
+    pub(super) history: Option<HistoryWalk>,
+}
+
+/// Every input of pushing control availability into the tree.
+#[derive(PartialEq, Eq)]
+pub(super) struct AvailabilityInputs {
+    pub(super) tree: TreeGeneration,
+    pub(super) framework_input: bool,
+    pub(super) history_captures: bool,
+    /// The addresses the window's History door serves.
+    pub(super) history_door: std::collections::HashSet<tilo_actions::ActionAddress>,
+}
+
+/// What pushing control availability into the tree last read and found.
+pub(super) struct AvailabilityWalk {
+    pub(super) inputs: AvailabilityInputs,
+    /// What the action emitters were last refreshed against
+    /// (`ActionRuntime::last_control_availability`) as the walk left it:
+    /// anything that drops it asks for the walk again.
+    pub(super) controls: Option<(super::ResourceCacheKey, u64)>,
+    /// A bound component's permissions sample an outside authority at each
+    /// decision (`PermissionContext::samples_outside`), which changes with
+    /// nothing put in force: their controls are refreshed every frame.
+    pub(super) sampled: bool,
+}
+
+/// Every input of reconciling the document routes with the tree.
+#[derive(PartialEq)]
+pub(super) struct RouteInputs {
+    pub(super) tree: TreeGeneration,
+    pub(super) witness: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) autosave_generation: u64,
+    pub(super) document: (Vec<automerge::ChangeHash>, usize),
+}
+
+/// What the last walk for History surfaces read and found.
+pub(super) struct HistoryWalk {
+    pub(super) tree: TreeGeneration,
+    pub(super) status: Option<crate::widget::WindowStatus>,
+    /// The tree holds History surfaces, which the next walk looks at again
+    /// when anything they read moved since: news reached one
+    /// ([`crate::history_mode::news`]), the document, whether the window is
+    /// narrow, a surface's own refresh came due, or one needed a refresh.
+    pub(super) embedded: bool,
+    /// The window's own History found the root it registered.
+    pub(super) root_valid: bool,
+    /// What the surfaces read, as this walk read it.
+    pub(super) surfaces: HistorySurfaceInputs,
+    /// A surface needed a refresh.
+    pub(super) needed: bool,
+    /// When a surface asks for a refresh on its own, on its clock.
+    pub(super) due: Option<(crate::background::Background, crate::time::Instant)>,
+}
+
+/// What History surfaces read besides the tree and the window's status.
+#[derive(PartialEq)]
+pub(super) struct HistorySurfaceInputs {
+    pub(super) news: u64,
+    pub(super) document: (Vec<automerge::ChangeHash>, usize),
+    pub(super) narrow: bool,
+}
+
+impl HistoryWalk {
+    /// Whether the surfaces this walk found need looking at again.
+    pub(super) fn surfaces_owed(&self, inputs: &HistorySurfaceInputs) -> bool {
+        self.embedded
+            && (self.needed
+                || self.surfaces != *inputs
+                || self
+                    .due
+                    .as_ref()
+                    .is_some_and(|(clock, at)| clock.now() >= *at))
     }
 }
 
@@ -274,6 +381,10 @@ pub(super) struct ActionRuntime {
     /// A handled input left the surface to publish once the sync it asked
     /// for has run: the frame that runs it publishes.
     pub(super) action_surface_owed: bool,
+    /// What the last publication was derived from
+    /// ([`super::model_lifecycle::PublicationStamp`]); `None` when it cannot
+    /// be shown current.
+    pub(super) published_stamp: Option<super::model_lifecycle::PublicationStamp>,
     #[cfg(test)]
     pub(super) action_surface_publication_attempts: usize,
     /// Opaque, revision-bound continuation state for the broker directory.
@@ -293,6 +404,9 @@ pub(super) struct ActionRuntime {
     /// Each invocation of another provider's action a control here is bound
     /// to that the provider is still answering, by broker request.
     pub(super) hosted_requests: std::collections::HashSet<u64>,
+    /// Resolutions asked for a resource still being read, answered once its
+    /// read lands ([`crate::resources::PublishesResources::resource_pending`]).
+    pub(super) awaited_resolutions: Vec<super::AwaitedResolution>,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
@@ -362,6 +476,7 @@ impl ActionRuntime {
             last_published_actions: None,
             published_surface: None,
             action_surface_owed: false,
+            published_stamp: None,
             #[cfg(test)]
             action_surface_publication_attempts: 0,
             action_directory_cursors: std::collections::HashMap::new(),
@@ -369,6 +484,7 @@ impl ActionRuntime {
             acting_for: std::collections::HashMap::new(),
             follow_ups: std::collections::HashMap::new(),
             hosted_requests: std::collections::HashSet::new(),
+            awaited_resolutions: Vec::new(),
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
@@ -605,6 +721,10 @@ pub(super) struct WindowRuntime {
     /// system was last told.
     pub(super) minimum_width: Option<f64>,
     pub(super) minimum_width_stated: Option<f64>,
+    /// The size the root widget asked for, and the size last stated to the
+    /// window system.
+    pub(super) preferred_size: Option<(f64, f64)>,
+    pub(super) preferred_size_stated: Option<(f64, f64)>,
     pub(super) title: Option<String>,
     pub(super) app_id: Option<String>,
 }
@@ -616,6 +736,8 @@ impl WindowRuntime {
             fullscreen_active: false,
             minimum_width: None,
             minimum_width_stated: None,
+            preferred_size: None,
+            preferred_size_stated: None,
             title: None,
             app_id: None,
         }

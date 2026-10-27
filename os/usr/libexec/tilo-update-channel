@@ -48,10 +48,15 @@ list() {
   [ "$(flavour)" = dev ] && echo dev
   echo stable
 }
+# Whether this device can follow channel $1. Not `list | grep -q`: under pipefail, grep leaving at
+# the first match fails the pipeline once list writes another line.
+follows() {
+  case $'\n'"$(list)"$'\n' in *$'\n'"$1"$'\n'*) ;; *) return 1 ;; esac
+}
 current() {
   local chosen
   chosen="$(policy channel)"
-  if [ -n "$chosen" ] && list | grep -Fqx "$chosen"; then
+  if [ -n "$chosen" ] && follows "$chosen"; then
     printf '%s\n' "$chosen"
   elif [ "$(flavour)" = dev ]; then
     echo dev
@@ -60,7 +65,7 @@ current() {
   fi
 }
 ref() {  # $1 = channel
-  list | grep -Fqx "$1" || die "this device cannot follow $1"
+  follows "$1" || die "this device cannot follow $1"
   case "$1:$(flavour)" in
     dev:*) printf '%s:%s-ci\n' "$DEV_REPOSITORY" "$(target)" ;;
     # A release image keeps the origin it was installed with; a board's successor is chosen by

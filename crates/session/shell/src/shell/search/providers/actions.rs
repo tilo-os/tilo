@@ -29,11 +29,16 @@ mod strips;
 mod tabs;
 mod windows;
 mod workspaces;
+pub(crate) use quick_settings::QS_MUTE_ID;
+use quick_settings::{
+    DISPLAY_BRIGHTNESS_STEP, LEVEL_STEPS, QS_DISPLAY_BRIGHTNESS_PREFIX, QS_MUTE_KEYWORDS,
+    QS_TOGGLES, QUICK_SETTINGS_ACTIONS, apply_quick_settings_effect, display_brightness_connector,
+    level_badge, quick_settings_params, radio_is_on, stepped, validated_percent,
+};
 pub(crate) use quick_settings::{
     QS_AIRPLANE_ID, QS_BLUETOOTH_ID, QS_BRIGHTNESS_ID, QS_POWER_ID, QS_VOLUME_ID, QS_VPN_ID,
     QS_WIFI_ID, SharedQsActions, SharedQsDispatcher, ValidatedQsActions,
 };
-use quick_settings::{apply_quick_settings_effect, quick_settings_params, validated_percent};
 use shortcuts::ACTION_SHORTCUTS;
 pub(crate) use shortcuts::action_shortcut;
 
@@ -492,7 +497,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "notifications.dnd.toggle"
         | "appearance.theme.dark"
         | "appearance.theme.light"
-        | "appearance.language" => {
+        | "appearance.language"
+        | BLUETOOTH_PAIRING_DECLINE_ID => {
             contract.kind = ActionKind::Undoable;
             contract.retry = RetryPolicy::AtMostOnce;
         }
@@ -507,10 +513,6 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | DISPLAY_KEEP_ID
         | DISPLAY_REVERT_ID
         | shared_display_actions::INCLUDE_ID => contract = display_layout_contract(),
-        BLUETOOTH_PAIRING_DECLINE_ID => {
-            contract.kind = ActionKind::Undoable;
-            contract.retry = RetryPolicy::AtMostOnce;
-        }
         // Navigation and focus each advance one step when repeated.
         id if id.starts_with("navigation.axis.") || WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
             contract = ActionContract::view();
@@ -964,114 +966,14 @@ const PEER_INVITE_NAMED_PARAMS: &[ActionParam] = &[
     ),
 ];
 
-/// Workspace membership and invitations, under the canonical ids and
-/// parameter names of `tilo_action_broker::collaboration_admin`. The shell
-/// adds `confirm` to each (its door requires an explicit confirmation for
-/// privileged, sensitive and destructive actions) and an optional
-/// `recipient` to `invitation.issue`; `invitation_params_follow_the_canonical_definitions`
-/// keeps the rest identical.
-mod membership_actions {
-    use super::{ActionParam, ParamType};
-    pub(super) use tilo_action_broker::collaboration_admin::{
-        CANCEL_ACTION, ISSUE_ACTION, LIST_ACTION, REMOVE_ACTION, SET_ROLE_ACTION,
-    };
-
-    /// Return a pending invitation's original token again. Shell-only: the
-    /// canonical surface has no resend.
-    pub(super) const RESEND_ACTION: &str = "invitation.resend";
-
-    /// The invitation actions, which run through the peer-sync network.
-    pub(super) const INVITATION_ACTION_IDS: &[&str] =
-        &[ISSUE_ACTION, CANCEL_ACTION, LIST_ACTION, RESEND_ACTION];
-
-    /// Parameters the shell declares beyond the canonical ones.
-    pub(super) const SHELL_ONLY_PARAMS: &[&str] = &["confirm", "recipient"];
-
-    /// The relay refuses an invitation that lives longer than this.
-    pub(super) const MAX_INVITATION_LIFETIME_SECONDS: u64 = 30 * 24 * 60 * 60;
-
-    /// Longest display name an invitation may record.
-    pub(super) const MAX_INVITEE_NAME_CHARS: usize = 80;
-
-    const CONFIRM: ActionParam = ActionParam::required(
-        "confirm",
-        ParamType::Boolean,
-        "Confirm this workspace administration request.",
-    );
-    const ROLE: ActionParam =
-        ActionParam::required("role", ParamType::Text, "viewer, commenter, or editor");
-    const PARTICIPANT: ActionParam = ActionParam::required(
-        "participant_id",
-        ParamType::Text,
-        "Participant person-root identifier",
-    );
-    const INVITE_ID: ActionParam =
-        ActionParam::required("invite_id", ParamType::Text, "Invitation digest");
-
-    pub(super) const MEMBER_ROLE_SET_PARAMS: &[ActionParam] = &[PARTICIPANT, ROLE, CONFIRM];
-    pub(super) const MEMBER_REMOVE_PARAMS: &[ActionParam] = &[PARTICIPANT, CONFIRM];
-    pub(super) const INVITATION_ISSUE_PARAMS: &[ActionParam] = &[
-        ROLE,
-        ActionParam::required(
-            "expires_in_seconds",
-            ParamType::Integer,
-            "Invitation lifetime",
-        ),
-        ActionParam::optional("invitee_name", ParamType::Text, "Optional display name"),
-        ActionParam::optional(
-            "recipient",
-            ParamType::Text,
-            "The invitee's 64-character person key (or `tilo-identity:` card). \
-             When given, only that person's devices can redeem the invitation.",
-        ),
-        CONFIRM,
-    ];
-    pub(super) const INVITATION_ID_PARAMS: &[ActionParam] = &[INVITE_ID, CONFIRM];
-    pub(super) const INVITATION_LIST_PARAMS: &[ActionParam] = &[CONFIRM];
-}
-
+mod membership_actions;
+// Its ids, parameters and its two decoders travel with it.
 use membership_actions::{
     CANCEL_ACTION as INVITATION_CANCEL_ID, INVITATION_ACTION_IDS,
     ISSUE_ACTION as INVITATION_ISSUE_ID, LIST_ACTION as INVITATION_LIST_ID,
     REMOVE_ACTION as MEMBER_REMOVE_ID, RESEND_ACTION as INVITATION_RESEND_ID,
-    SET_ROLE_ACTION as MEMBER_ROLE_SET_ID,
+    SET_ROLE_ACTION as MEMBER_ROLE_SET_ID, collaboration_contract, collaboration_operation,
 };
-
-/// The shell's contract for a membership or invitation action: permission,
-/// risk and result exactly as the canonical definition declares, with the
-/// shell door's explicit confirmation and at-most-once retry (this
-/// transport carries no caller-supplied deduplication key).
-fn collaboration_contract(id: &str) -> Option<tilo_actions::ActionContract> {
-    let canonical = match id {
-        INVITATION_ISSUE_ID | INVITATION_RESEND_ID => INVITATION_ISSUE_ID,
-        INVITATION_CANCEL_ID | INVITATION_LIST_ID | MEMBER_ROLE_SET_ID | MEMBER_REMOVE_ID => id,
-        _ => return None,
-    };
-    let mut contract = tilo_action_broker::collaboration_admin::action_definitions()
-        .into_iter()
-        .find(|definition| definition.id == canonical)?
-        .contract;
-    contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
-    contract.retry = tilo_actions::RetryPolicy::AtMostOnce;
-    Some(contract)
-}
-
-/// Decode a membership or invitation action's arguments with the canonical
-/// parser, so the shell accepts exactly what every other door accepts.
-fn collaboration_operation(
-    canonical_id: &str,
-    args: &ActionArgs,
-) -> Result<tilo_action_broker::collaboration_admin::CollaborationAdminOperation, ActionError> {
-    let mut json = args.to_json();
-    for shell_only in membership_actions::SHELL_ONLY_PARAMS {
-        json.remove(*shell_only);
-    }
-    tilo_action_broker::collaboration_admin::parse_operation(
-        canonical_id,
-        Some(&serde_json::Value::Object(json).to_string()),
-    )
-    .map_err(ActionError::Refused)
-}
 
 fn participant(id: &str) -> Result<crate::shell::state::UserId, ActionError> {
     let id = id.trim();
@@ -1372,6 +1274,10 @@ struct Action {
     label: &'static str,
     /// Catalogue key of the row's subtitle.
     subtitle: &'static str,
+    /// Catalogue key of the other words people use for the action ("dark
+    /// mode", "night" for Dark appearance), a comma-separated list in every
+    /// language: search finds the row by them as by its label.
+    keywords: &'static str,
     /// Empty for everything that only needs to be told to happen.
     params: &'static [ActionParam],
     apply: fn(&mut ChromeState, &ActionArgs) -> Result<(), ActionError>,
@@ -1382,12 +1288,14 @@ const fn chrome(
     id: &'static str,
     label: &'static str,
     subtitle: &'static str,
+    keywords: &'static str,
     apply: fn(&mut ChromeState, &ActionArgs) -> Result<(), ActionError>,
 ) -> Action {
     Action {
         id,
         label,
         subtitle,
+        keywords,
         params: &[],
         apply,
     }
@@ -1399,18 +1307,21 @@ impl Action {
             "dictation.toggle",
             "shortcut-name-dictation-toggle",
             "dictation-action-start-detail",
+            "search-kw-dictation-toggle",
             |st, _| request_window_shortcut(st, ShortcutAction::DictationToggle),
         ),
         chrome(
             "dictation.finish",
             "shortcut-name-dictation-finish",
             "dictation-action-finish-detail",
+            "search-kw-dictation-finish",
             |st, _| request_window_shortcut(st, ShortcutAction::DictationFinish),
         ),
         chrome(
             "dictation.cancel",
             "shortcut-name-dictation-cancel",
             "dictation-action-cancel-detail",
+            "search-kw-dictation-cancel",
             |st, _| request_window_shortcut(st, ShortcutAction::DictationCancel),
         ),
         // "emoji" or a lone ":" in search: the same picker Super+. opens.
@@ -1418,6 +1329,7 @@ impl Action {
             "emoji.picker",
             "search-action-emoji-picker",
             "search-action-emoji-picker-subtitle",
+            "search-kw-emoji-picker",
             |st, _| request_window_shortcut(st, ShortcutAction::EmojiPicker),
         ),
         // The same switch Super+Alt+Space makes, on the keyboard last typed on.
@@ -1425,6 +1337,7 @@ impl Action {
             "input.source.next",
             "shortcut-name-next-input-source",
             "search-action-next-input-source-subtitle",
+            "search-kw-input-source-next",
             |st, _| {
                 st.switch_to_next_input_source()
                     .map(drop)
@@ -1435,6 +1348,7 @@ impl Action {
             "navigation.axis.enable",
             "search-action-axis-enable",
             "search-action-axis-enable-subtitle",
+            "search-kw-navigation-axis-enable",
             |st, _| {
                 st.set_axis_navigation_enabled(true);
                 Ok(())
@@ -1444,6 +1358,7 @@ impl Action {
             "navigation.axis.disable",
             "search-action-axis-disable",
             "search-action-axis-disable-subtitle",
+            "search-kw-navigation-axis-disable",
             |st, _| {
                 st.set_axis_navigation_enabled(false);
                 Ok(())
@@ -1453,6 +1368,7 @@ impl Action {
             "navigation.axis.gather",
             "search-action-axis-gather",
             "search-action-axis-gather-subtitle",
+            "search-kw-navigation-axis-gather",
             |st, _| {
                 if !st.axis_navigation_enabled() {
                     return Err(ActionError::Explained(t("axis-navigation-disabled")));
@@ -1466,18 +1382,21 @@ impl Action {
             "feedback.open",
             "search-action-feedback-open",
             "search-action-feedback-open-subtitle",
+            "search-kw-feedback-open",
             |st, _| crate::shell::feedback_entry::open(st),
         ),
         chrome(
             "feedback.point",
             "search-action-feedback-point",
             "search-action-feedback-point-subtitle",
+            "search-kw-feedback-point",
             |st, _| crate::shell::feedback_entry::point(st),
         ),
         chrome(
             "overview.toggle",
             "search-action-overview-toggle",
             "search-action-overview-toggle-subtitle",
+            "search-kw-overview-toggle",
             |st, _| {
                 st.overlays.overview = !st.overlays.overview;
                 Ok(())
@@ -1487,6 +1406,7 @@ impl Action {
             "settings.open",
             "search-action-settings-open",
             "search-action-settings-open-subtitle",
+            "search-kw-settings-open",
             |st, _| {
                 st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::General);
                 Ok(())
@@ -1496,6 +1416,7 @@ impl Action {
             "settings.members.open",
             "search-action-settings-members-open",
             "search-action-settings-members-open-subtitle",
+            "search-kw-settings-members-open",
             |st, _| {
                 st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Members);
                 Ok(())
@@ -1505,6 +1426,7 @@ impl Action {
             "settings.privacy.open",
             "search-action-settings-privacy-open",
             "search-action-settings-privacy-open-subtitle",
+            "search-kw-settings-privacy-open",
             |st, _| {
                 st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Permissions);
                 Ok(())
@@ -1514,6 +1436,7 @@ impl Action {
             "settings.apps.open",
             "search-action-settings-apps-open",
             "search-action-settings-apps-open-subtitle",
+            "search-kw-settings-apps-open",
             |st, _| {
                 st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Apps);
                 Ok(())
@@ -1523,6 +1446,7 @@ impl Action {
             id: "identity.connect",
             label: "search-action-identity-connect",
             subtitle: "search-action-identity-connect-subtitle",
+            keywords: "search-kw-identity-connect",
             params: IDENTITY_CONNECT_PARAMS,
             apply: |st, args| {
                 require_explicit_confirmation(args, "connect this identity")?;
@@ -1558,6 +1482,7 @@ impl Action {
             id: "identity.select",
             label: "search-action-identity-select",
             subtitle: "search-action-identity-select-subtitle",
+            keywords: "search-kw-identity-select",
             params: IDENTITY_SELECT_PARAMS,
             apply: |st, args| {
                 let identity_id = args.text("id").unwrap_or_default().trim();
@@ -1587,6 +1512,7 @@ impl Action {
             "identity.devices.copy",
             "search-action-identity-devices-copy",
             "search-action-identity-devices-copy-subtitle",
+            "search-kw-identity-devices-copy",
             |st, _| {
                 let (_, profile) = active_identity(st)?;
                 let fleet = crate::device_fleet::DeviceFleetStore::from_env()
@@ -1621,6 +1547,7 @@ impl Action {
             id: enrollment_tokens::DEVICE_ENROLL_ID,
             label: "search-action-identity-device-enroll",
             subtitle: "search-action-identity-device-enroll-subtitle",
+            keywords: "search-kw-identity-device-enroll",
             params: enrollment_tokens::ENROLL_PARAMS,
             apply: |st, args| {
                 enrollment_tokens::mint_for_person(
@@ -1634,6 +1561,7 @@ impl Action {
             id: enrollment_tokens::HOME_PEER_ENROLL_ID,
             label: "search-action-identity-home-peer-enroll",
             subtitle: "search-action-identity-home-peer-enroll-subtitle",
+            keywords: "search-kw-identity-home-peer-enroll",
             params: enrollment_tokens::ENROLL_PARAMS,
             apply: |st, args| {
                 enrollment_tokens::mint_for_person(
@@ -1647,6 +1575,7 @@ impl Action {
             id: device_pairing::DISCOVER_ID,
             label: "search-action-identity-device-pair-discover",
             subtitle: "search-action-identity-device-pair-discover-subtitle",
+            keywords: "search-kw-identity-device-pair-discover",
             params: device_pairing::DISCOVER_PARAMS,
             apply: |_, _| Err(pairing_needs_lifecycle()),
         },
@@ -1654,6 +1583,7 @@ impl Action {
             id: device_pairing::APPROVE_ID,
             label: "search-action-identity-device-pair-approve",
             subtitle: "search-action-identity-device-pair-approve-subtitle",
+            keywords: "search-kw-identity-device-pair-approve",
             params: device_pairing::APPROVE_PARAMS,
             apply: |_, _| Err(pairing_needs_lifecycle()),
         },
@@ -1661,6 +1591,7 @@ impl Action {
             id: device_pairing::REJECT_ID,
             label: "search-action-identity-device-pair-reject",
             subtitle: "search-action-identity-device-pair-reject-subtitle",
+            keywords: "search-kw-identity-device-pair-reject",
             params: device_pairing::REJECT_PARAMS,
             apply: |_, _| Err(pairing_needs_lifecycle()),
         },
@@ -1668,6 +1599,7 @@ impl Action {
             id: device_pairing::ASKING_ID,
             label: "search-action-identity-device-pair-asking",
             subtitle: "search-action-identity-device-pair-asking-subtitle",
+            keywords: "search-kw-identity-device-pair-asking",
             params: device_pairing::ASKING_PARAMS,
             apply: |_, _| Err(pairing_needs_lifecycle()),
         },
@@ -1675,6 +1607,7 @@ impl Action {
             id: device_pairing::ANSWER_ID,
             label: "search-action-identity-device-pair-answer",
             subtitle: "search-action-identity-device-pair-answer-subtitle",
+            keywords: "search-kw-identity-device-pair-answer",
             params: device_pairing::ANSWER_PARAMS,
             apply: |_, _| Err(pairing_needs_lifecycle()),
         },
@@ -1682,6 +1615,7 @@ impl Action {
             id: identity_admin::LIST_ID,
             label: "search-action-identity-list",
             subtitle: "search-action-identity-list-subtitle",
+            keywords: "search-kw-identity-list",
             params: crate::shell::identity_admin::LIST_PARAMS,
             apply: |_, _| Err(identity_needs_lifecycle()),
         },
@@ -1689,6 +1623,7 @@ impl Action {
             id: identity_admin::ACTIVATE_ID,
             label: "search-action-identity-activate",
             subtitle: "search-action-identity-activate-subtitle",
+            keywords: "search-kw-identity-activate",
             params: crate::shell::identity_admin::ACTIVATE_PARAMS,
             apply: |_, _| Err(identity_needs_lifecycle()),
         },
@@ -1696,6 +1631,7 @@ impl Action {
             id: identity_admin::REMOVE_ID,
             label: "search-action-identity-remove",
             subtitle: "search-action-identity-remove-subtitle",
+            keywords: "search-kw-identity-remove",
             params: crate::shell::identity_admin::REMOVE_PARAMS,
             apply: |_, _| Err(identity_needs_lifecycle()),
         },
@@ -1703,6 +1639,7 @@ impl Action {
             id: identity_admin::PROTECT_ID,
             label: "search-action-identity-protect",
             subtitle: "search-action-identity-protect-subtitle",
+            keywords: "search-kw-identity-protect",
             params: crate::shell::identity_admin::PROTECT_PARAMS,
             apply: |_, _| Err(identity_needs_lifecycle()),
         },
@@ -1710,6 +1647,7 @@ impl Action {
             id: identity_admin::DEVICES_ID,
             label: "search-action-identity-devices-list",
             subtitle: "search-action-identity-devices-list-subtitle",
+            keywords: "search-kw-identity-devices-list",
             params: crate::shell::identity_admin::DEVICES_PARAMS,
             apply: |_, _| Err(identity_needs_lifecycle()),
         },
@@ -1717,6 +1655,7 @@ impl Action {
             id: identity_admin::HOME_PEER_REMOVE_ID,
             label: "search-action-identity-home-peer-remove",
             subtitle: "search-action-identity-home-peer-remove-subtitle",
+            keywords: "search-kw-identity-home-peer-remove",
             params: crate::shell::identity_admin::HOME_PEER_REMOVE_PARAMS,
             apply: |_, _| Err(identity_needs_lifecycle()),
         },
@@ -1724,6 +1663,7 @@ impl Action {
             id: identity_admin::HOME_PEER_RETRY_ID,
             label: "search-action-identity-home-peer-retry",
             subtitle: "search-action-identity-home-peer-retry-subtitle",
+            keywords: "search-kw-identity-home-peer-retry-removals",
             params: crate::shell::identity_admin::HOME_PEER_RETRY_PARAMS,
             apply: |_, _| Err(identity_needs_lifecycle()),
         },
@@ -1731,6 +1671,7 @@ impl Action {
             id: "identity.device.revoke",
             label: "search-action-identity-device-revoke",
             subtitle: "search-action-identity-device-revoke-subtitle",
+            keywords: "search-kw-identity-device-revoke",
             params: DEVICE_REVOKE_PARAMS,
             apply: |st, args| {
                 if args.boolean("confirm") != Some(true) {
@@ -1757,6 +1698,7 @@ impl Action {
             "quick-settings.open",
             "search-action-quick-settings-open",
             "search-action-quick-settings-open-subtitle",
+            "search-kw-quick-settings-open",
             |st, _| {
                 st.open_quick_settings();
                 Ok(())
@@ -1766,6 +1708,7 @@ impl Action {
             "quick-settings.clipboard",
             "search-action-quick-settings-clipboard",
             "search-action-quick-settings-clipboard-subtitle",
+            "search-kw-quick-settings-clipboard",
             |st, _| {
                 st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
                 Ok(())
@@ -1775,6 +1718,7 @@ impl Action {
             "quick-settings.network",
             "qs-network-details",
             "search-action-quick-settings-network-subtitle",
+            "search-kw-quick-settings-network",
             |st, _| {
                 st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Wifi);
                 Ok(())
@@ -1784,6 +1728,7 @@ impl Action {
             "quick-settings.bluetooth",
             "qs-bluetooth-details",
             "search-action-quick-settings-bluetooth-subtitle",
+            "search-kw-quick-settings-bluetooth",
             |st, _| {
                 st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Bluetooth);
                 Ok(())
@@ -1793,6 +1738,7 @@ impl Action {
             "quick-settings.devices",
             "search-action-quick-settings-devices",
             "search-action-quick-settings-devices-subtitle",
+            "search-kw-quick-settings-devices",
             |st, _| {
                 st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Devices);
                 Ok(())
@@ -1802,6 +1748,7 @@ impl Action {
             "projection.open",
             "search-action-projection-open",
             "search-action-projection-open-subtitle",
+            "search-kw-projection-open",
             |st, _| {
                 st.open_projection();
                 Ok(())
@@ -1811,6 +1758,7 @@ impl Action {
             "projection.close",
             "search-action-projection-close",
             "search-action-projection-close-subtitle",
+            "search-kw-projection-close",
             |st, _| {
                 st.close_projection();
                 Ok(())
@@ -1820,12 +1768,14 @@ impl Action {
             shared_display_actions::INSPECT_ID,
             "search-action-shared-display-inspect",
             "search-action-shared-display-inspect-subtitle",
+            "search-kw-display-shared-inspect",
             |_, _| Ok(()),
         ),
         Action {
             id: shared_display_actions::INCLUDE_ID,
             label: "search-action-shared-display-include",
             subtitle: "search-action-shared-display-include-subtitle",
+            keywords: "search-kw-display-shared-include",
             params: shared_display_actions::INCLUDE_PARAMS,
             apply: |state, args| {
                 let revision = args
@@ -1845,54 +1795,63 @@ impl Action {
             DISPLAY_EXTEND_ID,
             "search-action-display-layout-extend",
             "search-action-display-layout-extend-subtitle",
+            "search-kw-display-layout-extend",
             |st, _| stage_display_layout(st, DisplayLayoutMode::Extend),
         ),
         chrome(
             DISPLAY_MIRROR_ID,
             "search-action-display-layout-mirror",
             "search-action-display-layout-mirror-subtitle",
+            "search-kw-display-layout-mirror",
             |st, _| stage_display_layout(st, DisplayLayoutMode::Mirror),
         ),
         chrome(
             DISPLAY_BUILTIN_ONLY_ID,
             "search-action-display-layout-builtin-only",
             "search-action-display-layout-builtin-only-subtitle",
+            "search-kw-display-layout-builtin-only",
             |st, _| stage_display_layout(st, DisplayLayoutMode::BuiltinOnly),
         ),
         chrome(
             DISPLAY_EXTERNAL_ONLY_ID,
             "search-action-display-layout-external-only",
             "search-action-display-layout-external-only-subtitle",
+            "search-kw-display-layout-external-only",
             |st, _| stage_display_layout(st, DisplayLayoutMode::ExternalOnly),
         ),
         chrome(
             DISPLAY_OUTPUTS_INSPECT_ID,
             "search-action-display-outputs-inspect",
             "search-action-display-outputs-inspect-subtitle",
+            "search-kw-display-outputs-inspect",
             |_, _| Ok(()),
         ),
         chrome(
             DISPLAY_KEEP_ID,
             "search-action-display-change-keep",
             "search-action-display-change-keep-subtitle",
+            "search-kw-display-change-keep",
             |_, _| settle_display_change(true),
         ),
         chrome(
             DISPLAY_REVERT_ID,
             "search-action-display-change-revert",
             "search-action-display-change-revert-subtitle",
+            "search-kw-display-change-revert",
             |_, _| settle_display_change(false),
         ),
         chrome(
             BLUETOOTH_PAIRING_DECLINE_ID,
             "search-action-bluetooth-pairing-decline",
             "search-action-bluetooth-pairing-decline-subtitle",
+            "search-kw-bluetooth-pairing-decline",
             |_, _| decline_bluetooth_pairing(),
         ),
         chrome(
             "capture.open",
             "search-action-capture-open",
             "search-action-capture-open-subtitle",
+            "search-kw-capture-open",
             |st, _| {
                 st.overlays.capture = true;
                 Ok(())
@@ -1902,6 +1861,7 @@ impl Action {
             id: "capture.screenshot.send",
             label: "search-action-capture-screenshot-send",
             subtitle: "search-action-capture-screenshot-send-subtitle",
+            keywords: "search-kw-capture-screenshot-send",
             params: SCREENSHOT_SEND_PARAMS,
             apply: |st, args| {
                 let target = args.text("target").unwrap_or_default().trim();
@@ -1922,6 +1882,7 @@ impl Action {
             "collaborators.open",
             "search-action-collaborators-open",
             "search-action-collaborators-open-subtitle",
+            "search-kw-collaborators-open",
             |st, _| {
                 st.overlays.collaborators = true;
                 Ok(())
@@ -1931,6 +1892,7 @@ impl Action {
             id: "presence.follow",
             label: "search-action-presence-follow",
             subtitle: "search-action-presence-follow-subtitle",
+            keywords: "search-kw-presence-follow",
             params: PRESENCE_FOLLOW_PARAMS,
             apply: |st, args| {
                 let id = args.text("collaborator").unwrap_or_default().trim();
@@ -1955,6 +1917,7 @@ impl Action {
             "presence.follow.stop",
             "search-action-presence-follow-stop",
             "search-action-presence-follow-stop-subtitle",
+            "search-kw-presence-follow-stop",
             |st, _| {
                 st.push_presence_request(
                     crate::shell::chrome_state::PresenceRequest::StopFollowing,
@@ -1966,6 +1929,7 @@ impl Action {
             id: "presence.status.set",
             label: "search-action-presence-status-set",
             subtitle: "search-action-presence-status-set-subtitle",
+            keywords: "search-kw-presence-status-set",
             params: PRESENCE_STATUS_PARAMS,
             apply: |st, args| {
                 let text = args.text("text").unwrap_or_default().trim();
@@ -1987,6 +1951,7 @@ impl Action {
             id: "presence.status-sharing.set",
             label: "search-action-presence-status-sharing-set",
             subtitle: "search-action-presence-status-sharing-set-subtitle",
+            keywords: "search-kw-presence-status-sharing-set",
             params: PRESENCE_SHARING_PARAMS,
             apply: |st, args| {
                 let mode = match args
@@ -2015,6 +1980,7 @@ impl Action {
             id: "presence.wave",
             label: "search-action-presence-wave",
             subtitle: "search-action-presence-wave-subtitle",
+            keywords: "search-kw-presence-wave",
             params: PRESENCE_FOLLOW_PARAMS,
             apply: |st, args| {
                 let id = args.text("collaborator").unwrap_or_default().trim();
@@ -2039,6 +2005,7 @@ impl Action {
             id: "presence.availability.set",
             label: "search-action-presence-availability-set",
             subtitle: "search-action-presence-availability-set-subtitle",
+            keywords: "search-kw-presence-availability-set",
             params: PRESENCE_AVAILABILITY_PARAMS,
             apply: |st, args| {
                 let chosen = match args
@@ -2067,6 +2034,7 @@ impl Action {
             id: "presence.visibility.set",
             label: "search-action-presence-visibility-set",
             subtitle: "search-action-presence-visibility-set-subtitle",
+            keywords: "search-kw-presence-visibility-set",
             params: PRESENCE_VISIBILITY_PARAMS,
             apply: |st, args| {
                 let choice = match args
@@ -2103,6 +2071,7 @@ impl Action {
             "room.activity.open",
             "search-action-room-activity-open",
             "search-action-room-activity-open-subtitle",
+            "search-kw-room-activity-open",
             |st, _| {
                 st.open_room_activity(None);
                 Ok(())
@@ -2114,6 +2083,7 @@ impl Action {
             "peer.invite",
             "search-action-peer-invite",
             "search-action-peer-invite-subtitle",
+            "search-kw-peer-invite",
             |st, _| {
                 st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::PromptInvite);
                 Ok(())
@@ -2125,6 +2095,7 @@ impl Action {
             "peer.connect",
             "search-action-peer-connect",
             "search-action-peer-connect-subtitle",
+            "search-kw-peer-connect",
             |st, _| {
                 st.push_peer_sync_request(
                     crate::shell::overlay_host::PeerSyncAction::BrowseDirectory,
@@ -2136,6 +2107,7 @@ impl Action {
             "peer.pair-device",
             "search-action-pair-device",
             "search-action-pair-device-subtitle",
+            "search-kw-peer-pair-device",
             |st, _| {
                 st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::PairDevice);
                 Ok(())
@@ -2150,6 +2122,7 @@ impl Action {
             id: "peer.invite.named",
             label: "search-action-peer-invite-named",
             subtitle: "search-action-peer-invite-named-subtitle",
+            keywords: "search-kw-peer-invite-named",
             params: PEER_INVITE_NAMED_PARAMS,
             apply: |st, args| {
                 let name = name_invited_peer(args)?;
@@ -2172,6 +2145,7 @@ impl Action {
             id: WORKSPACE_PUBLISH_ID,
             label: "search-action-workspace-publish",
             subtitle: "search-action-workspace-publish-subtitle",
+            keywords: "search-kw-workspace-publish",
             params: WORKSPACE_PUBLISH_PARAMS,
             apply: |st, args| {
                 let listing = publish_listing(st, args)?;
@@ -2184,6 +2158,7 @@ impl Action {
             id: WORKSPACE_UNPUBLISH_ID,
             label: "search-action-workspace-unpublish",
             subtitle: "search-action-workspace-unpublish-subtitle",
+            keywords: "search-kw-workspace-unpublish",
             params: &[],
             apply: |st, _| {
                 st.publish_active_workspace(None);
@@ -2197,6 +2172,7 @@ impl Action {
             id: BOT_ADD_ID,
             label: "search-action-bot-add",
             subtitle: "search-action-bot-add-subtitle",
+            keywords: "search-kw-bot-add",
             params: BOT_ADD_PARAMS,
             apply: |st, args| {
                 require_explicit_confirmation(args, "add this bot")?;
@@ -2215,6 +2191,7 @@ impl Action {
             id: APP_UNINSTALL_ID,
             label: "search-action-app-uninstall",
             subtitle: "search-action-app-uninstall-subtitle",
+            keywords: "search-kw-app-uninstall",
             params: APP_UNINSTALL_PARAMS,
             apply: |_, args| uninstall_app(args, false),
         },
@@ -2222,6 +2199,7 @@ impl Action {
             id: APP_REMOVE_FROM_APPS_ID,
             label: "search-action-app-remove-from-apps",
             subtitle: "search-action-app-remove-from-apps-subtitle",
+            keywords: "search-kw-app-remove-from-apps",
             params: APP_REMOVE_FROM_APPS_PARAMS,
             apply: |_, args| uninstall_app(args, true),
         },
@@ -2229,6 +2207,7 @@ impl Action {
             id: BOT_REMOVE_ID,
             label: "search-action-bot-remove",
             subtitle: "search-action-bot-remove-subtitle",
+            keywords: "search-kw-bot-remove",
             params: BOT_REMOVE_PARAMS,
             apply: |st, args| {
                 require_explicit_confirmation(args, "remove this bot")?;
@@ -2246,6 +2225,7 @@ impl Action {
             id: WORKSPACE_REPORT_ID,
             label: "search-action-workspace-report",
             subtitle: "search-action-workspace-report-subtitle",
+            keywords: "search-kw-workspace-report",
             params: WORKSPACE_REPORT_PARAMS,
             apply: |st, args| {
                 let reason = args.text("reason").unwrap_or_default().trim().to_owned();
@@ -2270,6 +2250,7 @@ impl Action {
             id: MEMBER_ROLE_SET_ID,
             label: "search-action-member-role-set",
             subtitle: "search-action-member-role-set-subtitle",
+            keywords: "search-kw-member-role-set",
             params: membership_actions::MEMBER_ROLE_SET_PARAMS,
             apply: apply_member_role_set,
         },
@@ -2277,6 +2258,7 @@ impl Action {
             id: MEMBER_REMOVE_ID,
             label: "search-action-member-remove",
             subtitle: "search-action-member-remove-subtitle",
+            keywords: "search-kw-member-remove",
             params: membership_actions::MEMBER_REMOVE_PARAMS,
             apply: apply_member_remove,
         },
@@ -2287,6 +2269,7 @@ impl Action {
             id: INVITATION_ISSUE_ID,
             label: "search-action-invitation-issue",
             subtitle: "search-action-invitation-issue-subtitle",
+            keywords: "search-kw-invitation-issue",
             params: membership_actions::INVITATION_ISSUE_PARAMS,
             apply: invitation_requires_lifecycle_dispatch,
         },
@@ -2294,6 +2277,7 @@ impl Action {
             id: INVITATION_LIST_ID,
             label: "search-action-invitation-list",
             subtitle: "search-action-invitation-list-subtitle",
+            keywords: "search-kw-invitation-list",
             params: membership_actions::INVITATION_LIST_PARAMS,
             apply: invitation_requires_lifecycle_dispatch,
         },
@@ -2301,6 +2285,7 @@ impl Action {
             id: INVITATION_RESEND_ID,
             label: "search-action-invitation-resend",
             subtitle: "search-action-invitation-resend-subtitle",
+            keywords: "search-kw-invitation-resend",
             params: membership_actions::INVITATION_ID_PARAMS,
             apply: invitation_requires_lifecycle_dispatch,
         },
@@ -2308,6 +2293,7 @@ impl Action {
             id: INVITATION_CANCEL_ID,
             label: "search-action-invitation-cancel",
             subtitle: "search-action-invitation-cancel-subtitle",
+            keywords: "search-kw-invitation-cancel",
             params: membership_actions::INVITATION_ID_PARAMS,
             apply: invitation_requires_lifecycle_dispatch,
         },
@@ -2319,6 +2305,7 @@ impl Action {
             id: "agent.invite",
             label: "search-action-agent-invite",
             subtitle: "search-action-agent-invite-subtitle",
+            keywords: "search-kw-agent-invite",
             params: AGENT_INVITE_PARAMS,
             apply: |st, args| {
                 use tilo_action_policy::roles::AgentPreset;
@@ -2379,6 +2366,7 @@ impl Action {
             id: crate::shell::membership::AGENT_REMOVE_ACTION,
             label: "search-action-agent-remove",
             subtitle: "search-action-agent-remove-subtitle",
+            keywords: "search-kw-agent-remove",
             params: AGENT_REMOVE_PARAMS,
             apply: |st, args| {
                 // Case-folded like `agent.invite`, which admitted it.
@@ -2395,6 +2383,7 @@ impl Action {
             "tab.new.terminal.here",
             "search-action-tab-new-terminal-here",
             "search-action-tab-new-terminal-here-subtitle",
+            "search-kw-tab-new-terminal-here",
             |st, _| {
                 crate::shell::window_actions::new_terminal(
                     st,
@@ -2407,6 +2396,7 @@ impl Action {
             "window.new.terminal",
             "search-action-window-new-terminal",
             "search-action-window-new-terminal-subtitle",
+            "search-kw-window-new-terminal",
             |st, _| {
                 crate::shell::window_actions::new_terminal(
                     st,
@@ -2419,6 +2409,7 @@ impl Action {
             "tab.duplicate",
             "search-action-tab-duplicate",
             "search-action-tab-duplicate-subtitle",
+            "search-kw-tab-duplicate",
             |st, _| {
                 crate::shell::window_actions::duplicate_active_tab(st).map_or_else(
                     |err| {
@@ -2436,6 +2427,7 @@ impl Action {
             id: "tab.open-beside",
             label: "search-action-tab-open-beside",
             subtitle: "search-action-tab-open-beside-subtitle",
+            keywords: "search-kw-tab-open-beside",
             params: TAB_OPEN_BESIDE_PARAMS,
             apply: |st, args| {
                 let app = args.text("app").unwrap_or_default().trim().to_owned();
@@ -2463,6 +2455,7 @@ impl Action {
             "tab.menu",
             "search-action-tab-menu",
             "search-action-tab-menu-subtitle",
+            "search-kw-tab-menu",
             |st, _| {
                 if st.session_locked() || crate::shell::window_actions::active_tab_id(st).is_none()
                 {
@@ -2477,6 +2470,7 @@ impl Action {
             "tab.drag.cancel",
             "search-action-tab-drag-cancel",
             "search-action-tab-drag-cancel-subtitle",
+            "search-kw-tab-drag-cancel",
             |st, _| {
                 if st.session_locked() {
                     return Err(ActionError::Explained(t(
@@ -2491,6 +2485,7 @@ impl Action {
             "tab.close",
             "search-action-tab-close",
             "search-action-tab-close-subtitle",
+            "search-kw-tab-close",
             |st, _| {
                 crate::shell::window_actions::close_active_tab(st).map_err(|err| {
                     let message = err.user_message();
@@ -2503,6 +2498,7 @@ impl Action {
             id: "tab.rename",
             label: "search-action-tab-rename",
             subtitle: "search-action-tab-rename-subtitle",
+            keywords: "search-kw-tab-rename",
             params: TAB_RENAME_PARAMS,
             apply: rename_focused_tab,
         },
@@ -2510,6 +2506,7 @@ impl Action {
             "tab.reopen",
             "search-action-tab-reopen",
             "search-action-tab-reopen-subtitle",
+            "search-kw-tab-reopen",
             |st, _| {
                 st.reopen_closed_tab().map(|_| ()).ok_or_else(|| {
                     ActionError::Refused("no closed tab to reopen in this workspace".into())
@@ -2520,6 +2517,7 @@ impl Action {
             "tab.split-right",
             "search-action-tab-split-right",
             "search-action-tab-split-right-subtitle",
+            "search-kw-tab-split-right",
             |st, _| {
                 crate::shell::window_actions::split_active_tab(
                     st,
@@ -2537,30 +2535,35 @@ impl Action {
             "window.focus-previous",
             "search-action-window-focus-previous",
             "search-action-window-focus-previous-subtitle",
+            "search-kw-window-focus-previous",
             |st, _| request_window_shortcut(st, ShortcutAction::FocusPreviousWindow),
         ),
         chrome(
             "window.focus-next",
             "search-action-window-focus-next",
             "search-action-window-focus-next-subtitle",
+            "search-kw-window-focus-next",
             |st, _| request_window_shortcut(st, ShortcutAction::FocusNextWindow),
         ),
         chrome(
             "strip.focus-previous",
             "search-action-strip-focus-previous",
             "search-action-strip-focus-previous-subtitle",
+            "search-kw-strip-focus-previous",
             |st, _| request_window_shortcut(st, ShortcutAction::PreviousStrip),
         ),
         chrome(
             "strip.focus-next",
             "search-action-strip-focus-next",
             "search-action-strip-focus-next-subtitle",
+            "search-kw-strip-focus-next",
             |st, _| request_window_shortcut(st, ShortcutAction::NextStrip),
         ),
         Action {
             id: "strip.create",
             label: "search-action-strip-create",
             subtitle: "search-action-strip-create-subtitle",
+            keywords: "search-kw-strip-create",
             params: STRIP_CREATE_PARAMS,
             apply: create_strip,
         },
@@ -2568,6 +2571,7 @@ impl Action {
             id: "strip.rename",
             label: "search-action-strip-rename",
             subtitle: "search-action-strip-rename-subtitle",
+            keywords: "search-kw-strip-rename",
             params: STRIP_RENAME_PARAMS,
             apply: rename_strip,
         },
@@ -2575,6 +2579,7 @@ impl Action {
             id: "strip.move",
             label: "search-action-strip-move",
             subtitle: "search-action-strip-move-subtitle",
+            keywords: "search-kw-strip-move",
             params: STRIP_MOVE_PARAMS,
             apply: move_strip,
         },
@@ -2582,6 +2587,7 @@ impl Action {
             id: "strip.remove",
             label: "search-action-strip-remove",
             subtitle: "search-action-strip-remove-subtitle",
+            keywords: "search-kw-strip-remove",
             params: STRIP_REMOVE_PARAMS,
             apply: remove_strip,
         },
@@ -2589,6 +2595,7 @@ impl Action {
             id: "workspace.create",
             label: "search-action-workspace-create",
             subtitle: "search-action-workspace-create-subtitle",
+            keywords: "search-kw-workspace-create",
             params: WORKSPACE_CREATE_PARAMS,
             apply: create_workspace,
         },
@@ -2596,6 +2603,7 @@ impl Action {
             id: "workspace.rename",
             label: "search-action-workspace-rename",
             subtitle: "search-action-workspace-rename-subtitle",
+            keywords: "search-kw-workspace-rename",
             params: WORKSPACE_RENAME_PARAMS,
             apply: rename_workspace,
         },
@@ -2603,6 +2611,7 @@ impl Action {
             id: "workspace.delete",
             label: "search-action-workspace-delete",
             subtitle: "search-action-workspace-delete-subtitle",
+            keywords: "search-kw-workspace-delete",
             params: WORKSPACE_DELETE_PARAMS,
             apply: delete_workspace,
         },
@@ -2610,66 +2619,77 @@ impl Action {
             "workspace.move-earlier",
             "search-action-workspace-move-earlier",
             "search-action-workspace-move-earlier-subtitle",
+            "search-kw-workspace-move-earlier",
             |st, _| move_workspace(st, -1),
         ),
         chrome(
             "workspace.move-later",
             "search-action-workspace-move-later",
             "search-action-workspace-move-later-subtitle",
+            "search-kw-workspace-move-later",
             |st, _| move_workspace(st, 1),
         ),
         chrome(
             "workspace.previous",
             "search-action-workspace-previous",
             "search-action-workspace-previous-subtitle",
+            "search-kw-workspace-previous",
             |st, _| request_window_shortcut(st, ShortcutAction::PreviousWorkspace),
         ),
         chrome(
             "workspace.next",
             "search-action-workspace-next",
             "search-action-workspace-next-subtitle",
+            "search-kw-workspace-next",
             |st, _| request_window_shortcut(st, ShortcutAction::NextWorkspace),
         ),
         chrome(
             "tab.previous",
             "search-action-tab-previous",
             "search-action-tab-previous-subtitle",
+            "search-kw-tab-previous",
             |st, _| request_window_shortcut(st, ShortcutAction::PreviousTab),
         ),
         chrome(
             "tab.next",
             "search-action-tab-next",
             "search-action-tab-next-subtitle",
+            "search-kw-tab-next",
             |st, _| request_window_shortcut(st, ShortcutAction::NextTab),
         ),
         chrome(
             "group.move-left",
             "search-action-group-move-left",
             "search-action-group-move-left-subtitle",
+            "search-kw-group-move-left",
             |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupLeft),
         ),
         chrome(
             "group.move-right",
             "search-action-group-move-right",
             "search-action-group-move-right-subtitle",
+            "search-kw-group-move-right",
             |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupRight),
         ),
         chrome(
             "group.move-to-strip-previous",
             "search-action-group-move-to-strip-previous",
             "search-action-group-move-to-strip-previous-subtitle",
+            "search-kw-group-move-to-strip-previous",
             |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupToPreviousStrip),
         ),
         chrome(
             "group.move-to-strip-next",
             "search-action-group-move-to-strip-next",
             "search-action-group-move-to-strip-next-subtitle",
+            "search-kw-group-move-to-strip-next",
             |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupToNextStrip),
         ),
         Action {
             id: GROUP_MOVE_TO_STRIP_ID,
             label: "search-action-group-move-to-strip",
             subtitle: "search-action-group-move-to-strip-subtitle",
+            keywords: "search-kw-group-move-to-strip",
             params: GROUP_MOVE_TO_STRIP_PARAMS,
             apply: move_group_to_strip,
         },
@@ -2677,6 +2697,7 @@ impl Action {
             "group.close",
             "search-action-group-close",
             "search-action-group-close-subtitle",
+            "search-kw-group-close",
             |st, _| {
                 use crate::shell::window_actions::{TabActionError, close_active_group};
                 close_active_group(st).map_err(|err| match err {
@@ -2689,60 +2710,70 @@ impl Action {
             "group.move-to-display-previous",
             "search-action-group-move-to-display-previous",
             "search-action-group-move-to-display-previous-subtitle",
+            "search-kw-group-move-to-display-previous",
             |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupToPreviousDisplay),
         ),
         chrome(
             "group.move-to-display-next",
             "search-action-group-move-to-display-next",
             "search-action-group-move-to-display-next-subtitle",
+            "search-kw-group-move-to-display-next",
             |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupToNextDisplay),
         ),
         chrome(
             "group.maximize",
             "search-action-group-maximize",
             "search-action-group-maximize-subtitle",
+            "search-kw-group-maximize",
             |st, _| request_group_shortcut(st, ShortcutAction::MaximizeWindow),
         ),
         chrome(
             "group.restore",
             "search-action-group-restore",
             "search-action-group-restore-subtitle",
+            "search-kw-group-restore",
             |st, _| request_group_shortcut(st, ShortcutAction::RestoreWindow),
         ),
         chrome(
             "group.fullscreen",
             "search-action-group-fullscreen",
             "search-action-group-fullscreen-subtitle",
+            "search-kw-group-fullscreen",
             |st, _| request_group_shortcut(st, ShortcutAction::ToggleFullscreen),
         ),
         chrome(
             "group.narrower",
             "search-action-group-narrower",
             "search-action-group-narrower-subtitle",
+            "search-kw-group-narrower",
             |st, _| request_group_shortcut(st, ShortcutAction::ResizeNarrower),
         ),
         chrome(
             "group.wider",
             "search-action-group-wider",
             "search-action-group-wider-subtitle",
+            "search-kw-group-wider",
             |st, _| request_group_shortcut(st, ShortcutAction::ResizeWider),
         ),
         chrome(
             "tab.move-to-group-previous",
             "search-action-tab-move-to-group-previous",
             "search-action-tab-move-to-group-previous-subtitle",
+            "search-kw-tab-move-to-group-previous",
             |st, _| request_group_shortcut(st, ShortcutAction::AttachTabLeft),
         ),
         chrome(
             "tab.move-to-group-next",
             "search-action-tab-move-to-group-next",
             "search-action-tab-move-to-group-next-subtitle",
+            "search-kw-tab-move-to-group-next",
             |st, _| request_group_shortcut(st, ShortcutAction::AttachTabRight),
         ),
         Action {
             id: "window.focus-nth",
             label: "search-action-window-focus-nth",
             subtitle: "search-action-window-focus-nth-subtitle",
+            keywords: "search-kw-window-focus-nth",
             params: WINDOW_FOCUS_NTH_PARAMS,
             apply: |st, args| {
                 let action = args
@@ -2761,6 +2792,7 @@ impl Action {
             id: "strip.focus-nth",
             label: "search-action-strip-focus-nth",
             subtitle: "search-action-strip-focus-nth-subtitle",
+            keywords: "search-kw-strip-focus-nth",
             params: STRIP_FOCUS_NTH_PARAMS,
             apply: |st, args| {
                 let action = args
@@ -2779,6 +2811,7 @@ impl Action {
             "tab.move-to-new-group",
             "search-action-tab-move-to-new-group",
             "search-action-tab-move-to-new-group-subtitle",
+            "search-kw-tab-move-to-new-group",
             |st, _| {
                 crate::shell::window_actions::split_active_tab(
                     st,
@@ -2796,6 +2829,7 @@ impl Action {
             id: "tab.move-to-workspace",
             label: "search-action-tab-move-to-workspace",
             subtitle: "search-action-tab-move-to-workspace-subtitle",
+            keywords: "search-kw-tab-move-to-workspace",
             params: TAB_MOVE_TO_WORKSPACE_PARAMS,
             apply: move_focused_tab_to_workspace,
         },
@@ -2803,6 +2837,7 @@ impl Action {
             "notifications.dnd.toggle",
             "search-action-notifications-dnd-toggle",
             "search-action-notifications-dnd-toggle-subtitle",
+            "search-kw-notifications-dnd-toggle",
             |st, _| {
                 st.toggle_dnd();
                 Ok(())
@@ -2812,6 +2847,7 @@ impl Action {
             "notifications.open",
             "search-action-notifications-open",
             "search-action-notifications-open-subtitle",
+            "search-kw-notifications-open",
             |st, _| {
                 st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Notifications);
                 Ok(())
@@ -2821,6 +2857,7 @@ impl Action {
             "notifications.clear",
             "search-action-notifications-clear",
             "search-action-notifications-clear-subtitle",
+            "search-kw-notifications-clear",
             |st, _| {
                 if st.notification_log().history().is_empty() {
                     return Err(ActionError::Refused(
@@ -2835,6 +2872,7 @@ impl Action {
             "notifications.clear.undo",
             "search-action-notifications-clear-undo",
             "search-action-notifications-clear-undo-subtitle",
+            "search-kw-notifications-clear-undo",
             |st, _| {
                 if st.undo_notification_history_clear() {
                     Ok(())
@@ -2849,6 +2887,7 @@ impl Action {
             "appearance.theme.dark",
             "search-action-appearance-theme-dark",
             "search-action-appearance-theme-dark-subtitle",
+            "search-kw-appearance-theme-dark",
             |st, _| {
                 let invoked_by = settings_store::InvokingAction::action("appearance.theme.dark");
                 set_mode(st, "dark", &invoked_by)
@@ -2858,6 +2897,7 @@ impl Action {
             "appearance.theme.light",
             "search-action-appearance-theme-light",
             "search-action-appearance-theme-light-subtitle",
+            "search-kw-appearance-theme-light",
             |st, _| {
                 let invoked_by = settings_store::InvokingAction::action("appearance.theme.light");
                 set_mode(st, "light", &invoked_by)
@@ -2867,6 +2907,7 @@ impl Action {
             id: "appearance.language",
             label: "search-action-appearance-language",
             subtitle: "search-action-appearance-language-subtitle",
+            keywords: "search-kw-appearance-language",
             params: LANGUAGE_PARAMS,
             apply: |st, args| {
                 let language = args.text("language").unwrap_or_default();
@@ -2884,6 +2925,7 @@ impl Action {
             id: "record.bring",
             label: "search-action-record-bring",
             subtitle: "search-action-record-bring-subtitle",
+            keywords: "search-kw-record-bring",
             params: RECORD_BRING_PARAMS,
             apply: |st, args| {
                 let id = args.text("id").unwrap_or_default();
@@ -2922,6 +2964,7 @@ impl Action {
             "shortcut-help.toggle",
             "search-action-shortcut-help-toggle",
             "search-action-shortcut-help-toggle-subtitle",
+            "search-kw-shortcut-help-toggle",
             |st, _| {
                 st.overlays.shortcut_help = !st.overlays.shortcut_help;
                 Ok(())
@@ -2931,6 +2974,7 @@ impl Action {
             "desktop-tour.open",
             "search-action-desktop-tour-open",
             "search-action-desktop-tour-open-subtitle",
+            "search-kw-desktop-tour-open",
             |st, _| {
                 st.overlays.desktop_tour = true;
                 Ok(())
@@ -3226,7 +3270,7 @@ impl ActionsProvider {
                 Rc::new(crate::shell::quick_settings::actions::UnavailableQsActions),
                 crate::shell::quick_settings::actions::QsActionAvailability::default(),
             )),
-            ranker: ListIndex::default(),
+            ranker: ListIndex::default().with_ranks(ui::search::system::action_ranks),
             catalogue: std::cell::RefCell::default(),
             #[cfg(test)]
             builds: Rc::default(),
@@ -3242,7 +3286,7 @@ impl ActionsProvider {
             search_preferences: Some(search_preferences),
             provider_catalog: Some(provider_catalog),
             qs_actions,
-            ranker: ListIndex::default(),
+            ranker: ListIndex::default().with_ranks(ui::search::system::action_ranks),
             catalogue: std::cell::RefCell::default(),
             #[cfg(test)]
             builds: Rc::default(),
@@ -3462,6 +3506,7 @@ impl SearchProvider for ActionsProvider {
                 &row.title.to_lowercase(),
                 &row.subtitle.clone().unwrap_or_default().to_lowercase(),
                 &row.id,
+                Vec::new(),
             );
         }
         let withheld = if asks_about_search_sources(ctx.needle) {
@@ -3559,7 +3604,12 @@ impl ActionsProvider {
                 "search-brightness-display",
                 &[("display", display.name.as_str().into())],
             );
-            candidates.record(&title.to_lowercase(), &subtitle.to_lowercase(), &id);
+            candidates.record(
+                &title.to_lowercase(),
+                &subtitle.to_lowercase(),
+                &id,
+                Vec::new(),
+            );
             out.push(SearchResult {
                 id,
                 title,
@@ -3608,7 +3658,12 @@ impl ActionsProvider {
                 },
             ) as Rc<crate::shell::search::OpenFn>;
             let title = t(step.title);
-            candidates.record(&title.to_lowercase(), "", step.id);
+            candidates.record(
+                &title.to_lowercase(),
+                "",
+                step.id,
+                declared_keywords(step.keywords),
+            );
             out.push(SearchResult {
                 id: step.id.to_string(),
                 title,
@@ -3626,7 +3681,12 @@ impl ActionsProvider {
         {
             let actions = Rc::clone(&self.qs_actions);
             let title = t("search-step-volume-mute");
-            candidates.record(&title.to_lowercase(), "", QS_MUTE_ID);
+            candidates.record(
+                &title.to_lowercase(),
+                "",
+                QS_MUTE_ID,
+                declared_keywords(QS_MUTE_KEYWORDS),
+            );
             out.push(SearchResult {
                 id: QS_MUTE_ID.to_string(),
                 title,
@@ -4178,6 +4238,7 @@ impl ActionsProvider {
                     _ => None,
                 },
                 on_begin_invoke,
+                resource: None,
             })
         }
     }
@@ -4189,43 +4250,6 @@ impl ActionsProvider {
         reason = "the catalog lists every shell action with its contract in one table-like pass"
     )]
     fn build_catalogue(&self, ctx: SearchContext<'_>, key: CatalogueKey) -> Catalogue {
-        const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str)] = &[
-            (
-                QS_BRIGHTNESS_ID,
-                "search-action-quick-settings-brightness-set",
-                "search-action-quick-settings-brightness-set-subtitle",
-            ),
-            (
-                QS_VOLUME_ID,
-                "search-action-quick-settings-volume-set",
-                "search-action-quick-settings-volume-set-subtitle",
-            ),
-            (
-                QS_WIFI_ID,
-                "search-action-quick-settings-wifi-set-enabled",
-                "search-action-quick-settings-wifi-set-enabled-subtitle",
-            ),
-            (
-                QS_POWER_ID,
-                "search-action-quick-settings-power-profile-set",
-                "search-action-quick-settings-power-profile-set-subtitle",
-            ),
-            (
-                QS_VPN_ID,
-                "search-action-quick-settings-vpn-set-enabled",
-                "search-action-quick-settings-vpn-set-enabled-subtitle",
-            ),
-            (
-                QS_BLUETOOTH_ID,
-                "search-action-quick-settings-bluetooth-set-enabled",
-                "search-action-quick-settings-bluetooth-set-enabled-subtitle",
-            ),
-            (
-                QS_AIRPLANE_ID,
-                "search-action-quick-settings-airplane-mode-set-enabled",
-                "search-action-quick-settings-airplane-mode-set-enabled-subtitle",
-            ),
-        ];
         #[cfg(test)]
         self.builds.set(self.builds.get().wrapping_add(1));
         let mut out = Vec::new();
@@ -4238,6 +4262,7 @@ impl ActionsProvider {
                     &row.title.to_lowercase(),
                     &row.subtitle.as_deref().unwrap_or_default().to_lowercase(),
                     &row.id,
+                    declared_keywords(action.keywords),
                 );
                 out.push(row);
             }
@@ -4252,6 +4277,7 @@ impl ActionsProvider {
                 &descriptor.label.to_lowercase(),
                 &format!("{subtitle} {keywords}").to_lowercase(),
                 &descriptor.id,
+                Vec::new(),
             );
             let score = 0;
             let request = descriptor.request;
@@ -4276,6 +4302,7 @@ impl ActionsProvider {
                 }),
                 on_invoke: None,
                 on_begin_invoke: None,
+                resource: None,
             });
         }
         // Each archived workspace: bring it back, or delete it with its
@@ -4308,7 +4335,16 @@ impl ActionsProvider {
                         t("search-action-archived-restore-subtitle"),
                     )
                 };
-                candidates.record(&title.to_lowercase(), &subtitle.to_lowercase(), &id);
+                candidates.record(
+                    &title.to_lowercase(),
+                    &subtitle.to_lowercase(),
+                    &id,
+                    declared_keywords(if delete {
+                        "search-kw-workspace-archived-delete"
+                    } else {
+                        "search-kw-workspace-archived-restore"
+                    }),
+                );
                 let mut contract = tilo_actions::ActionContract::view();
                 if delete {
                     contract.kind = tilo_actions::ActionKind::Outside;
@@ -4346,6 +4382,7 @@ impl ActionsProvider {
                     }),
                     on_invoke: None,
                     on_begin_invoke: None,
+                    resource: None,
                 });
             }
         }
@@ -4359,7 +4396,12 @@ impl ActionsProvider {
         if let Some((workspace, room, actions)) = morning {
             for (id, label) in actions {
                 let subtitle = t("activity-morning-description");
-                candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), &id);
+                candidates.record(
+                    &label.to_lowercase(),
+                    &subtitle.to_lowercase(),
+                    &id,
+                    Vec::new(),
+                );
                 let command = id.starts_with(tilo_desktop::activity::morning::MORNING_REFRESH)
                     || id.starts_with(tilo_desktop::activity::morning::MORNING_DRAFT);
                 let kind = if command {
@@ -4404,6 +4446,7 @@ impl ActionsProvider {
                     }),
                     on_invoke: None,
                     on_begin_invoke: None,
+                    resource: None,
                 });
             }
         }
@@ -4446,6 +4489,7 @@ impl ActionsProvider {
                 &label.to_lowercase(),
                 &format!("{subtitle} {keywords}").to_lowercase(),
                 id,
+                Vec::new(),
             );
             out.push(SearchResult {
                 facts: Vec::new(),
@@ -4468,12 +4512,18 @@ impl ActionsProvider {
                 }),
                 on_invoke: None,
                 on_begin_invoke: None,
+                resource: None,
             });
         }
-        for &(id, label_key, subtitle_key) in QUICK_SETTINGS_ACTIONS {
+        for &(id, label_key, subtitle_key, keywords_key) in QUICK_SETTINGS_ACTIONS {
             let label = t(label_key);
             let subtitle = t(subtitle_key);
-            candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), id);
+            candidates.record(
+                &label.to_lowercase(),
+                &subtitle.to_lowercase(),
+                id,
+                declared_keywords(keywords_key),
+            );
             let score = 0;
             let actions = self.qs_actions.actions.borrow().clone();
             let available = self.qs_actions.action_available(id);
@@ -4614,6 +4664,7 @@ impl ActionsProvider {
                 }),
                 on_invoke: None,
                 on_begin_invoke,
+                resource: None,
             });
         }
         // One-step switches for the radios: "wifi" finds the Wi-Fi switch, not a
@@ -4660,7 +4711,12 @@ impl ActionsProvider {
                     },
                 ) as Rc<crate::shell::search::BeginInvokeFn>
             });
-            candidates.record(&title.to_lowercase(), &subtitle.to_lowercase(), toggle_id);
+            candidates.record(
+                &title.to_lowercase(),
+                &subtitle.to_lowercase(),
+                toggle_id,
+                declared_keywords(toggle.keywords),
+            );
             out.push(SearchResult {
                 id: toggle_id.to_string(),
                 title,
@@ -4704,6 +4760,7 @@ impl ActionsProvider {
                         &action.label.to_lowercase(),
                         &subtitle.to_lowercase(),
                         &action.id,
+                        action.keywords.clone(),
                     );
                     let score = 0;
                     let spec = action.clone();
@@ -4729,6 +4786,7 @@ impl ActionsProvider {
                         }),
                         on_invoke: None,
                         on_begin_invoke: None,
+                        resource: None,
                     });
                 }
             }
@@ -4739,7 +4797,12 @@ impl ActionsProvider {
             let label = t("search-action-search-provider-set");
             let subtitle = t("search-action-search-provider-set-subtitle");
             {
-                candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), id);
+                candidates.record(
+                    &label.to_lowercase(),
+                    &subtitle.to_lowercase(),
+                    id,
+                    Vec::new(),
+                );
                 let score = 0;
                 let preferences = Rc::clone(preferences);
                 out.push(SearchResult {
@@ -4781,6 +4844,7 @@ impl ActionsProvider {
                     }),
                     on_invoke: None,
                     on_begin_invoke: None,
+                    resource: None,
                 });
             }
             if let Some(catalog) = &self.provider_catalog {
@@ -4811,6 +4875,7 @@ impl ActionsProvider {
                         &format!("{subtitle} {}", t("search-action-provider-keywords"))
                             .to_lowercase(),
                         &id,
+                        Vec::new(),
                     );
                     let score = 0;
                     let preferences = Rc::clone(preferences);
@@ -4846,6 +4911,7 @@ impl ActionsProvider {
                         }),
                         on_invoke: None,
                         on_begin_invoke: None,
+                        resource: None,
                     });
                 }
                 source_switches.end = out.len();
@@ -4918,16 +4984,11 @@ fn workspace_view_copy(
     }
 }
 
-/// The words people use for the action `id`, in every language the shell
-/// has ("dark mode", "dunkelmodus", "night"): what a person types who does
-/// not know what the row is called. Missing for an action means it is found
-/// by its label alone.
-pub(crate) fn action_keywords(id: &str) -> Vec<String> {
-    crate::shell::i18n::words_in_every_locale(&format!(
-        "{}{}",
-        crate::shell::i18n::KEYWORD_PREFIX,
-        id.replace(['.', '_', ':'], "-")
-    ))
+/// The words a declaration's keywords message lists, in every language the
+/// shell has ("dark mode", "dunkelmodus", "night"): what a person types who
+/// does not know what the row is called.
+fn declared_keywords(key: &str) -> Vec<String> {
+    crate::shell::i18n::words_in_every_locale(key)
 }
 
 /// Actions that change a setting the row itself shows, so choosing one
@@ -5011,156 +5072,6 @@ pub(crate) fn toggles_in_place(id: &str) -> bool {
         || id == QS_MUTE_ID
 }
 
-/// A Quick Settings radio offered as a one-step toggle: the set-enabled
-/// action it drives, its own id, and the catalogue keys of its row's title
-/// and subtitle.
-struct QsToggle {
-    set_enabled: &'static str,
-    id: &'static str,
-    /// The switch's name; its state is the row's pill.
-    name: &'static str,
-    subtitle: &'static str,
-}
-
-/// A step up or down a Quick Settings level: "louder", "dimmer". The row
-/// runs the level's own set action with the live level moved by `delta`
-/// percent, so it is one Enter (or one more) instead of typing a number.
-struct LevelStep {
-    id: &'static str,
-    /// The set action whose level it moves.
-    level: &'static str,
-    delta: f32,
-    title: &'static str,
-}
-
-const LEVEL_STEPS: &[LevelStep] = &[
-    LevelStep {
-        id: "quick-settings.volume.up",
-        level: QS_VOLUME_ID,
-        delta: 5.0,
-        title: "search-step-volume-up",
-    },
-    LevelStep {
-        id: "quick-settings.volume.down",
-        level: QS_VOLUME_ID,
-        delta: -5.0,
-        title: "search-step-volume-down",
-    },
-    LevelStep {
-        id: "quick-settings.brightness.up",
-        level: QS_BRIGHTNESS_ID,
-        delta: 10.0,
-        title: "search-step-brightness-up",
-    },
-    LevelStep {
-        id: "quick-settings.brightness.down",
-        level: QS_BRIGHTNESS_ID,
-        delta: -10.0,
-        title: "search-step-brightness-down",
-    },
-];
-
-/// Muting is its own row: a step to zero would forget the level.
-pub(crate) const QS_MUTE_ID: &str = "quick-settings.volume.mute";
-
-/// One display's brightness row: `quick-settings.brightness.on.DP-2`.
-const QS_DISPLAY_BRIGHTNESS_PREFIX: &str = "quick-settings.brightness.on.";
-
-/// How far ←/→ moves one display's brightness row: the brightness keys'
-/// step, as "brighter" and "dimmer" take.
-const DISPLAY_BRIGHTNESS_STEP: f32 = ui::tokens::Layout::BASE.display_brightness_step;
-
-/// The connector a display's brightness row sets, from its id.
-fn display_brightness_connector(id: &str) -> Option<&str> {
-    id.strip_prefix(QS_DISPLAY_BRIGHTNESS_PREFIX)
-        .filter(|connector| !connector.is_empty())
-}
-
-/// The display the person works on, when the desktop spans several and its
-/// brightness can be set: what "brighter" and "dimmer" adjust.
-fn focused_brightness(
-    state: &ChromeState,
-) -> Option<&crate::shell::chrome_state::DisplayBrightness> {
-    let focused = state.quick_settings.focused_display.as_deref()?;
-    state
-        .quick_settings
-        .displays
-        .iter()
-        .find(|display| display.connector == focused)
-}
-
-/// The live level, in percent, of the Quick Settings set action `level`:
-/// for brightness, the level of the display the person works on.
-fn level_percent(state: &ChromeState, level: &str) -> f32 {
-    let share = if level == QS_VOLUME_ID {
-        state.quick_settings.volume_level()
-    } else {
-        focused_brightness(state).map_or(state.quick_settings.brightness, |display| display.level)
-    };
-    (share * 100.0).round()
-}
-
-/// `"40 %"`: a level as its row's pill says it.
-fn level_badge(state: &ChromeState, level: &str) -> String {
-    t_args(
-        "search-level-percent",
-        &[("percent", f64::from(level_percent(state, level)).into())],
-    )
-}
-
-/// The arguments that set `level` to its live value moved by `delta`.
-fn stepped(
-    params: &[ActionParam],
-    chrome: &Chrome,
-    level: &str,
-    delta: f32,
-) -> Result<ActionArgs, ActionError> {
-    let mut arguments = serde_json::Map::new();
-    {
-        let state = chrome.borrow();
-        let percent = (level_percent(&state, level) + delta).clamp(0.0, 100.0);
-        arguments.insert("percent".into(), serde_json::json!(f64::from(percent)));
-        // "Brighter" acts on the display the person works on.
-        if level == QS_BRIGHTNESS_ID
-            && let Some(display) = focused_brightness(&state)
-        {
-            arguments.insert("display".into(), serde_json::json!(display.connector));
-        }
-    }
-    ActionArgs::bind_json(params, &arguments).map_err(ActionError::Arguments)
-}
-
-/// The Quick Settings radios offered as one-step toggles.
-const QS_TOGGLES: &[QsToggle] = &[
-    QsToggle {
-        set_enabled: QS_WIFI_ID,
-        id: "quick-settings.wifi.toggle",
-        name: "search-toggle-wifi",
-        subtitle: "search-toggle-wifi-subtitle",
-    },
-    QsToggle {
-        set_enabled: QS_BLUETOOTH_ID,
-        id: "quick-settings.bluetooth.toggle",
-        name: "search-toggle-bluetooth",
-        subtitle: "search-toggle-bluetooth-subtitle",
-    },
-    QsToggle {
-        set_enabled: QS_AIRPLANE_ID,
-        id: "quick-settings.airplane-mode.toggle",
-        name: "search-toggle-airplane-mode",
-        subtitle: "search-toggle-airplane-mode-subtitle",
-    },
-];
-
-/// Whether the radio `set_enabled_id` drives is on now.
-fn radio_is_on(state: &ChromeState, set_enabled_id: &str) -> bool {
-    match set_enabled_id {
-        QS_WIFI_ID => state.quick_settings.wifi,
-        QS_BLUETOOTH_ID => state.quick_settings.bluetooth,
-        _ => state.quick_settings.radios.airplane_mode,
-    }
-}
-
 /// `ON` or `OFF`, as the search-source switches say it.
 pub(super) fn on_off_badge(on: bool) -> String {
     t(if on {
@@ -5206,15 +5117,16 @@ pub(super) const ACTION_ID_WEIGHT: FieldWeight = FieldWeight::new(90);
 struct ActionCandidates(Vec<Vec<(String, FieldWeight)>>);
 
 impl ActionCandidates {
-    /// Record the searchable text of the row pushed next.
-    fn record(&mut self, label: &str, subtitle: &str, id: &str) {
+    /// Record the searchable text of the row pushed next: its label, id
+    /// and subtitle, and the other words its declaration gives for it.
+    fn record(&mut self, label: &str, subtitle: &str, id: &str, keywords: Vec<String>) {
         let mut row = vec![
             (label.to_owned(), FieldWeight::TITLE),
             (id.to_owned(), ACTION_ID_WEIGHT),
             (subtitle.to_owned(), FieldWeight::SUBTITLE),
         ];
         row.extend(
-            action_keywords(id)
+            keywords
                 .into_iter()
                 .map(|word| (word, FieldWeight::KEYWORD)),
         );
@@ -5262,6 +5174,9 @@ fn fence_native_selection(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod keyword_tests;
 
 #[cfg(test)]
 mod tests {

@@ -58,7 +58,6 @@ use ui::widget::{
     Tone, Widget,
 };
 
-use crate::customize::CzField;
 use crate::export_dialog::ExportDialog;
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive,
@@ -67,7 +66,6 @@ use crate::model::{
 use crate::page::{self, Frame};
 use crate::resource::{Imager, ImagerEffect};
 use crate::write::{JobControl, WriteRequest, spawn_job};
-use crate::write_setup::SetupField;
 use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, JobProgress, Jobs,
     LiveRow, RunMode,
@@ -98,7 +96,6 @@ pub(crate) enum Command {
     Release(usize),
     CancelDownload,
     Recent(usize),
-    Target(usize),
     Rescan,
     Back,
     /// Go back to the step at this station of the stepper.
@@ -108,14 +105,12 @@ pub(crate) enum Command {
     PrepareOriginalFiles,
     CancelWrite,
     WriteAnother,
+    /// Let go of the drive just written, so it can be taken out.
+    Eject,
     /// The typed device-name confirmation changed.
     Confirm(String),
-    /// A guided-customization field changed (the value as the form shows it).
-    Profile(CzField, String),
-    /// A network or identity field on Confirm changed.
-    WriteSetup(SetupField, String),
-    /// Enrolling the new device as one of yours was switched.
-    Enroll(bool),
+    /// The owner SSH key on Confirm changed: kept on this machine as typed.
+    SshKey(String),
     PrepareMedium,
     RetryPreparedMedium,
     ReviewChangedPreparedFiles,
@@ -159,6 +154,9 @@ pub struct ImagerApp {
     selected: Option<usize>,
     action: Action,
     progress: Progress,
+    /// The drive just written was let go, so the window says the media can be
+    /// taken out rather than continuing to offer the eject.
+    ejected: bool,
     prepared_delivery: crate::setup::journey::prepared_media::Delivery,
     written_target: Option<TargetDrive>,
     write_preflight: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -245,6 +243,7 @@ impl ImagerApp {
             ssh_public_key: String::new(),
             windows_preparation: None,
             progress: Progress::default(),
+            ejected: false,
             prepared_delivery: crate::setup::journey::prepared_media::Delivery::default(),
             written_target: None,
             write_preflight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -759,6 +758,19 @@ fn stepper_labels() -> [&'static str; 6] {
 // Composition
 // =========================================================================
 impl ImagerApp {
+    /// `control`, pressed as the published `effect`; unbound before the
+    /// framework attaches.
+    fn bind_effect<C: ui::framework::ActionControl<()>>(
+        &self,
+        control: C,
+        effect: &ImagerEffect,
+    ) -> C {
+        match &self.control_actions {
+            Some(actions) => actions.bind_effect_invocation(control, effect),
+            None => control,
+        }
+    }
+
     pub(crate) fn attach_control_actions(&mut self, actions: ui::framework::Actions<Imager>) {
         self.control_actions = Some(actions);
         self.dirty = true;
@@ -974,8 +986,14 @@ impl ImagerApp {
                 )
                 .with_enabled(self.job_control.is_some() && !stopping)
             }
-            Step::Done => self
-                .button(
+            Step::Done => {
+                // A written drive that is still held can be let go here,
+                // instead of the window only saying it may be pulled out.
+                if self.offers_eject() {
+                    let eject = self.button("imager.eject", "Eject", Command::Eject);
+                    row = row.push(Box::new(eject));
+                }
+                self.button(
                     "imager.start-over",
                     if self.progress.phase == JobPhase::Failed {
                         "Review and retry"
@@ -984,9 +1002,19 @@ impl ImagerApp {
                     },
                     Command::WriteAnother,
                 )
-                .role(ButtonRole::Primary),
+                .role(ButtonRole::Primary)
+            }
         };
         row.push(Box::new(primary.control_size(ControlSize::Large)))
+    }
+
+    /// Whether the window offers to let go of the drive it just wrote: the job
+    /// verified, the platform can eject, and it has not been ejected yet.
+    fn offers_eject(&self) -> bool {
+        self.progress.phase == JobPhase::Success
+            && !self.ejected
+            && self.target().is_some()
+            && imager_backend::write::can_eject()
     }
 
     /// Whether a release or a shown recent entry already presents the
@@ -1088,7 +1116,7 @@ impl ImagerApp {
                             .meta(fmt_size(source.size))
                             .selected(self.recent_selected(index))
                             .checked(self.recent_selected(index))
-                            .on_activate(move || sink.borrow_mut().push(Command::Recent(index))),
+                            .on_effect(move || sink.borrow_mut().push(Command::Recent(index))),
                     ) as Box<dyn Widget>)
                 })
                 .collect();
@@ -1123,12 +1151,6 @@ impl ImagerApp {
         } else {
             format!("{}, {} channel", release.target_label(), release.channel)
         };
-        let sink = Rc::clone(&self.commands);
-        let command = if downloading {
-            Command::CancelDownload
-        } else {
-            Command::Release(index)
-        };
         let mut row = ListRow::new(
             format!("imager.release.{}", release.selection_id()),
             release.display_name(),
@@ -1142,8 +1164,14 @@ impl ImagerApp {
         .meta(fmt_size(release.size))
         .selected(self.release_selected(index))
         .checked(self.release_selected(index))
-        .on_activate(move || sink.borrow_mut().push(command.clone()))
         .with_enabled(self.release_download.is_none() || downloading);
+        // Pressed while downloading, the row stops the download.
+        row = if downloading {
+            self.bind_effect(row, &ImagerEffect::CancelDownload)
+        } else {
+            let sink = Rc::clone(&self.commands);
+            row.on_effect(move || sink.borrow_mut().push(Command::Release(index)))
+        };
         if downloading {
             let sink = Rc::clone(&self.commands);
             row = row.action(Icon::X, "Cancel download", move || {
@@ -1173,27 +1201,37 @@ impl ImagerApp {
                 EmptyState::new(EMPTY_DRIVES).with_icon(Icon::HardDrive),
             ));
         }
+        let required = self.required_capacity();
         let rows = visible
             .into_iter()
             .map(|(index, drive)| {
-                let sink = Rc::clone(&self.commands);
-                Box::new(
-                    ListRow::new(format!("imager.drive.{}", drive.name), &drive.model)
-                        .with_enabled(
-                            self.required_capacity()
-                                .is_some_and(|required| drive.fits(required)),
-                        )
-                        .icon(drive.icon())
-                        .secondary(format!(
-                            "{}, {}",
-                            drive.dev_path(),
-                            drive.contents_summary()
-                        ))
-                        .meta(fmt_size(drive.size))
-                        .selected(self.selected == Some(index))
-                        .checked(self.selected == Some(index))
-                        .on_activate(move || sink.borrow_mut().push(Command::Target(index))),
-                ) as Box<dyn Widget>
+                let fits = required.is_some_and(|required| drive.fits(required));
+                // A drive that cannot be chosen says why, on its own row: a
+                // control that is off with no reason reads as a fault.
+                let secondary = match required.filter(|required| !drive.fits(*required)) {
+                    Some(required) => crate::setup::strings::t_args(
+                        "installer-media-drive-too-small",
+                        &[
+                            ("contents", drive.contents_summary().into()),
+                            ("required", fmt_size(required).into()),
+                        ],
+                    ),
+                    None => format!("{}, {}", drive.dev_path(), drive.contents_summary()),
+                };
+                let row = ListRow::new(format!("imager.drive.{}", drive.name), &drive.model)
+                    .with_enabled(fits)
+                    .icon(drive.icon())
+                    .secondary(secondary)
+                    .meta(fmt_size(drive.size))
+                    .selected(self.selected == Some(index))
+                    .checked(self.selected == Some(index));
+                let row = self.bind_effect(
+                    row,
+                    &ImagerEffect::ChooseDrive {
+                        drive: drive.name.clone(),
+                    },
+                );
+                Box::new(row) as Box<dyn Widget>
             })
             .collect();
         body.push(Box::new(Section::new(rows)))
@@ -1220,7 +1258,6 @@ impl ImagerApp {
         }
         body.push(page::form_block(crate::customize::form(
             &self.profile,
-            &self.commands,
             self.control_actions.as_ref(),
             self.shot_timezone_open,
         )))
@@ -1340,6 +1377,7 @@ impl ImagerApp {
                 &self.profile,
                 &self.wifi_psk,
                 &self.ssh_public_key,
+                self.control_actions.as_ref(),
                 &self.commands,
             )));
         }
@@ -1454,9 +1492,15 @@ impl ImagerApp {
             ),
             Action::Flash => (
                 "The drive is ready",
-                format!(
-                    "{image} was written to {drive} and verified. You can safely remove the drive."
-                ),
+                if self.offers_eject() {
+                    format!(
+                        "{image} was written to {drive} and verified. Eject it before you take it out."
+                    )
+                } else {
+                    format!(
+                        "{image} was written to {drive} and verified. You can safely remove the drive."
+                    )
+                },
             ),
         }
     }
@@ -2477,10 +2521,35 @@ impl ImagerApp {
             return;
         }
         self.progress = Progress::default();
+        self.ejected = false;
         self.confirm_text.clear();
         self.goto(Step::Source);
         self.set_status("");
     }
+    /// Let go of the drive just written, so the person can take it out. The
+    /// sentence under the title promises they can; this is the control that
+    /// makes it true on a desktop that does not eject by itself.
+    fn eject_written_drive(&mut self) {
+        let Some(target) = self.target().cloned() else {
+            return;
+        };
+        match imager_backend::write::eject_target(&target) {
+            Ok(()) => {
+                self.status_is_error = false;
+                self.set_status(&crate::setup::strings::t_args(
+                    "installer-media-ejected",
+                    &[("drive", target.model.clone().into())],
+                ));
+                self.ejected = true;
+            }
+            Err(error) => self.fail(&crate::setup::strings::t_args(
+                "installer-media-eject-failed",
+                &[("reason", error.to_string().into())],
+            )),
+        }
+        self.dirty = true;
+    }
+
     fn export_config(&mut self) {
         let text = self
             .profile
@@ -3146,9 +3215,14 @@ impl ImagerApp {
                     self.select_source(&source)
                 }
             }
-            Command::Target(index) => self.select_target(index),
             Command::Rescan => {
                 self.do_rescan();
+            }
+            Command::SshKey(value) => {
+                if self.step == Step::Confirm && self.offers_write_setup() {
+                    self.ssh_public_key = value;
+                    self.dirty = true;
+                }
             }
             Command::Back => self.back(),
             Command::Station(index) => self.go_to_station(index),
@@ -3159,46 +3233,10 @@ impl ImagerApp {
                 let _ = self.cancel_write();
             }
             Command::WriteAnother => self.write_another(),
+            Command::Eject => self.eject_written_drive(),
             Command::Confirm(value) => {
                 if self.step == Step::Confirm {
                     self.confirm_text = value
-                }
-            }
-            Command::Profile(field, shown) => {
-                if self.step == Step::Customize && self.needs_manual_customization() {
-                    match crate::customize::profile_value(field, &shown) {
-                        Some(value) => match crate::customize::field_edit(field, value) {
-                            Some(edit) => self.submit(edit),
-                            None => self.fail(&format!("Choose a listed {}", field.label())),
-                        },
-                        None => self.fail(&format!("Choose a listed {}", field.label())),
-                    }
-                }
-            }
-            Command::WriteSetup(field, value) => {
-                if self.step == Step::Confirm && self.offers_write_setup() {
-                    match crate::write_setup::field_edit(field, value.clone()) {
-                        Some(edit) => self.submit(edit),
-                        None => {
-                            if let Some(dispatcher) = &self.dispatcher {
-                                match field {
-                                    SetupField::WifiPsk => {
-                                        dispatcher.effect(&ImagerEffect::SetWifiPsk { value });
-                                    }
-                                    SetupField::SshKey => {
-                                        self.ssh_public_key = value;
-                                        self.dirty = true;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Command::Enroll(on) => {
-                if self.step == Step::Confirm && self.offers_write_setup() {
-                    self.submit(Imager::paths().profile.enroll_local_identity.set(on));
                 }
             }
         }
@@ -4843,8 +4881,9 @@ mod tests {
     #[test]
     #[cfg(not(feature = "host-media-writer"))]
     fn clicking_through_the_wizard_refuses_a_fake_write_when_backend_is_disabled() {
+        // Driven, not captured: choosing a drive runs its published effect.
         let mut host =
-            ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some("source")).unwrap();
+            ui::prelude::TestApp::<crate::resource::ImagerShell>::drive("source").unwrap();
         host.harness().click_named("imager.next").unwrap();
         assert_eq!(
             host.with_widget::<ImagerApp, _>(|a| a.step).unwrap(),

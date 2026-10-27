@@ -321,6 +321,8 @@ fn opening_prefers_the_entrys_own_action_then_the_apps_open_at_its_resource() {
             resource_kind: "test".into(),
             resource_label: resource.into(),
             action_label: action.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             operation_kind: tilo_actions::OperationKind::View,
             params,

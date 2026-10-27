@@ -35,7 +35,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::a11y::{AccessNode, Role};
+use crate::a11y::AccessNode;
 use crate::accesskit_bridge::{
     build_presentation_tree_bound, build_presentation_with_resources_bound,
     build_tree_update_bound, resolve_node_id_bound,
@@ -52,7 +52,9 @@ use crate::widget::{EventCtx, TaffyTreeExt, Widget};
 /// default `--shots` viewport so a driven frame and a screenshot agree.
 pub const DEFAULT_VIEWPORT: (u32, u32) = (1280, 800);
 
-pub use tilo_headless_schema::{Action, Capture, Invocation, SemanticExpectation, Spec};
+pub use tilo_headless_schema::{
+    Action, Capture, Invocation, SemanticAction, SemanticExpectation, Spec,
+};
 
 fn action_description(action: &Action) -> String {
     match action {
@@ -275,9 +277,19 @@ pub struct FrameOutput<'a> {
 
 mod caller_palette;
 mod capture;
+mod inspection;
+use inspection::{
+    audit_inspection_node, collect_inspection, collect_named_targets, collect_targets,
+    compare_bool, compare_contains, compare_optional_bool, compare_text, effect_control_ids,
+    effect_control_ids_where, find_semantic_target, inspection_has_semantics, role_name,
+};
 mod inspection_patch;
 pub use inspection_patch::{InspectionPatchStats, write_inspection_patch};
+#[cfg(any(test, feature = "test-support"))]
+mod app;
 mod drive;
+pub mod driver;
+pub use driver::{Outcome, Step, StepRecord, StepStatus, drive};
 mod invocation_results;
 mod nav_gesture;
 #[cfg(test)]
@@ -285,13 +297,17 @@ mod palette_window_tests;
 mod retained_layout;
 mod root_wake;
 mod search_open;
+mod sidebar_button;
 mod slot_row;
 pub use slot_row::WINDOW_SLOTS;
 mod cursor;
 pub mod system_search;
 pub mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub use self::app::{HeadlessApp, MOUNT_VIEWPORT, fixture_runner_inputs};
 mod tooltip_layer;
 mod window_bar;
+pub use sidebar_button::SidebarShown;
 pub use window_bar::{WindowBarNotice, WindowBarNoticeButton};
 
 /// What answers another provider's action in a harness, in place of the
@@ -968,6 +984,18 @@ impl FrameHarness {
         {
             tracing::warn!(%error, "the reopened record shows without its history");
         }
+    }
+
+    /// The lane the mounted component's record content travels on: the lane
+    /// its window keeps, read as the window reads it, so a test asking what
+    /// the window asked for looks here and not at the process's lane for the
+    /// record.
+    pub fn component_record_content_lane(
+        &self,
+    ) -> Option<std::sync::Arc<crate::collaboration::record_content::ContentLane>> {
+        let binding = &self.component_wake.as_ref()?.binding;
+        let _entry = binding.lifetime.enter_if_open().ok()?;
+        Some(crate::collaboration::record_content::ContentLane::of_window())
     }
 
     /// The record the mounted component shows.
@@ -2098,6 +2126,13 @@ impl FrameHarness {
     #[must_use]
     pub fn root_widget(&self) -> &dyn Widget {
         self.root.as_ref()
+    }
+
+    /// The root widget, mutably, for a test that pokes what it mounted
+    /// between the events it sends.
+    pub fn root_widget_mut(&mut self) -> &mut dyn Widget {
+        self.invalidate_local();
+        self.root.as_mut()
     }
 
     /// Deliver an authenticated transport answer through the native widget tree.
@@ -7852,7 +7887,39 @@ impl FrameHarness {
 
     /// Invoke `address` as `delivered` says: under its invocation, for its
     /// actor; a fresh invocation by the person at this device without one.
+    /// As the broker's resolution of a resource the app is still reading is
+    /// answered once its read lands
+    /// ([`crate::resources::PublishesResources::resource_pending`]), an
+    /// invocation of one waits for that here, then runs.
     fn invoke_bound_action_for(
+        &mut self,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+        ambient: Option<&tilo_actions::ActionContext>,
+        delivered: Option<(tilo_actions::InvocationId, Option<&str>)>,
+    ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
+    {
+        let answered =
+            self.invoke_bound_action_resolved(address, arguments, confirmed, ambient, delivered);
+        #[cfg(any(test, feature = "test-support"))]
+        if let Err(crate::bound_dispatch::BoundActionError::Door(tilo_actions::DoorError::Unknown(
+            unknown,
+        ))) = &answered
+            && crate::bound_dispatch::any_resource_pending(self.root.as_ref(), &unknown.resource)
+        {
+            let resource = unknown.resource.clone();
+            self.wait_until(tilo_test_env::hang_bound(), |harness| {
+                !crate::bound_dispatch::any_resource_pending(harness.root.as_ref(), &resource)
+            });
+            return self
+                .invoke_bound_action_resolved(address, arguments, confirmed, ambient, delivered);
+        }
+        answered
+    }
+
+    /// [`Self::invoke_bound_action_for`] with the resource resolved now.
+    fn invoke_bound_action_resolved(
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
@@ -9768,11 +9835,14 @@ impl FrameHarness {
     /// invocation's resource and arguments get their `{{name.path}}`
     /// placeholders filled, and one that names `bind` keeps its answer
     /// (`{"value": ..., "resources": [...]}`) for the steps after it.
-    fn perform_bound(
+    pub(super) fn perform_bound(
         &mut self,
-        action: &Action,
-        bindings: &mut std::collections::BTreeMap<String, serde_json::Value>,
+        step: &Step,
+        bindings: &mut driver::Bindings,
     ) -> Result<(), String> {
+        let Some(action) = step.action() else {
+            return Err(format!("{} is not an action to run", step.name()));
+        };
         let Action::Invoke(invocation) = action else {
             return self.perform(action);
         };
@@ -10038,555 +10108,6 @@ impl FrameHarness {
     }
 }
 
-fn find_semantic_target<'a>(node: &'a AccessNode, target: &str) -> Option<&'a AccessNode> {
-    if node.action_target.as_deref() == Some(target) {
-        return Some(node);
-    }
-    node.children
-        .iter()
-        .find_map(|child| find_semantic_target(child, target))
-}
-
-fn compare_text(
-    mismatches: &mut Vec<String>,
-    field: &str,
-    expected: Option<&str>,
-    actual: Option<&str>,
-) {
-    if let Some(expected) = expected
-        && actual != Some(expected)
-    {
-        mismatches.push(format!("{field} expected {expected:?}, got {actual:?}"));
-    }
-}
-
-fn compare_contains(
-    mismatches: &mut Vec<String>,
-    field: &str,
-    expected: Option<&str>,
-    actual: Option<&str>,
-) {
-    if let Some(expected) = expected
-        && !actual.is_some_and(|actual| actual.contains(expected))
-    {
-        mismatches.push(format!(
-            "{field} expected to contain {expected:?}, got {actual:?}"
-        ));
-    }
-}
-
-fn compare_bool(mismatches: &mut Vec<String>, field: &str, expected: Option<bool>, actual: bool) {
-    if let Some(expected) = expected
-        && expected != actual
-    {
-        mismatches.push(format!("{field} expected {expected}, got {actual}"));
-    }
-}
-
-fn compare_optional_bool(
-    mismatches: &mut Vec<String>,
-    field: &str,
-    expected: Option<bool>,
-    actual: Option<bool>,
-) {
-    if let Some(expected) = expected
-        && actual != Some(expected)
-    {
-        mismatches.push(format!("{field} expected {expected}, got {actual:?}"));
-    }
-}
-
-impl From<crate::a11y::Role> for String {
-    fn from(role: crate::a11y::Role) -> Self {
-        role_name(role).to_owned()
-    }
-}
-
-fn role_name(role: crate::a11y::Role) -> &'static str {
-    use crate::a11y::Role;
-    match role {
-        Role::Window => "window",
-        Role::Dialog => "dialog",
-        Role::Group => "group",
-        Role::Generic => "generic",
-        Role::Toolbar => "toolbar",
-        Role::TabBar => "tab_bar",
-        Role::Tab => "tab",
-        Role::TabPanel => "tab_panel",
-        Role::List => "list",
-        Role::ListItem => "list_item",
-        Role::Table => "table",
-        Role::Row => "row",
-        Role::Cell => "cell",
-        Role::Tree => "tree",
-        Role::TreeItem => "tree_item",
-        Role::Menu => "menu",
-        Role::MenuItem => "menu_item",
-        Role::ListBox => "list_box",
-        Role::ListBoxOption => "list_box_option",
-        Role::Button => "button",
-        Role::ToggleButton => "toggle_button",
-        Role::Checkbox => "checkbox",
-        Role::RadioButton => "radio_button",
-        Role::Switch => "switch",
-        Role::Slider => "slider",
-        Role::Separator => "separator",
-        Role::SpinButton => "spin_button",
-        Role::ComboBox => "combo_box",
-        Role::TextInput => "text_input",
-        Role::MultilineTextInput => "multiline_text_input",
-        Role::Link => "link",
-        Role::ProgressBar => "progress_bar",
-        Role::Spinner => "spinner",
-        Role::Tooltip => "tooltip",
-        Role::Image => "image",
-        Role::Label => "label",
-        Role::StaticText => "static_text",
-        Role::Heading { .. } => "heading",
-        Role::Paragraph => "paragraph",
-        Role::Document => "document",
-        Role::Terminal => "terminal",
-        Role::Canvas => "canvas",
-        Role::Unknown => "unknown",
-    }
-}
-
-fn collect_targets(
-    w: &dyn Widget,
-    parent_path: &str,
-    sibling_counts: &mut HashMap<String, usize>,
-    out: &mut HashMap<String, Rect>,
-) {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(w) else {
-        return;
-    };
-    let (name, path, my_index) = next_widget_path(w, parent_path, sibling_counts);
-    out.insert(path.clone(), w.get_rect());
-    if my_index == 0 {
-        let bare = if parent_path.is_empty() {
-            name
-        } else {
-            format!("{parent_path}/{name}")
-        };
-        out.entry(bare).or_insert_with(|| w.get_rect());
-    }
-    if let Some(id) = w.test_id() {
-        // A widget addressed by a control it holds (an empty state's button
-        // inside its panel), or whose own node names narrower bounds, is
-        // operated where that control is, as assistive technology would.
-        let rect = w
-            .accessibility()
-            .and_then(|node| {
-                let node = crate::a11y::with_synthetic_bounds(node, w);
-                control_bounds(&node, id).or(node.bounds)
-            })
-            .map(crate::a11y::AccessBounds::to_rect)
-            .filter(|bounds| bounds.width() > 0.0 && bounds.height() > 0.0)
-            .unwrap_or_else(|| w.get_rect());
-        out.insert(id.to_string(), rect);
-    }
-    let mut child_counts: HashMap<String, usize> = HashMap::new();
-    for child in w.children() {
-        collect_targets(child, &path, &mut child_counts, out);
-    }
-}
-
-/// Where the control `id` names sits in `node`'s tree, if one of its nodes
-/// is that control.
-fn control_bounds(node: &crate::a11y::AccessNode, id: &str) -> Option<crate::a11y::AccessBounds> {
-    if node.action_target.as_deref() == Some(id) && node.bounds.is_some() {
-        return node.bounds;
-    }
-    node.children
-        .iter()
-        .find_map(|child| control_bounds(child, id))
-}
-
-struct RetainedNamedTarget {
-    key: (usize, String),
-    path: String,
-    bare: Option<String>,
-    id: Option<String>,
-}
-
-fn collect_named_targets(
-    widget: &dyn Widget,
-    parent_path: &str,
-    sibling_counts: &mut HashMap<String, usize>,
-    out: &mut Vec<RetainedNamedTarget>,
-) {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-        return;
-    };
-    let (name, path, my_index) = next_widget_path(widget, parent_path, sibling_counts);
-    // Include even unregistered wrappers: otherwise their same-name inline
-    // child could be mistaken for them by a registration-only uniqueness check.
-    let bare = (my_index == 0).then(|| {
-        if parent_path.is_empty() {
-            name.clone()
-        } else {
-            format!("{parent_path}/{name}")
-        }
-    });
-    out.push(RetainedNamedTarget {
-        key: (std::ptr::from_ref(widget).cast::<()>() as usize, name),
-        path: path.clone(),
-        bare,
-        id: widget.test_id().map(str::to_owned),
-    });
-    let mut child_counts = HashMap::new();
-    for child in widget.children() {
-        collect_named_targets(child, &path, &mut child_counts, out);
-    }
-}
-
-fn collect_inspection(
-    widget: &dyn Widget,
-    parent_path: &str,
-    sibling_counts: &mut HashMap<String, usize>,
-) -> InspectionNode {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-        return InspectionNode {
-            path: parent_path.into(),
-            widget: "ClosedComponent".into(),
-            test_id: None,
-            focusable: false,
-            rect: [0.0; 4],
-            child_clip: None,
-            layout: None,
-            semantics: None,
-            children: vec![],
-        };
-    };
-    let (name, path, _) = next_widget_path(widget, parent_path, sibling_counts);
-    let rect = widget.get_rect();
-    let mut child_counts = HashMap::new();
-    let children = widget
-        .children()
-        .into_iter()
-        .map(|child| collect_inspection(child, &path, &mut child_counts))
-        .collect();
-    InspectionNode {
-        path,
-        widget: name,
-        test_id: widget.test_id().map(str::to_owned),
-        focusable: widget.is_focusable(),
-        rect: [rect.x0, rect.y0, rect.width(), rect.height()],
-        child_clip: widget
-            .child_clip_rect()
-            .map(|r| [r.x0, r.y0, r.width(), r.height()]),
-        layout: widget.layout_info(),
-        semantics: widget
-            .accessibility()
-            .map(|access| crate::a11y::with_synthetic_bounds(access, widget)),
-        children,
-    }
-}
-
-fn audit_inspection_node(node: &InspectionNode, issues: &mut Vec<AccessibilityIssue>) {
-    if node.focusable && node.semantics.is_none() {
-        push_audit_issue(
-            issues,
-            &node.path,
-            "missing-semantics",
-            "a keyboard-focusable widget must expose accessibility semantics",
-        );
-    }
-    if let Some(semantics) = &node.semantics {
-        audit_access_node(semantics, &node.path, issues);
-    }
-    for child in &node.children {
-        audit_inspection_node(child, issues);
-    }
-}
-
-/// Every semantic control a binding may stand behind: the effect-capable
-/// roles, and a focusable list item, which is pressed as a whole (a list
-/// row bound through `ListRow::on_view`).
-fn effect_control_ids(node: &InspectionNode) -> HashSet<String> {
-    effect_control_ids_of(node, &|_| true, true)
-}
-
-fn effect_control_ids_where(
-    node: &InspectionNode,
-    include: &dyn Fn(&AccessNode) -> bool,
-) -> HashSet<String> {
-    effect_control_ids_of(node, include, false)
-}
-
-fn effect_control_ids_of(
-    node: &InspectionNode,
-    include: &dyn Fn(&AccessNode) -> bool,
-    pressable_items: bool,
-) -> HashSet<String> {
-    let mut controls = HashSet::new();
-    if let Some(semantics) = &node.semantics {
-        collect_effect_access_nodes(
-            semantics,
-            node.test_id.as_deref(),
-            &node.path,
-            &EffectFilter {
-                include,
-                pressable_items,
-            },
-            &mut controls,
-        );
-    }
-    for child in &node.children {
-        controls.extend(effect_control_ids_of(child, include, pressable_items));
-    }
-    controls
-}
-
-/// Which semantic nodes count as controls.
-struct EffectFilter<'a> {
-    include: &'a dyn Fn(&AccessNode) -> bool,
-    /// Count a focusable list or tree item too.
-    pressable_items: bool,
-}
-
-fn inspection_has_semantics(node: &InspectionNode) -> bool {
-    node.semantics.is_some() || node.children.iter().any(inspection_has_semantics)
-}
-
-fn collect_effect_access_nodes(
-    node: &AccessNode,
-    retained_id: Option<&str>,
-    path: &str,
-    filter: &EffectFilter<'_>,
-    controls: &mut HashSet<String>,
-) {
-    let effect = (filter.include)(node)
-        && !(node.state.read_only
-            && matches!(node.role, Role::TextInput | Role::MultilineTextInput))
-        && (matches!(
-            node.role,
-            Role::Button
-                | Role::Tab
-                | Role::ToggleButton
-                | Role::Checkbox
-                | Role::RadioButton
-                | Role::Switch
-                | Role::ComboBox
-                | Role::Slider
-                | Role::SpinButton
-                | Role::TextInput
-                | Role::MultilineTextInput
-        ) || (filter.pressable_items
-            && matches!(node.role, Role::ListItem | Role::TreeItem)
-            && node.state.focusable));
-    if effect {
-        let identity = node
-            .action_target
-            .clone()
-            .or_else(|| retained_id.map(str::to_owned))
-            .or_else(|| node.semantic_key.clone())
-            .unwrap_or_else(|| format!("{path}/<unaddressable-{:?}>", node.role));
-        controls.insert(identity);
-    }
-    for (index, child) in node.children.iter().enumerate() {
-        collect_effect_access_nodes(
-            child,
-            None,
-            &format!("{path}/semantic[{index}]"),
-            filter,
-            controls,
-        );
-    }
-}
-
-fn audit_access_node(node: &AccessNode, path: &str, issues: &mut Vec<AccessibilityIssue>) {
-    audit_access_node_contract(node, path, issues);
-    audit_access_children(node, path, issues);
-}
-
-fn audit_access_node_contract(node: &AccessNode, path: &str, issues: &mut Vec<AccessibilityIssue>) {
-    let has_name = node
-        .name
-        .as_deref()
-        .is_some_and(|name| !name.trim().is_empty());
-    if semantic_role_requires_name(node.role) && !has_name {
-        push_audit_issue(
-            issues,
-            path,
-            "missing-name",
-            format!(
-                "{} requires a non-empty accessible name",
-                role_name(node.role)
-            ),
-        );
-    }
-    if node.state.focusable && !has_accessible_content_name(node) {
-        push_audit_issue(
-            issues,
-            path,
-            "unnamed-focus-target",
-            "a keyboard-focusable semantic node requires a non-empty accessible name",
-        );
-    }
-    if node.role == Role::Unknown {
-        push_audit_issue(
-            issues,
-            path,
-            "unknown-role",
-            "replace Role::Unknown with the semantic role exposed to assistive technology",
-        );
-    }
-    if node.state.protected && node.value.is_some() {
-        push_audit_issue(
-            issues,
-            path,
-            "protected-value-exposed",
-            "a protected control must not expose its value",
-        );
-    }
-    match (node.pos_in_set, node.set_size) {
-        (Some(position), Some(size)) if size == 0 || position == 0 || position > size => {
-            push_audit_issue(
-                issues,
-                path,
-                "invalid-set-position",
-                format!("pos_in_set {position} must be within 1..={size}"),
-            );
-        }
-        (Some(_), None) | (None, Some(_)) => push_audit_issue(
-            issues,
-            path,
-            "incomplete-set-position",
-            "pos_in_set and set_size must be supplied together",
-        ),
-        _ => {}
-    }
-    if node.level == Some(0) {
-        push_audit_issue(
-            issues,
-            path,
-            "invalid-level",
-            "semantic hierarchy levels are one-based",
-        );
-    }
-    if node.action_target.as_deref() == Some("") {
-        push_audit_issue(
-            issues,
-            path,
-            "empty-action-target",
-            "synthetic action targets must be non-empty stable model identities",
-        );
-    }
-}
-
-fn audit_access_children(node: &AccessNode, path: &str, issues: &mut Vec<AccessibilityIssue>) {
-    let keyed = node
-        .children
-        .iter()
-        .filter(|child| child.key.is_some())
-        .count();
-    if keyed > 0 && keyed < node.children.len() {
-        push_audit_issue(
-            issues,
-            path,
-            "mixed-synthetic-keys",
-            "synthetic siblings must be either all keyed or all position-addressed",
-        );
-    }
-    let mut keys = HashSet::new();
-    let mut targets = HashSet::new();
-    for (index, child) in node.children.iter().enumerate() {
-        let child_path = semantic_child_path(path, child, index);
-        if let Some(key) = child.key
-            && !keys.insert(key)
-        {
-            push_audit_issue(
-                issues,
-                &child_path,
-                "duplicate-synthetic-key",
-                format!("synthetic sibling key {key} is not unique"),
-            );
-        }
-        if let Some(target) = child.action_target.as_deref()
-            && !target.is_empty()
-            && !targets.insert(target)
-        {
-            push_audit_issue(
-                issues,
-                &child_path,
-                "duplicate-action-target",
-                format!("synthetic sibling action target {target:?} is not unique"),
-            );
-        }
-        audit_access_node(child, &child_path, issues);
-    }
-}
-
-fn has_accessible_content_name(node: &AccessNode) -> bool {
-    node.name
-        .as_deref()
-        .is_some_and(|name| !name.trim().is_empty())
-        || node.children.iter().any(has_accessible_content_name)
-}
-
-fn semantic_role_requires_name(role: Role) -> bool {
-    matches!(
-        role,
-        Role::Tab
-            | Role::MenuItem
-            | Role::Button
-            | Role::ToggleButton
-            | Role::Checkbox
-            | Role::RadioButton
-            | Role::Switch
-            | Role::Slider
-            | Role::SpinButton
-            | Role::ComboBox
-            | Role::TextInput
-            | Role::MultilineTextInput
-            | Role::Link
-            | Role::Image
-    )
-}
-
-fn semantic_child_path(parent: &str, child: &AccessNode, index: usize) -> String {
-    if let Some(target) = child.action_target.as_deref() {
-        format!("{parent}/semantic[{target:?}]")
-    } else if let Some(key) = child.key {
-        format!("{parent}/semantic[key={key}]")
-    } else {
-        format!("{parent}/semantic[{index}]")
-    }
-}
-
-fn push_audit_issue(
-    issues: &mut Vec<AccessibilityIssue>,
-    path: &str,
-    code: &str,
-    message: impl Into<String>,
-) {
-    issues.push(AccessibilityIssue {
-        path: path.to_owned(),
-        code: code.to_owned(),
-        message: message.into(),
-    });
-}
-
-fn next_widget_path(
-    widget: &dyn Widget,
-    parent_path: &str,
-    sibling_counts: &mut HashMap<String, usize>,
-) -> (String, String, usize) {
-    let name = widget.name().to_string();
-    let sibling_key = format!("{parent_path}::{name}");
-    let index = sibling_counts.entry(sibling_key).or_insert(0);
-    let current = *index;
-    // Bounded by siblings under one parent; saturating makes that explicit.
-    *index = index.saturating_add(1);
-    let path = if parent_path.is_empty() {
-        format!("{name}[{current}]")
-    } else {
-        format!("{parent_path}/{name}[{current}]")
-    };
-    (name, path, current)
-}
-
 /// Parse `--headless-drive '<json>'` (or `--headless-drive=<json>`) out of
 /// argv. `None` when the flag is absent, which is every normal launch.
 ///
@@ -10652,16 +10173,19 @@ fn drive_spec_actions(
         return Some(format!("startup control invocation failed: {error}"));
     }
     persist(driver);
-    let mut bindings = std::collections::BTreeMap::new();
-    for (index, action) in spec.actions.iter().enumerate() {
-        if let Err(error) = driver.perform_bound(action, &mut bindings) {
+    let mut bound = driver::Bindings::new();
+    // The same steps, run by the same loop, an in-process caller drives: this
+    // path only adds the metrics and the wording a CLI failure prints.
+    let steps = driver::steps_of(spec);
+    for (index, step) in steps.iter().enumerate() {
+        if let Err(error) = driver.perform_bound(step, &mut bound) {
             tilo_startup_metrics::mark("headless-action-failed");
             tilo_startup_metrics::mark("headless-actions-done");
             return Some(format!(
                 "action {} of {} ({}): {error}",
                 index.saturating_add(1),
-                spec.actions.len(),
-                action_description(action)
+                steps.len(),
+                step.name()
             ));
         }
         persist(driver);
@@ -10731,7 +10255,11 @@ fn write_spec_outputs(spec: &Spec, driver: &mut FrameHarness) -> Result<(), Stri
             .map_err(|error| format!("writing inspection to {path}: {error}"))?;
     }
     if let Some(path) = &spec.resources {
-        let tree: Vec<serde_json::Value> = driver.resources().iter().map(resource_json).collect();
+        let tree: Vec<serde_json::Value> = driver
+            .resources()
+            .iter()
+            .map(driver::resource_json)
+            .collect();
         let json = serde_json::to_string_pretty(&tree)
             .map_err(|error| format!("serializing resources: {error}"))?;
         write_headless_output(path, json)
@@ -10741,34 +10269,6 @@ fn write_spec_outputs(spec: &Spec, driver: &mut FrameHarness) -> Result<(), Stri
         write_capture(capture, driver)?;
     }
     Ok(())
-}
-
-/// One published resource, its actions (address, kind, availability and
-/// parameters) and its children, as the `resources` output lists them.
-fn resource_json(resource: &tilo_actions::Resource) -> serde_json::Value {
-    let actions: Vec<serde_json::Value> = resource
-        .actions
-        .iter()
-        .map(|action| {
-            let unavailable = match &action.contract.availability {
-                tilo_actions::Availability::Unavailable { reason, .. } => Some(reason.clone()),
-                tilo_actions::Availability::Available => None,
-            };
-            serde_json::json!({
-                "action": action.id,
-                "label": action.label,
-                "params": action.params(),
-                "unavailable": unavailable,
-            })
-        })
-        .collect();
-    serde_json::json!({
-        "resource": resource.id.0,
-        "kind": resource.kind,
-        "label": resource.label,
-        "actions": actions,
-        "children": resource.children.iter().map(resource_json).collect::<Vec<_>>(),
-    })
 }
 
 /// How long a capture waits for the window to settle (entrances finished,
@@ -11161,6 +10661,40 @@ mod tests {
         until: std::rc::Rc<std::cell::Cell<Option<crate::time::Instant>>>,
     }
 
+    /// Animates until it has been drawn `frames` times, so the number of draws
+    /// the capture runs — not the wall clock — says whether it settled.
+    struct CountedFrames {
+        frames: usize,
+        drawn: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl Widget for CountedFrames {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.widget_leaf(Style::default(), node_map, self)
+        }
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+            self.drawn.set(self.drawn.get() + 1);
+        }
+        fn needs_animation_frame(&self) -> bool {
+            self.drawn.get() < self.frames
+        }
+        fn name(&self) -> &str {
+            "CountedFrames"
+        }
+    }
+
     impl Entrance {
         fn new() -> (
             Self,
@@ -11227,6 +10761,39 @@ mod tests {
             let bounds = row.bounds().unwrap();
             assert!(bounds.x0 >= 0.0 && bounds.x1 <= f64::from(width));
         }
+    }
+
+    /// A written capture is the window a person sees a moment after it
+    /// opened, so an entrance still running is waited out before the frame is
+    /// taken. Without this, `--shots` and `--responsive-matrix` write whatever
+    /// the first draw happened to show: a scroll thumb mid-fade, or a page
+    /// still drawn from the bitmap of the width it had a moment ago, which is
+    /// a difference about the capture and reads as a layout difference to
+    /// `tools/ci/capture_parity.py`.
+    #[cfg(feature = "native")]
+    #[test]
+    fn writing_a_shot_runs_the_animation_out_first() {
+        let drawn = std::rc::Rc::new(std::cell::Cell::new(0));
+        let widget = CountedFrames {
+            frames: 3,
+            drawn: std::rc::Rc::clone(&drawn),
+        };
+        let mut harness = FrameHarness::new(State::new(), Box::new(widget), (200, 100));
+        assert!(
+            harness.frame_schedule().needs_animation_frame,
+            "the animation is running before the capture"
+        );
+        let temp = tempfile::tempdir().expect("temporary output root");
+        harness.write_shot(&temp.path().join("shot.png"), false);
+        assert!(
+            drawn.get() >= 3,
+            "the capture ran the animation out ({} draw(s))",
+            drawn.get()
+        );
+        assert!(
+            !harness.frame_schedule().needs_animation_frame,
+            "the written frame is a settled one"
+        );
     }
 
     #[test]
@@ -12800,12 +12367,12 @@ mod tests {
 
         {
             let mut issues = Vec::new();
-            let root = AccessNode::new(Role::Group).with_children(vec![
-                AccessNode::new(Role::Button)
+            let root = AccessNode::new(crate::a11y::Role::Group).with_children(vec![
+                AccessNode::new(crate::a11y::Role::Button)
                     .with_key(7)
                     .with_action_target("duplicate")
                     .with_position(0, 2),
-                AccessNode::new(Role::TextInput)
+                AccessNode::new(crate::a11y::Role::TextInput)
                     .with_action_target("duplicate")
                     .with_value("secret")
                     .with_state(
@@ -12815,7 +12382,7 @@ mod tests {
                     )
                     .with_level(0),
             ]);
-            audit_access_node(&root, "Root[0]", &mut issues);
+            super::inspection::audit_access_node(&root, "Root[0]", &mut issues);
             let codes = issues
                 .iter()
                 .map(|issue| issue.code.as_str())
@@ -13489,10 +13056,12 @@ mod tests {
                 };
                 assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
                 observed.enqueue("run");
-                *binding.permissions.borrow_mut() = crate::permissions::PermissionContext::member(
-                    "reader",
-                    collab_types::role::Role::Viewer,
-                );
+                binding
+                    .permissions
+                    .set(crate::permissions::PermissionContext::member(
+                        "reader",
+                        collab_types::role::Role::Viewer,
+                    ));
                 let before = owner
                     .records
                     .read(&binding.checkout.id, automerge::AutoCommit::base_heads)
@@ -14915,322 +14484,8 @@ mod visual_persistence_tests;
 
 // Draft to append under cfg(test) in headless.rs after initial source release.
 #[cfg(test)]
-mod prepared_driver_tests {
-    use super::*;
-    use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
-    use crate::application_test_support::*;
-    use automerge::{ROOT, ReadDoc, transaction::Transactable};
-    use std::cell::{Cell, RefCell};
-    use std::rc::Rc;
-
-    #[derive(Clone, Default)]
-    struct Observations {
-        published: Rc<RefCell<crate::undo::UndoStatus>>,
-        syncs: Rc<Cell<usize>>,
-        local: Rc<RefCell<Option<crate::LocalState<String>>>>,
-    }
-    thread_local! { static OBSERVED: RefCell<Observations> = RefCell::new(Observations::default()); }
-    struct Observer {
-        observed: Observations,
-        snapshot: String,
-        rect: vello::kurbo::Rect,
-        focused: bool,
-        motion_delivered: bool,
-    }
-    impl Observer {
-        fn new(observed: Observations) -> Self {
-            Self {
-                observed,
-                snapshot: String::new(),
-                rect: vello::kurbo::Rect::ZERO,
-                focused: false,
-                motion_delivered: false,
-            }
-        }
-    }
-    impl Widget for Observer {
-        crate::provides!(dyn crate::undo::UndoControl, dyn crate::undo::UndoPoints);
-
-        fn set_motion_reduced(&mut self, _: bool) {
-            if !std::mem::replace(&mut self.motion_delivered, true)
-                && let Some(local) = self.observed.local.borrow().as_ref()
-            {
-                local.writer().set("initial callback".into());
-            }
-        }
-        fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {
-            self.observed
-                .syncs
-                .set(self.observed.syncs.get().saturating_add(1));
-            if let Some(local) = self.observed.local.borrow().as_ref() {
-                self.snapshot = local.with(Clone::clone);
-            }
-        }
-        fn build_layout(
-            &mut self,
-            tree: &mut TaffyTree<()>,
-            _: &Theme,
-            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            let node = tree
-                .new_leaf(Style {
-                    size: Size::from_lengths(80.0, 30.0),
-                    ..Default::default()
-                })
-                .unwrap();
-            nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
-        }
-        fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let layout = tree.layout(node).unwrap();
-            self.rect = vello::kurbo::Rect::new(
-                origin.x,
-                origin.y,
-                origin.x + f64::from(layout.size.width),
-                origin.y + f64::from(layout.size.height),
-            );
-        }
-        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-            if let WindowEvent::KeyboardInput { event, .. } = event
-                && self.focused
-                && event.state == ElementState::Pressed
-                && let Some(text) = event.text.as_deref()
-            {
-                let before = ctx
-                    .state
-                    .get(ROOT, "body")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .as_str()
-                    .unwrap()
-                    .to_owned();
-                ctx.state
-                    .document_mut()
-                    .put(ROOT, "body", format!("{before}{text}"))
-                    .unwrap();
-                *ctx.handled = true;
-            }
-        }
-        fn is_focusable(&self) -> bool {
-            true
-        }
-        fn is_focused(&self) -> bool {
-            self.focused
-        }
-        fn set_focus(&mut self, value: bool) {
-            self.focused = value;
-        }
-        fn name(&self) -> &'static str {
-            "runner-observer"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            self.rect
-        }
-    }
-
-    impl crate::undo::UndoPoints for Observer {
-        fn get_state(&self) -> Option<String> {
-            Some(self.snapshot.clone())
-        }
-    }
-
-    impl crate::undo::UndoControl for Observer {
-        fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
-            *self.observed.published.borrow_mut() = status();
-        }
-    }
-    impl crate::widget::AppWidget for Observer {
-        fn app_kind(&self) -> crate::widget::AppKind {
-            crate::widget::AppKind::Editor
-        }
-        fn app_title(&self) -> &'static str {
-            "Observer"
-        }
-        fn app_icon(&self) -> crate::widget::IconDescriptor {
-            crate::widget::IconDescriptor::Glyph("O")
-        }
-    }
-    fn factory(
-        mut context: HostContext,
-        _: LaunchTarget,
-        _: RestoreInput,
-    ) -> Result<AppComponent, crate::launch::LaunchError> {
-        context
-            .initialize_new_record(|doc| {
-                doc.put(ROOT, "body", "").map_err(|error| error.to_string())
-            })
-            .map_err(crate::launch::LaunchError::Record)?;
-        let observed = OBSERVED.with_borrow(Clone::clone);
-        *observed.local.borrow_mut() = Some(crate::LocalState::new("construction".into()));
-        observed
-            .local
-            .borrow()
-            .as_ref()
-            .unwrap()
-            .writer()
-            .set("before mount".into());
-        Ok(AppComponent::new(
-            context,
-            Box::new(Observer::new(observed)),
-            tilo_actions::ActionRegistry::new(),
-        ))
-    }
-    fn prepared() -> (
-        ProbeHost,
-        FrameHarness,
-        Observations,
-        crate::record::RecordCheckout,
-    ) {
-        let host = ProbeHost::new();
-        let definition = definition(factory);
-        let observed = Observations::default();
-        OBSERVED.with_borrow_mut(|slot| *slot = observed.clone());
-        let context = host
-            .prepare_with_permissions(&definition, 11, &LaunchTarget::New, runner_permissions())
-            .unwrap();
-        let checkout = context.record().clone();
-        let component = definition
-            .instantiate(context, LaunchTarget::New, RestoreInput::None)
-            .unwrap();
-        let driver = FrameHarness::from_component(component, (320, 180), runner_inputs()).unwrap();
-        (host, driver, observed, checkout)
-    }
-    #[test]
-    fn prepared_driver_publishes_undo_status_and_guards_wakes() {
-        {
-            let (host, mut driver, bound, checkout) = prepared();
-            let outer = Observations::default();
-            // Preserve the owned bound adapter as a child; this test adds ordinary host chrome.
-            let component_root =
-                std::mem::replace(&mut driver.root, Box::new(crate::widget::Column::new()));
-            driver.root = Box::new(
-                crate::widget::Column::new()
-                    .push(Box::new(Observer::new(outer.clone())))
-                    .push(component_root),
-            );
-            driver.state.doc.put(ROOT, "outer", true).unwrap();
-            driver
-                .state
-                .commit_action_authored_with_context(None, None, Some(author()), None);
-            driver
-                .state
-                .undo_as(Some(&author()), None, None, None)
-                .unwrap();
-            driver.relayout();
-            let outer_baseline = driver.state.undo_status(Some(&author()));
-            assert!(!outer_baseline.can_undo && outer_baseline.can_redo);
-            let node = *driver
-                .node_map
-                .keys()
-                .find(|node| driver.bindings.binding_ref(**node).is_some())
-                .unwrap();
-            driver.set_focused(Some(node));
-            driver.type_text("first");
-            let selected = driver.undo_status();
-            assert!(selected.can_undo && !selected.can_redo);
-            assert_eq!(*bound.published.borrow(), selected);
-            assert_eq!(*outer.published.borrow(), outer_baseline);
-            driver.type_text(" second");
-            for _ in 0..3 {
-                assert!(driver.undo_status().can_undo);
-            }
-            assert_eq!(body(&host.records, &checkout), "first second");
-            assert!(driver.perform_undo());
-            assert_eq!(body(&host.records, &checkout), "");
-            assert!(!driver.undo_status().can_undo && driver.undo_status().can_redo);
-            assert!(driver.perform_redo());
-            assert_eq!(body(&host.records, &checkout), "first second");
-            assert_eq!(*outer.published.borrow(), outer_baseline);
-            assert_eq!(driver.state.undo_status(Some(&author())), outer_baseline);
-            driver.set_focused(None);
-            assert_eq!(driver.undo_status(), outer_baseline);
-        }
-
-        {
-            let mut outer_scope = crate::WakeScope::new();
-            let outer_wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let count = outer_wakes.clone();
-            outer_scope
-                .bind(move |_| {
-                    count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                })
-                .unwrap();
-            let _outer = outer_scope.enter();
-            let (_host, mut driver, observed, _) = prepared();
-            assert_eq!(
-                crate::undo::get_state(driver.root.as_ref()),
-                Some("initial callback".into())
-            );
-            assert_eq!(outer_wakes.load(std::sync::atomic::Ordering::Relaxed), 0);
-            let writer = observed.local.borrow().as_ref().unwrap().writer();
-            let before = observed.syncs.get();
-            writer.set("pending".into());
-            let _ = driver.inspection();
-            assert_eq!(
-                observed.syncs.get(),
-                before,
-                "read boundary must not perform a frame"
-            );
-            let _ = driver.action_registry_mut();
-            assert!(observed.syncs.get() > before);
-            assert_eq!(
-                crate::undo::get_state(driver.root.as_ref()),
-                Some("pending".into())
-            );
-            writer.set("queued before close".into());
-            driver.close_components();
-            assert!(!writer.try_set("stale".into()));
-            assert!(!driver.component_wake.as_ref().unwrap().dirty.get());
-            let (_next, successor, next_observed, _) = prepared();
-            let successor_syncs = next_observed.syncs.get();
-            assert!(successor_syncs > 0, "initial composition was synchronized");
-            assert!(!writer.try_set("late successor result".into()));
-            assert_eq!(
-                crate::undo::get_state(successor.root.as_ref()),
-                Some("initial callback".into())
-            );
-            assert_eq!(
-                next_observed.syncs.get(),
-                successor_syncs,
-                "stale wake must not synchronize the successor"
-            );
-            outer_scope.close();
-        }
-    }
-
-    #[test]
-    fn duplicate_host_modifiers_do_not_sync_the_document_tree() {
-        let (_host, mut driver, observed, _) = prepared();
-        let before = observed.syncs.get();
-        for _ in 0..100 {
-            driver.send_host_event(&WindowEvent::ModifiersChanged(
-                winit::event::Modifiers::default(),
-            ));
-        }
-        assert_eq!(
-            observed.syncs.get(),
-            before,
-            "unchanged modifiers must not relayout"
-        );
-        let shifted = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
-        driver.send_host_event(&WindowEvent::ModifiersChanged(shifted));
-        let changed = observed.syncs.get();
-        assert!(
-            changed > before,
-            "real modifier transitions still reach widgets"
-        );
-        driver.send_host_event(&WindowEvent::ModifiersChanged(shifted));
-        assert_eq!(observed.syncs.get(), changed);
-        driver.send_host_event(&WindowEvent::ModifiersChanged(
-            winit::event::Modifiers::default(),
-        ));
-        assert!(
-            observed.syncs.get() > changed,
-            "modifier release still reaches widgets"
-        );
-    }
-}
+#[path = "headless/prepared_driver_tests.rs"]
+mod prepared_driver_tests;
 
 #[cfg(test)]
 mod history_input_frame_tests {

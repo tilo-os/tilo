@@ -73,7 +73,7 @@ pub const SCENARIOS: &[&str] = &[
 pub const VIEWPORT: (u32, u32) = (1280, 720);
 
 /// The paragraphs `multiline_typing` and `paragraph_click` type.
-pub const FIRST: &str = "Let's go. Hi this is ada speaking. Why does pressing Enter not work?";
+pub const FIRST: &str = "Let's go. Hi this is Ada speaking. Why does pressing Enter not work?";
 pub const SECOND: &str = "This second paragraph should wrap naturally while I keep typing, and every line should remain visible below the first paragraph.";
 pub const CONTINUATION: &str = "This continues the same paragraph after Shift+Enter, with enough text to wrap onto another visible line.";
 

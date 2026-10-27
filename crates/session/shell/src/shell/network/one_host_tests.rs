@@ -50,10 +50,12 @@ mod live_frames;
 mod member_controls;
 mod no_secret_store;
 mod old_rooms;
+mod on_demand_records;
 mod own_devices;
 mod pointers;
 mod sealed_records;
 mod sealed_writes;
+mod workspace_emoji;
 
 /// The app whose document the tests edit, and its record.
 pub(crate) const NOTES: &str = "so.tilo.notes";
@@ -618,7 +620,7 @@ impl Device {
                 .map(crate::shell::state::Workspace::room)
                 .collect();
             for room in rooms {
-                net.publish_hosted_legacy_windows(room, &self.tree);
+                net.publish_governed_layout(room, &self.tree);
             }
             self.state.lock().unwrap().layout = Some((self.tree.generation(), now));
         }

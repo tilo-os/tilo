@@ -69,6 +69,7 @@ mod tests {
                         title: "Saved document".into(),
                         app_kind: None,
                         icon: None,
+                        attention: false,
                     },
                     UiTile::App(Box::new(word_processor::WordProcessorWidget::new())),
                 )],

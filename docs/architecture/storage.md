@@ -1994,18 +1994,19 @@ One model for files, CRDT records, collections, blobs and packages. [R6, R8]
 - **Principals.** Person roots, room roles (Viewer, Commenter, Editor, Owner),
   share grants and device certificates. Authority is granted to the person, and
   history records the device (`docs/collaborative-files-product.md:306-307`).
-- **Units.** An ACL attaches to a record or a collection. It is inherited from
-  the room catalog unless overridden. Roles map to operation classes per
-  collection. A `comments` collection lets Commenters write while the document
-  itself does not.
+- **Units.** A grant attaches to a record or a collection. It is inherited from
+  the room catalog unless overridden. A `comments` unit lets Commenters write
+  while the document itself does not.
   - This is enforceable on receipt without inspecting CRDT content, because the
-    unit of authorisation is the record or shard.
-  - It fixes the defect that every app delta is signed as `OpClass::Splice`, so
-    a Commenter can write nothing and an Editor anything
-    (`crates/sdk/ui-core/src/collaboration.rs:3682-3700`).
-- **Enforcement on receipt.** Every operation is checked against the record ACL
-  at the time of its causal context, before merge. This is today's fs rule
-  (`docs/collaborative-files-product.md:325-333`), extended to CRDT records.
+    unit of authorisation is the record or shard, and every change carries the
+    units it writes as a signed claim.
+  - It is the same rule as everywhere else: the change's action key and the
+    units it writes are decided against the author's grants over the published
+    tree ([permissions.md](permissions.md)).
+- **Enforcement on receipt.** Every operation is checked against the record's
+  grants for what it claims, at the time of its causal context, before merge.
+  This is today's fs rule (`docs/collaborative-files-product.md:325-333`),
+  extended to CRDT records.
 - **Sandboxed apps.** The launcher mints a capability per
   `(package, room, declared record kinds)`. The Record Store answers only for
   records of those kinds in that room, plus records explicitly granted through

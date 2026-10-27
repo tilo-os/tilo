@@ -21,6 +21,10 @@
 //! agent sleeps until a message arrives. An item that could not be done
 //! goes to the coordinator, which has it done again, adjusts the items
 //! after it, or lets them go on without it.
+//!
+//! The items' agents may plan with a model of their own, a cheaper one,
+//! while the coordinator plans with the agent's
+//! ([`crate::profile::DECOMPOSE_ITEM_MODEL_ENV`], [`crate::ModelPlanner`]).
 
 mod items;
 
@@ -333,7 +337,10 @@ impl AgentParticipant {
         }
         running.produced.clone_from(&coordinator.produced);
         running.produced_by.clone_from(&coordinator.produced_by);
-        running.last.clone_from(&coordinator.last);
+        if let Some((last, handed_on)) = &coordinator.last {
+            running.last = Some(last.clone());
+            running.last_handed_on = *handed_on;
+        }
     }
 
     /// What a plan of the running item's agent said in reply, kept for

@@ -148,6 +148,12 @@ pub type Builds = Arc<dyn Fn(&ActionArgs, i64) -> Result<Built, String> + Send +
 pub struct Declaration {
     pub id: &'static str,
     pub label: String,
+    /// The other words people use for the action
+    /// ([`tilo_actions::ActionSpec::keywords`]).
+    pub keywords: Vec<String>,
+    /// The action's own picture, by its Lucide name
+    /// ([`tilo_actions::ActionSpec::icon`]).
+    pub icon: Option<String>,
     pub description: Option<String>,
     pub params: Vec<ActionParam>,
     /// What the action is able to do. See [`tilo_actions::ActionContract::kind`].
@@ -209,6 +215,8 @@ impl Declaration {
         Self {
             id,
             label,
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             params,
             kind: ActionKind::Undoable,
@@ -233,6 +241,8 @@ impl Declaration {
 pub struct Vocabulary {
     /// [`Resource::KIND`].
     pub kind: &'static str,
+    /// [`Resource::APP_ID`].
+    pub app: &'static str,
     /// [`Resource::LABEL`].
     pub label: &'static str,
     /// [`Resource::ACTION_TYPE`].
@@ -258,6 +268,17 @@ pub struct Vocabulary {
 }
 
 impl Vocabulary {
+    /// The field edit `edit` a caller sent, its path read from the record's
+    /// root ([`Edit::past_record_name`]): the record answers to the last
+    /// part of its kind and to its label.
+    pub(crate) fn rooted_edit(&self, edit: Edit<()>) -> Result<Edit<()>, String> {
+        let Some(shape) = (self.shape)() else {
+            return Ok(edit);
+        };
+        let kind = self.kind.rsplit('.').next().unwrap_or(self.kind);
+        edit.past_record_name(shape, &[kind, self.label])
+    }
+
     /// Every declaration of the resource. They depend on its type alone, so
     /// each thread builds them once per generation of app code
     /// ([`reset_type_schemas`](crate::reset_type_schemas)) and answers the
@@ -320,6 +341,7 @@ struct VocabularyOf<R>(std::marker::PhantomData<R>);
 impl<R: Resource> VocabularyOf<R> {
     const VOCABULARY: Vocabulary = Vocabulary {
         kind: R::KIND,
+        app: R::APP_ID,
         label: R::LABEL,
         action_type: R::ACTION_TYPE,
         edits: R::EDITS,

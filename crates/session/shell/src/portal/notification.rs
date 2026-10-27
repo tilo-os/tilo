@@ -367,6 +367,9 @@ impl NotificationBackend {
         self.ctx.notifications.push_incoming(IncomingNotification {
             dbus_id,
             app_name,
+            app_icon: None,
+            desktop_entry: None,
+            image_data: None,
             summary: truncate_chars(
                 &crate::portal::option::<String>(&notification, "title").unwrap_or_default(),
                 MAX_TITLE_CHARS,

@@ -48,6 +48,10 @@ pub struct SlotRecord {
     /// the slot was last loaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<DeviceSession>,
+    /// Its user is this VM's person (`slot create --identity device`): the
+    /// session runs on the machine's own identity tree, with no private root.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub device_identity: bool,
 }
 
 /// The machine's own session, which the `device` slot swaps into: the
@@ -220,6 +224,7 @@ impl SlotStore {
             seat0: None,
             outputs: outputs.to_vec(),
             device: None,
+            device_identity: false,
         };
         self.save(&record)?;
         Ok((record, true))
@@ -258,6 +263,7 @@ impl SlotStore {
                 seat0: None,
                 outputs: Vec::new(),
                 device: None,
+                device_identity: false,
             });
             record.device = Some(device);
             return Ok(record);
@@ -276,6 +282,7 @@ impl SlotStore {
                 seat0: None,
                 outputs: Vec::new(),
                 device: None,
+                device_identity: false,
             });
         }
         Err(DaemonError::SlotNotFound(name.to_owned()))

@@ -1897,23 +1897,20 @@ mod tests {
 
         // The peer who opened the window publishes it, and the room's
         // governor names its record.
-        let strip = &ws.strips[0];
-        let group = &strip.window_groups[0];
+        let mut published = ws.clone();
+        published.strips.truncate(1);
         let mut document = automerge::AutoCommit::new();
-        tilo_desktop_model::projection::project_owned_contents(
+        tilo_desktop_model::shared_record::write(
             &mut document,
-            std::slice::from_ref(strip),
-            crate::shell::state::peer_salt_of(tab),
-            None,
-            tilo_desktop_model::projection::EmptyStrips::Skip,
-        )
-        .unwrap();
-        tilo_desktop_model::apps::bind_tab_record(
-            &mut document,
-            strip.id,
-            group.id,
-            tab,
-            checkout.id.as_str(),
+            &tilo_desktop_model::ownership::SharedDesktop {
+                tree: tilo_desktop_model::DesktopTree {
+                    active: published.id,
+                    workspaces: vec![published],
+                    ..tilo_desktop_model::DesktopTree::default()
+                },
+                records: vec![(tab, checkout.id.as_str().to_owned())],
+                authors: tilo_desktop_model::ownership::Authors::default(),
+            },
         )
         .unwrap();
         tree.room_docs.insert(room, document);

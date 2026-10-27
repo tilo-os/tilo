@@ -90,6 +90,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::{self, ActionRef, Effect};
+
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
     AppModel, Avatar, AvatarSize, Button, ButtonRole, Card, Checkbox, Container, Field, IconWidget,
@@ -4833,7 +4834,7 @@ impl InstallerPreview {
             .secondary(secondary)
             .two_line_secondary()
             .disclosure()
-            .on_activate(move || {
+            .on_effect(move || {
                 commands
                     .borrow_mut()
                     .push(InstallerPreviewEffect::EditPreview {
@@ -5415,7 +5416,11 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
         for declaration in InstallerPreviewEffect::declarations() {
             if self.demo && !demo::admits_id(declaration.id) {
                 statuses.push(EffectStatus::unavailable(
-                    ActionRef::<InstallerPreviewEffect, ()>::new(declaration.id, &[]),
+                    ActionRef::<InstallerPreviewEffect, ()>::new(
+                        declaration.id,
+                        &[],
+                        InstallerPreviewEffect::kind(),
+                    ),
                     "demo",
                     t("installer-demo-unavailable"),
                 ));
@@ -5423,7 +5428,11 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
             }
             if !self.effect_page_admitted(declaration.id) {
                 statuses.push(EffectStatus::unavailable(
-                    ActionRef::<InstallerPreviewEffect, ()>::new(declaration.id, &[]),
+                    ActionRef::<InstallerPreviewEffect, ()>::new(
+                        declaration.id,
+                        &[],
+                        InstallerPreviewEffect::kind(),
+                    ),
                     "wrong_page",
                     t("installer-preview-wrong-page"),
                 ));
@@ -5442,7 +5451,11 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
                     if declaration.id != "read-preview" && self.effect_page_admitted(declaration.id)
                     {
                         statuses.push(EffectStatus::unavailable(
-                            ActionRef::<InstallerPreviewEffect, ()>::new(declaration.id, &[]),
+                            ActionRef::<InstallerPreviewEffect, ()>::new(
+                                declaration.id,
+                                &[],
+                                InstallerPreviewEffect::kind(),
+                            ),
                             "exporting",
                             t(self.windows.busy_label()),
                         ));
@@ -5474,7 +5487,11 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
             };
             for action in actions {
                 statuses.push(EffectStatus::unavailable(
-                    ActionRef::<InstallerPreviewEffect, ()>::new(action, &[]),
+                    ActionRef::<InstallerPreviewEffect, ()>::new(
+                        action,
+                        &[],
+                        InstallerPreviewEffect::kind(),
+                    ),
                     "guided_host_unavailable",
                     t("installer-guided-host-unavailable"),
                 ));
@@ -7397,7 +7414,7 @@ mod tests {
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
         assert_eq!(status(&mut app)["page"], "profile");
         app.effect(&InstallerPreviewEffect::SetPreviewName {
-            value: "ada".into(),
+            value: "Ada".into(),
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
@@ -7409,7 +7426,7 @@ mod tests {
             created["prepared_identity"]["public_key"]
         );
         let updated = runtime_identity::load_from_path(record).unwrap();
-        assert_eq!(updated.display_name(), "ada");
+        assert_eq!(updated.display_name(), "Ada");
         assert_eq!(updated.sign(b"installer-profile-edit").unwrap(), proof);
         assert_eq!(preparation_operations(&preparations).len(), 1);
         assert!(!edited.to_string().contains("preview-secret-only"));
@@ -7610,7 +7627,7 @@ mod tests {
         );
         let key = created["prepared_identity"]["public_key"].clone();
         app.effect(&InstallerPreviewEffect::SetPreviewName {
-            value: "ada".into(),
+            value: "Ada".into(),
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::UpdatePreparedIdentity {
@@ -7650,7 +7667,7 @@ mod tests {
         }
         let metadata =
             runtime_identity::load_metadata_from_path(&custody.join("primary.json")).unwrap();
-        assert_eq!(metadata.display_name, "ada");
+        assert_eq!(metadata.display_name, "Ada");
         assert_eq!(metadata.avatar_color, [0xab, 0xcd, 0xef]);
         #[cfg(target_os = "linux")]
         {

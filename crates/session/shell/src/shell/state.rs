@@ -5,7 +5,9 @@ use tilo_automerge::ApplyIncoming;
 use tilo_clock::unix_now_i64;
 
 mod continuation_labels;
+pub mod governed_layout;
 mod local_app_records;
+mod personal_apps;
 mod room_binding;
 mod room_outbox;
 mod tree_handle;
@@ -16,6 +18,7 @@ use super::fs_authority::schedule_fs_authority_publication;
 use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use continuation_labels::{ContinuationLabels, UnresolvedContinuationLabels};
 pub use local_app_records::LocalAppRecord;
+pub use personal_apps::is_personal_app;
 pub(crate) use room_binding::room_holds_files;
 pub use room_outbox::{HostAnswer, Outgoing, RoomChange, Standing};
 pub use tree_handle::{
@@ -34,6 +37,7 @@ pub use collab_types::role::Role as CapRole;
 pub use tilo_action_policy::Preset;
 pub use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::projection;
+use tilo_desktop_model::shared_record;
 pub use tilo_desktop_model::{
     APP_ID_PREFIX, AppId, AppKind, Capability, Collaborator, FileId, FsMode, GRANT_ALWAYS,
     GRANT_ONCE, GRANT_SESSION, GrantScope, GroupId, MintIds, PEER_ID_COUNTER_MASK,
@@ -840,6 +844,17 @@ pub struct WorkspaceTree {
     /// before a restart still goes out.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub strips_to_retain: BTreeSet<StripId>,
+    /// Changes this device wrote to the layout of rooms another device
+    /// governs that the governor has not admitted yet, oldest first, by
+    /// room: shown here at once, and sent until the room holds them.
+    /// Persisted, so what was arranged while the governor was away still
+    /// reaches it after a restart.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub layout_pending: HashMap<RoomId, Vec<Vec<u8>>>,
+    /// What the last look at each such room's layout found nothing to
+    /// write for ([`Self::capture_governed_layout`]).
+    #[serde(skip)]
+    pub layout_captured: HashMap<RoomId, governed_layout::Captured>,
     /// Tabs created from same-identity continuation rather than from this
     /// machine's ordinary layout.  Persisting this marker lets a later
     /// checkpoint remove a remote close without ever deleting a local tab
@@ -962,6 +977,8 @@ impl Default for WorkspaceTree {
             room_outbox: Vec::new(),
             governance_refusals: Vec::new(),
             strips_to_retain: BTreeSet::new(),
+            layout_pending: HashMap::new(),
+            layout_captured: HashMap::new(),
             continuation_tabs: BTreeSet::new(),
             local_person: None,
             continuation_owned_tabs: HashMap::new(),
@@ -1292,6 +1309,9 @@ impl WorkspaceTree {
             let name = crate::shell::i18n::t("workspace-joined-name");
             self.append_workspace_for_room(&name, room);
         }
+        // What this device changed in the room's layout is written on top of
+        // what the room held before, so folding what it admitted now keeps it.
+        self.capture_governed_layout(room);
         self.room_docs.insert(room, document.clone());
         self.settle_outbox(room);
         if let Some(archived) = self
@@ -1811,6 +1831,15 @@ impl WorkspaceTree {
         true
     }
 
+    /// The cached workspace that addresses `room`, if this machine is in
+    /// it. First match wins, in case of a room joined twice locally.
+    fn workspace_in_room(&self, room: RoomId) -> Option<&Workspace> {
+        if room.is_nil() {
+            return None;
+        }
+        self.desktop.workspaces.iter().find(|w| w.room() == room)
+    }
+
     /// Key the room document stores its peers' names under.
     const ROOM_PEERS_KEY: &'static str = "peers";
 
@@ -1905,9 +1934,11 @@ impl WorkspaceTree {
             .map_or_else(projection::RoomLayout::default, projection::room_layout)
     }
 
-    /// Fold `room`'s replication document into the cached workspace that
-    /// addresses it — see [`projection::merge_room_contents`]. Reports
-    /// whether anything changed.
+    /// Fold `room`'s layout into the cached workspace that addresses it:
+    /// its strips, groups and windows as the room document (with what this
+    /// device wrote that the room's governor has not admitted yet) says,
+    /// and what this device decides alone kept
+    /// ([`shared_record::device::fold`]). Reports whether anything changed.
     fn merge_room_contents(&mut self, room: RoomId) -> bool {
         let Some(doc) = self.room_docs.get(&room) else {
             return false;
@@ -1917,8 +1948,7 @@ impl WorkspaceTree {
         let presets = projection::workspace_presets_of(doc);
         let personal = projection::room_layout(doc)
             .is_personal()
-            .then(|| projection::contents_owners_of(doc));
-        let contents = personal.is_none().then(|| projection::contents_of(doc));
+            .then(|| tilo_desktop_model::window_share::device_salts(doc));
         self.take_window_shares(room, shares);
         let local_salt = self.local_salt();
         if local_salt == 0 {
@@ -1927,12 +1957,58 @@ impl WorkspaceTree {
         let changed = if let Some(owners) = personal {
             self.keep_personal_room(room, local_salt, &owners, now_ms)
         } else {
-            projection::merge_room_contents(
-                &mut self.desktop,
-                room,
-                contents.unwrap_or_default(),
-                projection::Reader::Owner(local_salt),
-            )
+            let Some(doc) = self.room_docs.get(&room) else {
+                return false;
+            };
+            let pending = self.layout_pending.get(&room).filter(|p| !p.is_empty());
+            let replica = pending.and_then(|pending| {
+                let mut replica = doc.clone();
+                let changes = pending
+                    .iter()
+                    .filter_map(|bytes| automerge::Change::from_bytes(bytes.clone()).ok());
+                replica.apply_incoming(changes).ok()?;
+                Some(replica)
+            });
+            let doc = replica.as_ref().unwrap_or(doc);
+            let device = self
+                .window_hosting
+                .as_ref()
+                .map(|hosting| hosting.device.clone())
+                .unwrap_or_default();
+            let mine = |id: u64| peer_salt_of(id) == local_salt;
+            // A joined room's workspace is made for the room when it is
+            // joined, so no window this device had open before is in it:
+            // every window of this device's in the room is the room's.
+            let private = |_: u64| false;
+            let desktop = &mut self.desktop;
+            let Some(ws) = desktop.workspaces.iter_mut().find(|ws| ws.room() == room) else {
+                return false;
+            };
+            let held: Vec<StripId> = ws.strips.iter().map(|strip| strip.id).collect();
+            let changed = shared_record::device::fold(
+                doc,
+                ws,
+                &device,
+                &shared_record::device::Kept {
+                    mine: &mine,
+                    private: &private,
+                },
+            );
+            // Removed rather than repointed: resolvers already fall back to
+            // the first strip or group with no explicit selection.
+            let ws_id = ws.id;
+            let live: Vec<StripId> = ws.strips.iter().map(|strip| strip.id).collect();
+            if desktop
+                .active_strip
+                .get(&ws_id)
+                .is_some_and(|active| !live.contains(active))
+            {
+                desktop.active_strip.remove(&ws_id);
+            }
+            for strip in held.iter().filter(|strip| !live.contains(strip)) {
+                desktop.active_group.remove(strip);
+            }
+            changed
         };
         let mut reprofiled = false;
         if let Some(ws) = self
@@ -2302,6 +2378,24 @@ impl WorkspaceTree {
         } else {
             derived
         }
+    }
+
+    /// The workspace `app` opens in after the person at this machine opens
+    /// it: the active one, or for a personal app the personal workspace
+    /// ([`Self::workspace_for_app`]).
+    ///
+    /// The launch that follows must use this workspace: its sandbox is what
+    /// the new process is told. Who may author in it is the room's own
+    /// governance, which its host keeps.
+    pub fn workspace_after_opening_app(&mut self, app: &str) -> Option<Workspace> {
+        let shown = self.desktop.active_workspace()?.id;
+        // A personal app opens in the personal workspace, whichever is shown.
+        let id = self.home_for_app(app, shown);
+        self.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .cloned()
     }
 
     /// Record a change made here to `workspace_id`'s policy, a sandbox
@@ -3802,6 +3896,27 @@ impl WorkspaceTree {
         new_group_id: GroupId,
         target: DropTarget,
     ) -> bool {
+        // A personal app's window never goes onto a shared workspace's strip.
+        let destination = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|ws| ws.strips.iter().any(|strip| strip.id == dest_strip_id))
+            .map(|ws| ws.id);
+        let app = self
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|ws| &ws.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|tab| tab.id == tab_id)
+            .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile));
+        if let (Some(destination), Some(app)) = (destination, app)
+            && !self.may_hold_app(destination, &app)
+        {
+            return false;
+        }
         // Cache and Automerge document form one transaction. Keep snapshots
         // so a stale/malformed document cannot leave the live cache moved
         // while replication still describes the old layout.
@@ -5675,6 +5790,10 @@ mod active_group_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "state/own_devices_layout_tests.rs"]
+mod own_devices_layout_tests;
 
 #[cfg(test)]
 mod active_workspace_peer_count_tests {

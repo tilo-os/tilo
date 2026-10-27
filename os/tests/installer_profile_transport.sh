@@ -15,7 +15,7 @@ payload = json.dumps({
     "schema": 1,
     "hostname": "studio",
     "username": "ada",
-    "full_name": "ada Example",
+    "full_name": "Ada Example",
     "locale": "en_US.UTF-8",
     "keyboard": "de",
     "timezone": "Europe/Berlin",
@@ -57,7 +57,7 @@ python3 - "$discovered_media" <<'PY'
 import hashlib, json, sys
 payload = json.dumps({
     "schema": 1, "hostname": "loop-backed", "username": "ada",
-    "full_name": "ada Example", "locale": "en_US.UTF-8",
+    "full_name": "Ada Example", "locale": "en_US.UTF-8",
     "keyboard": "de", "timezone": "Europe/Berlin", "filesystem": "btrfs",
 }, separators=(",", ":")).encode()
 header = b"TILO_INSTALL_PROFILE_V1\n" + hashlib.sha256(payload).hexdigest().encode() + b"\n" + str(len(payload)).encode() + b"\n"
@@ -119,7 +119,7 @@ make_malformed_header() {
 import hashlib, json, sys
 payload = json.dumps({
     "schema": 1, "hostname": "studio", "username": "ada",
-    "full_name": "ada", "locale": "en_US.UTF-8", "keyboard": "de",
+    "full_name": "Ada", "locale": "en_US.UTF-8", "keyboard": "de",
     "timezone": "Europe/Berlin", "filesystem": "btrfs",
 }, separators=(",", ":")).encode()
 digest = hashlib.sha256(payload).hexdigest().encode()

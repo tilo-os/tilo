@@ -152,6 +152,7 @@ impl SearchProvider for DeviceLocalActionsProvider {
                             chrome, tab, &address, args,
                         )))
                     })),
+                    resource: None,
                 });
             }
         }

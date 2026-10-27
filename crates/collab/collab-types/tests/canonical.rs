@@ -97,7 +97,7 @@ fn every_wire_type_round_trips_deterministically() {
         "identity with avatar",
         &Identity {
             public_key: fake_pk(7),
-            label: "ada — Personal".into(),
+            label: "Ada — Personal".into(),
             avatar: Some(AvatarBytes(vec![0x89, b'P', b'N', b'G'])),
             attestations: vec![],
         },
@@ -108,7 +108,7 @@ fn every_wire_type_round_trips_deterministically() {
             id: SpaceId::new(),
             name: "ACME".into(),
             trust_root: fake_pk(9),
-            default_identity_label: Some("ada".into()),
+            default_identity_label: Some("Ada".into()),
             channels: vec![],
             member_directory: vec![],
         },

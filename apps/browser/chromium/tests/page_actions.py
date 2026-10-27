@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Page reading and operation through the host's `page` op, in real Chromium."""
+import base64
 import http.server
 import json
 import os
@@ -58,6 +59,31 @@ AGENT = b'''<!doctype html><title>Agent</title>
 <form id="away" action="https://elsewhere.test/collect" method="get"><label>Query <input name="q"></label><button>Send away</button></form>
 <label>Pin <input name="pin" type="password"></label>
 '''
+
+
+NATIVE = b'''<!doctype html><title>Native inputs</title>
+<h1>Preferences</h1>
+<form action="/done" method="get">
+  <label>Favourite colour <input name="colour" type="color" value="#000000"></label>
+  <label>Proof <input name="proof" type="file"></label>
+  <label>Medium <input name="medium" type="color" value="#ff0000"></label>
+  <button>Save</button>
+</form>
+<p id="said"></p>
+<script>
+for (const field of document.querySelectorAll('input[type=color]'))
+  for (const name of ['input', 'change'])
+    field.addEventListener(name, e => document.getElementById('said').textContent =
+      e.target.name + ' ' + name + ' ' + e.target.value);
+</script>'''
+
+
+# More conditions than one read carries, so the read has to say what it left
+# out rather than stopping quietly at its cap.
+LONG = ('<!doctype html><title>The long list</title><h1>The long list</h1>' +
+        ''.join(f'<p id="c{number}">Condition {number}. You must tell us about any change '
+                f'within 30 days, as section {number} of the Act requires.</p>'
+                for number in range(1, 2001))).encode()
 
 
 CANVAS = b'''<!doctype html><title>Sign</title>
@@ -205,6 +231,102 @@ pad.onpointerdown = e => {
 '''
 
 
+RICH = rb'''<!doctype html><title>Rich text</title>
+<label id="note-label">Note</label>
+<div id="note" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="note-label"></div>
+<label id="draft-label">Draft</label>
+<div id="draft" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="draft-label"></div>
+<label id="report-label">Report</label>
+<div id="report" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="report-label"></div>
+<label>Steps <textarea id="steps" aria-label="Steps"></textarea></label>
+<script>
+// What a page hears from a person, as "field:type:what", kept for the test.
+window.heard = [];
+function hear(element, name) {
+  for (const type of ['beforeinput', 'input', 'keydown'])
+    element.addEventListener(type, e => heard.push(name + ':' + type + ':' +
+      (e.inputType || e.key || '') + (typeof e.data === 'string' ? '=' + e.data : '')));
+}
+hear(document.getElementById('note'), 'note');
+hear(document.getElementById('steps'), 'steps');
+
+// An editor whose own document is the truth: it rebuilds from beforeinput,
+// as a page that never reads the DOM it is drawn into does.
+const draftEl = document.getElementById('draft');
+let draft = '';
+function drawDraft() {
+  draftEl.innerHTML = draft.split('\n').map(line => '<p>' + (line || '<br>') + '</p>').join('');
+  const range = document.createRange(); range.selectNodeContents(draftEl); range.collapse(false);
+  const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+}
+draftEl.addEventListener('beforeinput', e => {
+  if (!e.cancelable) return;
+  if (e.inputType === 'insertText' && typeof e.data === 'string') { e.preventDefault(); draft += e.data; drawDraft(); }
+  else if (e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak') { e.preventDefault(); draft += '\n'; drawDraft(); }
+});
+hear(draftEl, 'draft');
+
+// A block editor: each typed line becomes a block of its own.
+const reportEl = document.getElementById('report');
+const blocks = [];
+function drawReport() {
+  reportEl.innerHTML = blocks.map(b => '<div>' + (b || '<br>') + '</div>').join('') + '<div><br></div>';
+  const range = document.createRange(); range.selectNodeContents(reportEl.lastElementChild); range.collapse(true);
+  const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+}
+drawReport();
+reportEl.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || e.isComposing) return;
+  e.preventDefault();
+  blocks.push(reportEl.textContent); reportEl.textContent = ''; drawReport();
+});
+hear(reportEl, 'report');
+</script>
+'''
+
+SCROLL = b'''<!doctype html><title>Long conditions</title>
+<style>p{margin:0 0 200px} #lazy{display:block;min-height:200px}
+.invoices{height:124px;overflow:auto} .invoices div{height:40px}</style>
+<h1>Conditions of carriage</h1>
+<button onclick="this.textContent = 'Terms shown'">Show terms</button>
+<p id="first">Condition 1. Tickets are not transferable.</p>
+<div style="height:1200px">space the page needs before it loads the rest</div>
+<section id="lazy"><p>Nothing here yet.</p></section>
+<div id="rows" role="region" aria-label="Invoices" class="invoices" tabindex="0"></div>
+<script>
+// A section that loads once the page is scrolled to it, as a lazy article
+// below the fold does.
+new IntersectionObserver(entries => {
+  for (const entry of entries) if (entry.isIntersecting && !document.getElementById('conditions'))
+    document.getElementById('lazy').insertAdjacentHTML('beforeend',
+      '<p id="conditions">Condition 14. Bicycles travel at the owner&rsquo;s risk.</p>');
+}).observe(document.getElementById('lazy'));
+// A virtualized table: rows are rendered only around what is scrolled to.
+const rows = document.getElementById('rows'), ROWS = 400, HEIGHT = 40;
+const spacer = document.createElement('div');
+spacer.style.height = ROWS * HEIGHT + 'px';
+spacer.style.position = 'relative';
+rows.append(spacer);
+function render() {
+  const start = Math.floor(rows.scrollTop / HEIGHT), end = Math.min(ROWS, start + 6);
+  spacer.innerHTML = '';
+  for (let i = start; i < end; i++) {
+    const row = document.createElement('div');
+    row.style.position = 'absolute';
+    row.style.top = i * HEIGHT + 'px';
+    row.textContent = 'Invoice ' + (i + 1) + (i === 59 ? ' (overdue)' : '');
+    spacer.append(row);
+  }
+}
+rows.onscroll = render;
+render();
+// What the page was sent, as the page itself sees it: a test can ask which
+// key arrived instead of inferring it from what the key did.
+window.pressed = [];
+document.addEventListener('keydown', event => window.pressed.push(event.key));
+</script>'''
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
@@ -216,6 +338,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else FRAMED if path == '/framed' else WIDGET if path == '/widget' \
             else LATE if path == '/late' else WIDGET_LATE if path == '/widget-late' \
             else NESTED if path == '/nested' else OUTER if path == '/outer' \
+            else RICH if path == '/rich' \
+            else SCROLL if path == '/scroll' \
+            else NATIVE if path == '/native' else LONG if path == '/long' \
             else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
         self.send_response(200)
@@ -262,15 +387,50 @@ class PageActions(unittest.TestCase):
         return self.ok('outline')['outline']
 
     def ref(self, outline, pattern):
-        match = re.search(pattern + r'.*?\[ref=(d\d+e\d+)\]', outline)
-        self.assertIsNotNone(match, f'{pattern!r} not in outline:\n{outline}')
-        return match.group(1)
+        found = re.search(pattern + r'[^\n]*\[ref=(d\d+e\d+)\]', outline) or re.search(
+            re.escape(pattern) + r'(?:[^\n]*\n)*?[^\n]*\[ref=(d\d+e\d+)\]', outline)
+        self.assertIsNotNone(found, f'{pattern!r} not in outline:\n{outline}')
+        return found.group(1)
+
+    def _disabled(self, outline, pattern):
+        for line in outline.splitlines():
+            found = re.search(r'\[ref=(d\d+e\d+)\]', line) if re.search(pattern, line) else None
+            if found:
+                return found.group(1)
+        self.fail(f'{pattern!r} not in outline:\n{outline}')
+
+    def near(self, pattern):
+        # A block holding text is not focusable, so a text line carries no ref:
+        # what a caller scrolls to is the region around it.
+        lines = self.outline().splitlines()
+        index = [i for i, text in enumerate(lines) if re.search(pattern, text)]
+        self.assertTrue(index, f'{pattern!r} not in outline:\n' + '\n'.join(lines))
+        regions = [line for line in lines[:index[0] + 1] if re.search(r'\[ref=d\d+e\d+\]', line)]
+        self.assertTrue(regions, f'no region before {pattern!r} in outline:\n' + '\n'.join(lines))
+        return re.search(r'\[ref=(d\d+e\d+)\]', regions[-1]).group(1)
 
     def main_world(self, expression):
-        self.h.send(op='scripts', scripts=['document.title=JSON.stringify({value:(' + expression + '),nonce:' + str(time.monotonic_ns()) + '})'])
-        value = json.loads(self.h.until(lambda e: e['event'] == 'title' and e['title'].startswith('{'))['title'])['value']
+        # An answer is known by its own nonce: a title the page wrote for an
+        # earlier question may still be on its way.
+        nonce = str(time.monotonic_ns())
+        self.h.send(op='scripts', scripts=['document.title=JSON.stringify({value:(' + expression + '),nonce:' + nonce + '})'])
+        answered = self.h.until(lambda e: e['event'] == 'title' and self._answer(e['title']) == nonce)
         self.h.send(op='scripts', scripts=[])
-        return value
+        return json.loads(re.sub(r',"nonce":\d+}$', '}', answered['title']))['value']
+
+    def _blocks(self, element):
+        # What a region holds, a line to each block: an offscreen page lays
+        # nothing out, so innerText would run the blocks into one.
+        return json.loads(self.main_world(
+            'JSON.stringify(Array.from(document.getElementById("%s").children)'
+            '.map(b => b.textContent).filter(t => t))' % element))
+
+    @staticmethod
+    def _answer(title):
+        # The nonce of a value the page wrote into its title, if it is one:
+        # the text it carries may hold what JSON would escape.
+        found = re.search(r'"nonce":(\d+)}$', title) if title.startswith('{') else None
+        return found.group(1) if found else None
 
     def test_outline_lists_structure_with_refs_and_hides_secrets(self):
         self.h.navigate(self.url + '/form')
@@ -458,6 +618,51 @@ class PageActions(unittest.TestCase):
         stale = self.page('click', element=search)
         self.assertEqual((stale['ok'], stale['code']), (False, 'stale_element'), stale)
 
+    def test_fill_a_region_writes_the_text_as_a_person_types_it(self):
+        self.h.navigate(self.url + '/rich')
+        outline = self.outline()
+        filled = self.ok('fill', element=self.ref(outline, 'textbox "Note"'), text='The rent is going up\nfrom October.')
+        self.assertTrue(filled['ok'], filled)
+        self.assertEqual(self.main_world('document.getElementById("note").textContent'),
+                         'The rent is going upfrom October.')
+        self.assertEqual(self.main_world('document.getElementById("note").children[0].textContent'),
+                         'from October.')
+        # The page heard each key, and heard the edit before it was made.
+        heard = self.main_world("window.heard.filter(e => e.startsWith('note:'))")
+        self.assertIn('note:keydown:Enter', heard)
+        self.assertIn('note:beforeinput:insertParagraph', heard)
+        typed = [e.split('=', 1)[1] if '=' in e else '\n' for e in heard
+                 if e.startswith('note:beforeinput:')]
+        self.assertEqual(''.join(typed), 'The rent is going up\nfrom October.', heard[:6])
+
+    def test_fill_reaches_editors_with_a_model_and_blocks_of_their_own(self):
+        self.h.navigate(self.url + '/rich')
+        outline = self.outline()
+        self.ok('fill', element=self.ref(outline, 'textbox "Draft"'), text='First line\nSecond line')
+        self.ok('fill', element=self.ref(outline, 'textbox "Report"'), text='What I did\nWhat I will do')
+        self.assertEqual(self._blocks('draft'), ['First line', 'Second line'])
+        heard = self.main_world("window.heard.filter(e => e.startsWith('draft:'))")
+        self.assertTrue(any(e.startswith('draft:beforeinput:insertText') for e in heard), heard[:4])
+        self.assertIn('draft:beforeinput:insertParagraph', heard)
+        # A block editor heard a real Enter, and started a block for each line.
+        self.assertEqual(self._blocks('report'), ['What I did', 'What I will do'])
+        self.assertIn('report:keydown:Enter', self.main_world(
+            "window.heard.filter(e => e.startsWith('report:'))"))
+
+    def test_enter_in_a_textarea_starts_a_new_line(self):
+        self.h.navigate(self.url + '/rich')
+        outline = self.outline()
+        steps = self.ref(outline, 'textbox "Steps"')
+        self.ok('fill', element=steps, text='Sand the frame\nApply two coats')
+        # A press after the fill adds a line rather than submitting anything.
+        pressed = self.ok('press', element=steps, key='Enter', ctrl=False, shift=False, alt=False, meta=False)
+        self.assertFalse(pressed['navigated'], pressed)
+        self.ok('fill', element=steps, text='Sand the frame\nApply two coats\nReassemble')
+        self.assertEqual(self.main_world('document.getElementById("steps").value'),
+                         'Sand the frame\nApply two coats\nReassemble')
+        self.assertIn('steps:keydown:Enter', self.main_world(
+            "window.heard.filter(e => e.startsWith('steps:'))"))
+
     def test_clicking_a_link_reports_the_navigation_it_started(self):
         self.h.navigate(self.url + '/form')
         read = self.ok('outline')
@@ -567,6 +772,56 @@ class PageActions(unittest.TestCase):
         self.assertEqual(self.main_world('drawn()'), len(points), drawn)
         self.ok('click', element=self.ref(self.outline(), 'button "Submit signature"'))
         self.assertIn('text "Signature received"', self.outline())
+
+    def test_a_capture_paints_what_the_page_only_shows(self):
+        # A page can say something in pixels that no outline can carry: a
+        # chart, a scanned letter, a code drawn rather than written. The
+        # capture is the engine painting the page itself, so what comes back
+        # is what a person would see there.
+        self.h.navigate(self.url + '/canvas')
+        view = self.ok('capture')
+        picture = base64.b64decode(view['data']['capture'], validate=True)
+        self.assertEqual(view['data']['format'], 'png')
+        self.assertTrue(picture.startswith(b'\x89PNG\r\n\x1a\n'), view['data'])
+        # The viewport, as the window was told it: the picture is the whole
+        # of what is on screen, and no wider than any capture may be.
+        self.assertEqual((view['data']['x'], view['data']['y']), (0, 0))
+        self.assertEqual(view['data']['width'], 1000)
+        self.assertEqual(view['data']['height'], 800)
+
+        # An element's own box, in the page's coordinates: what the outline
+        # named, painted where it sits, not the whole screen around it.
+        canvas = self.ref(self.outline(), 'canvas "Signature pad"')
+        box = self.ok('capture', element=canvas)
+        self.assertEqual(box['data']['format'], 'png')
+        # The pad's own 500x150 canvas, with the border a person sees around
+        # it: the box is the element's, borders and all.
+        self.assertEqual(box['data']['width'], 502)
+        self.assertEqual(box['data']['height'], 152)
+        painted = base64.b64decode(box['data']['capture'], validate=True)
+        self.assertTrue(painted.startswith(b'\x89PNG\r\n\x1a\n'), box['data'])
+        self.assertIn('Signature pad', box['message'])
+
+        # A caller who asks for a narrower picture gets one: the page is
+        # scaled, never cut, and never widened.
+        narrow = self.ok('capture', element=canvas, max_width=200)
+        self.assertEqual(narrow['data']['width'], 200)
+        self.assertEqual(narrow['data']['height'], round(152 * 200 / 502))
+
+        # A ref the outline never printed names nothing to picture, and is
+        # refused before the page is asked to paint anything.
+        refused = self.page('capture', element='not-a-ref')
+        self.assertFalse(refused['ok'], refused)
+        self.assertEqual(refused['code'], 'invalid_request')
+        self.assertNotIn('capture', refused)
+
+        # A click that lands on the pad is drawn ink: the capture is of the
+        # page as it is now, not as it was loaded.
+        points = [[40, 60], [90, 40], [140, 100]]
+        self.ok('path', element=canvas, points=points)
+        ink = self.ok('capture', element=canvas)
+        self.assertNotEqual(ink['data']['capture'], box['data']['capture'],
+                            'a picture is painted when it is asked for')
 
     def test_console_and_network_reach_the_agent_and_not_the_page(self):
         self.h.navigate(self.url + '/agent')
@@ -705,6 +960,189 @@ class PageActions(unittest.TestCase):
             steps.append(dict(kind='up', element=pad, x=120, y=20 + line * 20))
         self.pointer(steps)
         self.assertIn('text "strokes 3"', self.outline(), 'each press and release is one stroke')
+
+    def test_scrolling_to_a_lazy_section_loads_it(self):
+        self.h.navigate(self.url + '/scroll')
+        self.assertNotIn('Condition 14', self.outline(), 'the section loads only once it is scrolled to')
+        # The wheel loads the section below the fold as a hand's scroll would:
+        # the section's observer runs when the turn puts it on screen, and the
+        # page it loads goes on to extend the page, which the wheel follows.
+        self.ok("scroll", by=1000)
+        self.assertIn('Condition 14', self.outline(), 'the wheel loaded the section it scrolled to')
+        self.assertTrue(self.main_world('scrollY > 0'), 'the page itself moved')
+
+    def test_scrolling_back_up_returns_to_the_top(self):
+        self.h.navigate(self.url + '/scroll')
+        self.ok('scroll', to='bottom')
+        self.assertTrue(self.main_world('scrollY > 0'))
+        self.ok('scroll', to='top')
+        self.assertEqual(self.main_world('scrollY'), 0)
+
+    def test_a_virtualized_table_renders_the_rows_scrolled_to(self):
+        self.h.navigate(self.url + '/scroll')
+        self.assertIn('Invoice 6', self.main_world("[...document.querySelectorAll('#rows div')].map(d => d.textContent).join(', ')"))
+        # Rows are rendered as the list is scrolled, and its own scroll
+        # listener renders the rows further on as the wheel reaches them.
+        invoices = self.ref(self.outline(), 'region "Invoices"')
+        self.ok('scroll', to='bottom')
+        scrolled = self.main_world('scrollY')
+        # The wheel turns over the list until Invoice 60 comes into view.
+        self.ok('scroll', element=invoices, by=2300)
+        self.assertIn('Invoice 60 (overdue)', self.outline(), 'the rows the wheel reached are rendered')
+        self.assertEqual(self.main_world('scrollY'), scrolled, 'the list scrolled, not the page')
+
+    def test_an_element_that_cannot_hear_a_scroll_is_refused(self):
+        self.h.navigate(self.url + '/scroll')
+        # The list's box is below the fold, so its own wheel cannot turn yet:
+        # the request says so instead of turning the page's wheel instead.
+        invoices = self.ref(self.outline(), 'region "Invoices"')
+        refused = self.page('scroll', element=invoices, by=400)
+        self.assertEqual((refused['ok'], refused['code']), (False, 'not_visible'), refused)
+        self.assertEqual(self.main_world("document.getElementById('rows').scrollTop"), 0)
+
+    def test_a_scroll_that_says_nothing_or_two_things_is_refused(self):
+        self.h.navigate(self.url + '/scroll')
+        # Where one scroll goes is said once, and what is outside the bounds a
+        # scroll may ask for is answered rather than done. A refusal answers in
+        # its turn, so the keys of a scroll are only the ones that make one:
+        # what is not refused here is a scroll the page itself turns down.
+        for fields in ({}, {'to': 'sideways'}, {'to': 'top', 'by': 100},
+                       {'into_view': 'd1e2', 'by': 100}, {'by': 20000}):
+            refused = self.page('scroll', **fields)
+            self.assertEqual((refused['ok'], refused['code']), (False, 'invalid_request'),
+                             (fields, refused))
+            self.assertEqual(self.main_world('scrollY'), 0, f'{fields} moved the page')
+        self.ok('scroll', by=200)
+        self.assertTrue(self.main_world('scrollY') > 0, 'a scroll after a refusal still runs')
+
+    def test_an_element_is_brought_into_view(self):
+        self.h.navigate(self.url + '/scroll')
+        # A row the page has rendered but the list clips is brought into view
+        # by the same wheel a person turns over it.
+        invoices = self.ref(self.outline(), 'region "Invoices"')
+        self.ok('scroll', to='bottom')
+        # The wheel turns over the list until Invoice 60 comes into view.
+        self.ok('scroll', element=invoices, by=2300)
+        later = self.near('Invoice 6[0-9]')
+        self.ok('scroll', into_view=later)
+        self.assertIn('Invoice 60 (overdue)', self.outline(), 'the wheel brought the row into view')
+
+    def test_a_scroll_past_a_focused_control_moves_the_page(self):
+        self.h.navigate(self.url + '/scroll')
+        # A click focuses a control, and from then on the page's own focused
+        # element eats End and PageDown; the wheel does not care who has the
+        # keyboard.
+        button = self.ref(self.outline(), 'button "Show terms"')
+        self.ok('click', element=button)
+        self.ok('scroll', by=600)
+        self.assertGreater(self.main_world('scrollY'), 0)
+
+    def test_a_scroll_that_says_nothing_bounded_is_refused(self):
+        self.h.navigate(self.url + '/scroll')
+        # A distance is bounded, an end of the page is one of two names, and a
+        # scroll says where it goes once; a page request outside those bounds
+        # is answered as failed, not run.
+        for fields in (dict(by=20000), dict(to='sideways'), dict(to='top', by=100), dict()):
+            result = self.page('scroll', **fields)
+            self.assertFalse(result['ok'], result)
+        self.assertEqual(self.main_world('scrollY'), 0, 'the wheel moved the page')
+
+    def test_a_colour_input_is_read_as_a_colour_and_filled_with_one(self):
+        self.h.navigate(self.url + '/native')
+        outline = self.outline()
+        # A colour input is not a button: it holds one colour, and the outline
+        # names it so an agent knows what it is and what it holds.
+        self.assertRegex(outline, r'color "Favourite colour" \[ref=d\d+e\d+\] type=color value="#000000"')
+        self.assertNotIn('button "Favourite colour"', outline)
+        colour = self.ref(outline, 'color "Favourite colour"')
+        filled = self.ok('fill', element=colour, text='#1d70b8')
+        self.assertIn('#1d70b8', filled['message'], filled)
+        # The page hears it as the person choosing the colour: input then change.
+        self.assertEqual(self.main_world('document.querySelector("[name=colour]").value'), '#1d70b8')
+        self.assertEqual(self.main_world('document.getElementById("said").textContent'),
+                         'colour change #1d70b8')
+        self.assertIn('value="#1d70b8"', self.outline(), 'the outline shows the colour it now holds')
+        # Named colours and the shorthand are the same colour.
+        self.ok('fill', element=self.ref(self.outline(), 'color "Medium"'), text='navy')
+        self.assertEqual(self.main_world('document.querySelector("[name=medium]").value'), '#000080')
+        # The shorthand names the same colour, which an input holds in full.
+        self.ok('fill', element=colour, text='#abc')
+        self.assertEqual(self.main_world('document.querySelector("[name=colour]").value'), '#aabbcc')
+        wrong = self.page('fill', element=colour, text='reddish')
+        self.assertEqual((wrong['ok'], wrong['code']), (False, 'invalid_color'), wrong)
+        self.assertIn('#rrggbb', wrong['message'])
+        self.assertIn('#1d70b8', wrong['message'], 'the error shows what a colour looks like')
+
+    def test_an_action_never_opens_the_platform_colour_or_file_chooser(self):
+        self.h.navigate(self.url + '/native')
+        outline = self.outline()
+        colour = self.ref(outline, 'color "Favourite colour"')
+        proof = self.ref(outline, 'file "Proof"')
+        # A colour or file input opens a chooser the agent cannot see, so an
+        # action that would open one says which action does the job instead.
+        for action in ('click', 'press'):
+            fields = dict(element=colour) if action == 'click' else dict(element=colour, key='Enter',
+                                                                        ctrl=False, shift=False, alt=False, meta=False)
+            refused = self.page(action, **fields)
+            self.assertEqual((refused['ok'], refused['code']), (False, 'native_chooser'), refused)
+            self.assertIn('fill-page', refused['message'], refused)
+        # A file input's chooser is not the platform's to open either: the
+        # press finishes rather than waiting on a dialog no agent can answer,
+        # and fill-page-files is what puts files in the input.
+        clicked = self.page('press', element=proof, key='Enter',
+                            ctrl=False, shift=False, alt=False, meta=False)
+        self.assertTrue(clicked['ok'], clicked)
+
+    def test_a_key_is_named_in_any_letter_case(self):
+        self.h.navigate(self.url + '/scroll')
+        rows = self.ref(self.outline(), 'region "Invoices"')
+        self.ok('click', element=rows)
+        # The name the caller writes is the key the page is sent: the case is
+        # not part of the name, so END is End rather than an E, an N and a D.
+        NAMED = [('END', 'End'), ('End', 'End'), ('end', 'End'), ('ENd', 'End'),
+                 ('PAGEDOWN', 'PageDown'), ('pageup', 'PageUp'),
+                 ('arrowdown', 'ArrowDown'), ('ARROWUP', 'ArrowUp'),
+                 ('ESCAPE', 'Escape'), ('backspace', 'Backspace')]
+        for written, arrived in NAMED:
+            before = self.main_world('window.pressed.length')
+            self.ok('press', element=rows, key=written, ctrl=False, shift=False, alt=False, meta=False)
+            self.assertEqual(self.main_world(f'window.pressed[{before}]'), arrived,
+                             f'{written} arrives as {arrived}')
+        # A letter is still the letter it is written as, case and all.
+        for written, arrived in [('a', 'a'), ('A', 'A')]:
+            before = self.main_world('window.pressed.length')
+            self.ok('press', element=rows, key=written, ctrl=False, shift=False, alt=False, meta=False)
+            self.assertEqual(self.main_world(f'window.pressed[{before}]'), arrived, written)
+        # A key the browser has never heard of is named back, with the keys it
+        # could have meant, rather than sent as a key nothing answers.
+        unknown = self.page('press', element=rows, key='ENDD',
+                            ctrl=False, shift=False, alt=False, meta=False)
+        self.assertEqual((unknown['ok'], unknown['code']), (False, 'invalid_key'), unknown)
+        for near in ('ENDD', 'End', 'PageDown', 'Enter', 'any letter case'):
+            self.assertIn(near, unknown['message'], unknown)
+        # Nothing was sent for the key that does not exist.
+        self.assertEqual(self.main_world('window.pressed.length'), len(NAMED) + 2, unknown)
+
+    def test_a_long_page_says_how_much_it_left_out(self):
+        self.h.navigate(self.url + '/long')
+        read = self.ok('outline')
+        self.assertIn('Condition 1.', read['outline'])
+        # A read stops at its cap, and says so where the caller reads first: a
+        # reader that never saw those lines cannot act on what is in them.
+        self.assertIn('Condition 600.', read['outline'], 'the read carries its cap')
+        self.assertNotIn('Condition 2000.', read['outline'])
+        self.assertIn('stopped there', read['message'], read)
+        self.assertIn('100000 characters of outline', read['message'], read)
+        self.assertIn('the page goes on past them', read['message'], read)
+        self.assertIn('read-page-element-at', read['message'], read)
+        # The outline's own last line says the same, so a reader that only
+        # looks at the outline is not left believing it saw the whole page.
+        self.assertIn('the page goes on past them', read['outline'].splitlines()[-1], read['outline'][-400:])
+        # A page that fits is read whole, and says nothing about a cut.
+        self.h.navigate(self.url + '/native')
+        short = self.ok('outline')
+        self.assertNotIn('stopped there', short['message'], short)
+        self.assertNotIn('the page goes on', short['outline'])
 
 
 if __name__ == '__main__':

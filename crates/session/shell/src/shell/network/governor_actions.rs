@@ -480,6 +480,8 @@ mod tests {
                 resource_kind: wanted.kind,
                 resource_label: "Hello".into(),
                 action_label: "Open".into(),
+                keywords: Vec::new(),
+                icon: None,
                 description: None,
                 locus: ExecutionLocus::default(),
                 kind: tilo_actions::OperationKind::View,

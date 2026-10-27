@@ -281,14 +281,7 @@ impl LiveFanout<'_> {
                     "activation delivery byte backpressure",
                 ));
             }
-            if replay_phase == Some(ReplayCatchup::BOUNDARY) {
-                target
-                    .live
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
-                let _ = sub.disconnect.try_send(());
-            } else if let Some(lag) = &target.lag {
-                lag.mark(runtime.store.workspace_id());
-            }
+            target.fall_behind(sub, replay_phase, runtime.store.workspace_id());
             return Ok(());
         };
         if self.trace_recipients
@@ -332,13 +325,8 @@ impl LiveFanout<'_> {
                 {
                     let _ = sub.disconnect.try_send(());
                     runtime.remove_subscriber_session(recipient, original);
-                } else if replay_phase == Some(ReplayCatchup::BOUNDARY) {
-                    target
-                        .live
-                        .store(false, std::sync::atomic::Ordering::SeqCst);
-                    let _ = sub.disconnect.try_send(());
-                } else if let Some(lag) = &target.lag {
-                    lag.mark(runtime.store.workspace_id());
+                } else {
+                    target.fall_behind(sub, replay_phase, runtime.store.workspace_id());
                 }
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {

@@ -64,7 +64,12 @@ fn short_scaled_windows_keep_project_choices_and_brush_controls_reachable() {
             reachable,
             "brush size is scrollable above the dock at {width}×{height}"
         );
-        app.harness().click_named("nav-shell-inspector").unwrap();
+        // The tools' toggle is the window bar's slot, not a button in a row of
+        // the app's own.
+        app.harness()
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+                id: "canvas.tools".to_owned(),
+            });
         assert!(
             app.harness()
                 .settle_for_capture(tilo_test_env::hang_bound())
@@ -150,7 +155,12 @@ fn open_inspector(app: &mut TestApp<App>) {
         app.harness().frame_requesters()
     );
     if !app.harness().targets().contains_key("canvas-dock") {
-        app.harness().click_named("nav-shell-inspector").unwrap();
+        // The tools' toggle is the window bar's slot, not a button in a row of
+        // the app's own.
+        app.harness()
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+                id: "canvas.tools".to_owned(),
+            });
     }
     let settled = app
         .harness()
@@ -169,7 +179,11 @@ fn open_inspector(app: &mut TestApp<App>) {
 fn export_choices_stay_readable_in_a_narrow_window() {
     let mut app = TestApp::<App>::new().unwrap();
     app.harness().click_named("canvas-welcome-close").unwrap();
-    app.harness().click_named("canvas-export-title").unwrap();
+    // Export is the window bar's action now; the dialog is the same one.
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: "canvas.export".to_owned(),
+        });
     app.harness().resize((482, 812)).unwrap();
     app.harness().relayout();
     let snapshot = app.harness().inspection();

@@ -2149,7 +2149,7 @@ mod tests {
             fold(
                 vec![arrived(7, room, (120.0, 240.0))],
                 &mut presence,
-                &named(&[(7, "bob")]),
+                &named(&[(7, "Bob")]),
                 &any_room,
             );
 
@@ -2354,7 +2354,7 @@ mod tests {
             fold(
                 vec![arrived(7, room, (10.0, 10.0))],
                 &mut presence,
-                &named(&[(7, "bob")]),
+                &named(&[(7, "Bob")]),
                 &any_room,
             );
             let peers = presence
@@ -2363,7 +2363,7 @@ mod tests {
                 .expect("a pointer");
             assert_eq!(
                 presence.display_name(&peers[0].0),
-                "bob",
+                "Bob",
                 "the pill must read what the room says, not what the sender claimed"
             );
         }
@@ -2405,7 +2405,7 @@ mod tests {
             fold(
                 vec![arrived(7, room, (10.0, 10.0))],
                 &mut after,
-                &named(&[(7, "bob")]),
+                &named(&[(7, "Bob")]),
                 &any_room,
             );
             let key = PresenceKey::Workspace { id: room.into() };
@@ -2427,7 +2427,7 @@ mod tests {
             assert!(!fold(
                 Vec::new(),
                 &mut presence,
-                &named(&[(7, "bob"), (8, "ada")]),
+                &named(&[(7, "Bob"), (8, "Ada")]),
                 &any_room,
             ));
             assert!(
@@ -2744,7 +2744,7 @@ mod two_sessions {
         fn a_pointer_crosses_between_two_sessions_both_ways() {
             let guest_peer = peer_id(9);
             let host_peer = peer_id(11);
-            let (host_tree, room) = host_naming(&[(&guest_peer, "bob"), (&host_peer, "ada")]);
+            let (host_tree, room) = host_naming(&[(&guest_peer, "Bob"), (&host_peer, "Ada")]);
 
             let guest_tree = guest_joining(&host_tree, room);
 
@@ -2797,7 +2797,7 @@ mod two_sessions {
             );
             assert_eq!(
                 on_host.display_name(&seen[0].0),
-                "bob",
+                "Bob",
                 "the pill over it reads the name the room gave the peer",
             );
 
@@ -2817,7 +2817,7 @@ mod two_sessions {
                 .expect("the guest must hold the host's pointer");
             assert_eq!(seen.len(), 1);
             assert_eq!(seen[0].1, (880.0, 520.0));
-            assert_eq!(on_guest.display_name(&seen[0].0), "ada");
+            assert_eq!(on_guest.display_name(&seen[0].0), "Ada");
 
             let _ = std::fs::remove_dir_all(&dir);
         }
@@ -2826,7 +2826,7 @@ mod two_sessions {
         /// that then moves it says something, over the real wire.
         fn a_session_is_silent_until_its_pointer_has_been_somewhere() {
             let guest_peer = peer_id(21);
-            let (host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
+            let (host_tree, room) = host_naming(&[(&guest_peer, "Bob")]);
             let guest_tree = guest_joining(&host_tree, room);
 
             let host_handle = host_tree.shared();
@@ -3011,8 +3011,7 @@ mod two_sessions {
     fn hosted_and_native_publish_the_same_key_shape_and_see_each_other() {
         let hosted_peer = peer_id(31);
         let native_peer = peer_id(33);
-        let (native_tree, room) =
-            host_naming(&[(&hosted_peer, "bob"), (&native_peer, "ada")]);
+        let (native_tree, room) = host_naming(&[(&hosted_peer, "Bob"), (&native_peer, "Ada")]);
         let hosted_tree = guest_joining(&native_tree, room);
         let native_handle = native_tree.shared();
         let hosted_handle = hosted_tree.shared();
@@ -3055,7 +3054,7 @@ mod two_sessions {
             .expect("the native session places the hosted peer's pointer");
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].1, (420.0, 300.0));
-        assert_eq!(on_native.display_name(&seen[0].0), "bob");
+        assert_eq!(on_native.display_name(&seen[0].0), "Bob");
 
         over_the_wire(from_native, &hosted_net);
         let mut on_hosted = PresenceCtx::default();
@@ -3066,7 +3065,7 @@ mod two_sessions {
             .expect("the hosted session places the native peer's pointer");
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].1, (880.0, 520.0));
-        assert_eq!(on_hosted.display_name(&seen[0].0), "ada");
+        assert_eq!(on_hosted.display_name(&seen[0].0), "Ada");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3080,7 +3079,7 @@ mod two_sessions {
         use vello::kurbo::Rect;
         let hosted_peer = peer_id(41);
         let other_peer = peer_id(43);
-        let (other_tree, room) = host_naming(&[(&hosted_peer, "bob"), (&other_peer, "ada")]);
+        let (other_tree, room) = host_naming(&[(&hosted_peer, "Bob"), (&other_peer, "Ada")]);
         let mut hosted_tree = guest_joining(&other_tree, room);
         looking_at_its_room(&mut hosted_tree);
         let hosted_handle = hosted_tree.shared();
@@ -3136,7 +3135,7 @@ mod two_sessions {
         assert_eq!(seen[0].1, (105.0, 56.0));
         assert_eq!(
             presence.display_name(&seen[0].0),
-            "ada",
+            "Ada",
             "named by the room, not by the frame",
         );
     }
@@ -3223,7 +3222,7 @@ mod two_sessions {
     fn a_pointer_over_a_window_lands_over_that_window_on_a_differently_arranged_desk() {
         let guest_peer = peer_id(41);
         let host_peer = peer_id(43);
-        let (host_tree, room) = host_naming(&[(&guest_peer, "bob"), (&host_peer, "ada")]);
+        let (host_tree, room) = host_naming(&[(&guest_peer, "Bob"), (&host_peer, "Ada")]);
         let guest_tree = guest_joining(&host_tree, room);
         let host_handle = host_tree.shared();
         let guest_handle = guest_tree.shared();
@@ -3369,7 +3368,7 @@ mod two_sessions {
         fn a_peer_who_joined_is_in_the_roster() {
             let guest_peer = peer_id(21);
             let host_peer = peer_id(22);
-            let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
+            let (mut host_tree, room) = host_naming(&[(&guest_peer, "Bob")]);
             let mut guest_tree = guest_joining(&host_tree, room);
             looking_at_its_room(&mut host_tree);
             looking_at_its_room(&mut guest_tree);
@@ -3403,7 +3402,7 @@ mod two_sessions {
 
             assert_eq!(
                 roster_of(&host_handle),
-                vec![("bob".to_string(), None, false)],
+                vec![("Bob".to_string(), None, false)],
                 "the host's roster must name the person who joined it, as \
                  somebody who is here rather than somebody who was asked",
             );
@@ -3469,7 +3468,7 @@ mod two_sessions {
         fn the_room_does_not_list_the_session_reading_it() {
             let guest_peer = peer_id(41);
             let host_peer = peer_id(42);
-            let (mut host_tree, room) = host_governing(&host_peer, &[(&guest_peer, "bob")]);
+            let (mut host_tree, room) = host_governing(&host_peer, &[(&guest_peer, "Bob")]);
             let mut guest_tree = guest_joining(&host_tree, room);
             looking_at_its_room(&mut host_tree);
             looking_at_its_room(&mut guest_tree);
@@ -3495,7 +3494,7 @@ mod two_sessions {
                 .collect();
             assert_eq!(
                 listed,
-                vec!["bob".to_string()],
+                vec!["Bob".to_string()],
                 "the roster is who else is here, and the host is not else",
             );
 
@@ -3544,7 +3543,7 @@ mod two_sessions {
         fn arriving_turns_an_invitation_into_a_participant() {
             let guest_peer = peer_id(61);
             let host_peer = peer_id(62);
-            let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
+            let (mut host_tree, room) = host_naming(&[(&guest_peer, "Bob")]);
             looking_at_its_room(&mut host_tree);
             let host_handle = host_tree.shared();
 
@@ -3556,7 +3555,7 @@ mod two_sessions {
             assert!(host.refresh_roster(&quiet));
             assert_eq!(
                 roster_of(&host_handle),
-                vec![("bob".to_string(), None, true)],
+                vec![("Bob".to_string(), None, true)],
                 "before he redeems anything, ada has invited him and no more",
             );
             assert_eq!(
@@ -3574,7 +3573,7 @@ mod two_sessions {
             );
             assert_eq!(
                 roster_of(&host_handle),
-                vec![("bob".to_string(), None, false)],
+                vec![("Bob".to_string(), None, false)],
                 "the same row, now a participant — this is the change a \
                  viewer sees at the moment somebody joins",
             );
@@ -3603,7 +3602,7 @@ mod two_sessions {
     fn someone_who_shows_nothing_is_not_listed_as_here() {
         let guest_peer = peer_id(63);
         let host_peer = peer_id(64);
-        let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "Bob")]);
         looking_at_its_room(&mut host_tree);
         let host_handle = host_tree.shared();
         let dir = std::env::temp_dir().join(format!("tilo-roster-absent-{}", std::process::id()));
@@ -3614,7 +3613,7 @@ mod two_sessions {
         host.refresh_roster(&presence);
         assert_eq!(
             roster_of(&host_handle),
-            vec![("bob".to_string(), None, false)],
+            vec![("Bob".to_string(), None, false)],
             "showing themselves in the room is being here"
         );
 
@@ -3639,7 +3638,7 @@ mod two_sessions {
         host.refresh_roster(&presence);
         assert_eq!(
             roster_of(&host_handle),
-            vec![("bob".to_string(), None, true)],
+            vec![("Bob".to_string(), None, true)],
             "someone who shows nothing is not listed as here, whatever their machine syncs"
         );
         assert_eq!(
@@ -3660,7 +3659,7 @@ mod two_sessions {
         host.refresh_roster(&presence);
         assert_eq!(
             roster_of(&host_handle),
-            vec![("bob".to_string(), None, false)],
+            vec![("Bob".to_string(), None, false)],
             "showing themselves again brings them back"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -3731,7 +3730,7 @@ mod two_sessions {
     fn the_roster_is_derived_again_only_after_one_of_its_inputs_changed() {
         let guest_peer = peer_id(71);
         let host_peer = peer_id(72);
-        let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "Bob")]);
         let mut guest_tree = guest_joining(&host_tree, room);
         looking_at_its_room(&mut host_tree);
         looking_at_its_room(&mut guest_tree);
@@ -3749,7 +3748,7 @@ mod two_sessions {
         assert!(host.pump(&mut on_host, &DESK_TILES) | host.refresh_roster(&on_host));
         assert_eq!(
             roster_of(&host_handle),
-            vec![("bob".to_string(), None, true)],
+            vec![("Bob".to_string(), None, true)],
             "the room's named invitee is listed before anyone arrives",
         );
 
@@ -3771,7 +3770,7 @@ mod two_sessions {
         );
         assert_eq!(
             roster_of(&host_handle),
-            vec![("bob".to_string(), None, false)],
+            vec![("Bob".to_string(), None, false)],
         );
         assert_eq!(
             frames_without_the_tree(&host, &host_net, &mut on_host, 100),
@@ -3806,11 +3805,11 @@ mod two_sessions {
         // is a tree write; the next frame lists the new name.
         host_handle
             .write()
-            .cache_admitted_peer_names_for_test(room, &[(guest_peer.clone(), "bob E.")]);
+            .cache_admitted_peer_names_for_test(room, &[(guest_peer.clone(), "Bob E.")]);
         assert!(host.refresh_roster(&on_host));
         assert_eq!(
             roster_of(&host_handle),
-            vec![("bob E.".to_string(), None, false)],
+            vec![("Bob E.".to_string(), None, false)],
         );
 
         // Phase `a_missed_signal_is_late_not_lost`. The roster is derived
@@ -3989,7 +3988,7 @@ mod two_sessions {
     fn peer_colours_are_applied_when_one_changes_not_every_frame() {
         let guest_peer = peer_id(81);
         let host_peer = peer_id(82);
-        let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "Bob")]);
         let mut guest_tree = guest_joining(&host_tree, room);
         looking_at_its_room(&mut host_tree);
         looking_at_its_room(&mut guest_tree);
@@ -4061,7 +4060,7 @@ mod two_sessions {
     fn pair(tag: &str) -> Pair {
         let guest_peer = peer_id(41);
         let host_peer = peer_id(43);
-        let (host_tree, room) = host_naming(&[(&guest_peer, "Ada"), (&host_peer, "ada")]);
+        let (host_tree, room) = host_naming(&[(&guest_peer, "Ada"), (&host_peer, "Ada")]);
         let guest_tree = guest_joining(&host_tree, room);
         let host_handle = host_tree.shared();
         let guest_handle = guest_tree.shared();

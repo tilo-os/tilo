@@ -71,12 +71,199 @@ pub struct PrintJob {
     pub impressions_total: Option<u32>,
 }
 
+/// One value of an option the driver reports, as `lpoptions` prints it: the
+/// key CUPS takes, the label the form shows, and whether it is the printer's
+/// default.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OptionChoice {
+    pub key: String,
+    pub label: String,
+    pub default: bool,
+}
+
+/// What a printer's driver says it can do, from `lpoptions -l -p <queue>`.
+///
+/// The print form draws a control only for an option that appears here: a
+/// field the driver did not report is a field the printer may silently
+/// ignore, which is how a person comes to print forty pages on A4 when they
+/// asked for A5.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrinterOptions {
+    /// Paper sizes the printer accepts (`PageSize`, `media`).
+    pub page_sizes: Vec<OptionChoice>,
+    /// Colour modes (`ColorModel`, `print-color-mode`).
+    pub colour_modes: Vec<OptionChoice>,
+    /// Two-sided modes (`Duplex`, `sides`).
+    pub duplex_modes: Vec<OptionChoice>,
+    /// Page orientations (`Orientation`, `orientation-requested`).
+    pub orientations: Vec<OptionChoice>,
+}
+
+impl PrinterOptions {
+    /// The choice `key` names, if the driver reported it.
+    pub fn choice<'a>(choices: &'a [OptionChoice], key: &str) -> Option<&'a OptionChoice> {
+        choices.iter().find(|choice| choice.key == key)
+    }
+
+    /// The default of `choices`, if the driver marked one.
+    pub fn default_key(choices: &[OptionChoice]) -> Option<&str> {
+        choices
+            .iter()
+            .find(|choice| choice.default)
+            .map(|choice| choice.key.as_str())
+    }
+}
+
+/// Every option `queue`'s driver reports, with the values its own list holds.
+///
+/// # Errors
+///
+/// Returns an error when the queue name is invalid or CUPS cannot answer for
+/// it. An empty [`PrinterOptions`] is a printer that reported none of them,
+/// which the form shows by drawing none of those fields.
+pub fn printer_options(queue: &str) -> Result<PrinterOptions, String> {
+    let queue = queue_name(queue)?;
+    Ok(parse_lpoptions(&run_capture(
+        "lpoptions",
+        &["-p", queue.as_str(), "-l"],
+    )?))
+}
+
+/// `lpoptions` text into the options the form can offer. Each line is
+/// `Key/Label: *default other other`; the `*` marks the default. Only the
+/// four options the form asks about are kept, and only their own values.
+fn parse_lpoptions(text: &str) -> PrinterOptions {
+    let mut options = PrinterOptions::default();
+    for line in text.lines() {
+        let Some((name, values)) = line.split_once(':') else {
+            continue;
+        };
+        let (key, label) = name.split_once('/').unwrap_or((name, name));
+        let choices: Vec<OptionChoice> = values
+            .split_whitespace()
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                let (default, value) = match value.strip_prefix('*') {
+                    Some(rest) => (true, rest),
+                    None => (false, value),
+                };
+                OptionChoice {
+                    key: value.to_owned(),
+                    label: option_value_label(value),
+                    default,
+                }
+            })
+            .collect();
+        if choices.is_empty() {
+            continue;
+        }
+        match key.to_ascii_lowercase().as_str() {
+            "pagesize" | "media" => options.page_sizes = choices,
+            "colormodel" | "print-color-mode" => options.colour_modes = choices,
+            "duplex" | "sides" => options.duplex_modes = choices,
+            "orientation" | "orientation-requested" => options.orientations = choices,
+            _ => {}
+        }
+        let _ = label;
+    }
+    options
+}
+
+/// A value as the form says it: CUPS's own keys are run together
+/// (`DuplexNoTumble`, `3`), and a person reads "Two-sided, long edge" or
+/// "Landscape".
+fn option_value_label(value: &str) -> String {
+    match value {
+        "DuplexNoTumble" | "two-sided-long-edge" => "Two-sided, long edge".to_owned(),
+        "DuplexTumble" | "two-sided-short-edge" => "Two-sided, short edge".to_owned(),
+        "None" | "one-sided" => "One side".to_owned(),
+        "Color" | "color" => "Colour".to_owned(),
+        "Gray" | "monochrome" => "Black and white".to_owned(),
+        "3" => "Portrait".to_owned(),
+        "4" => "Landscape".to_owned(),
+        "5" => "Portrait, upside down".to_owned(),
+        "6" => "Landscape, upside down".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+/// A page range as `lp` takes it: `1-3`, `1,4,9`, `2-`. Pages are positive,
+/// a range never runs backwards, and nothing else is allowed through.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageRange(String);
+
+impl PageRange {
+    /// `text` as a page range that `lp` will read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the rule that was broken: an empty range, a
+    /// zero page, a backwards span, or a character that is not a digit, a
+    /// dash or a comma.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err("enter the pages to print, such as 1-3".into());
+        }
+        if text.len() > 64 {
+            return Err("that page range is too long to be one job".into());
+        }
+        for part in text.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                return Err("a page range cannot have an empty part".into());
+            }
+            let (first, last) = match part.split_once('-') {
+                Some((first, last)) => (first, Some(last)),
+                None => (part, None),
+            };
+            let first = page_number(first)?;
+            if let Some(last) = last
+                && !last.is_empty()
+            {
+                let last = page_number(last)?;
+                if last < first {
+                    return Err("a page range cannot end before it starts".into());
+                }
+            }
+        }
+        Ok(Self(text.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn page_number(text: &str) -> Result<u32, String> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("page numbers are written with digits, as in 1-3".into());
+    }
+    match text.parse::<u32>() {
+        Ok(0) | Err(_) => Err("pages are numbered from one".into()),
+        Ok(number) => Ok(number),
+    }
+}
+
 /// Finite document options accepted by the Print Centre. Callers cannot pass
-/// arbitrary CUPS option strings through this type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// arbitrary CUPS option strings through this type: every option here is one
+/// the printer's driver reported, and [`print_document`] checks it against
+/// that report before CUPS sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrintSettings {
     pub copies: u16,
     pub two_sided: bool,
+    /// The pages to print: `None` is the whole document.
+    pub page_range: Option<PageRange>,
+    /// `PageSize`/`media` value, as the driver reported it.
+    pub page_size: Option<String>,
+    /// `ColorModel`/`print-color-mode` value.
+    pub colour: Option<String>,
+    /// `Duplex`/`sides` value; the plain boolean above stays for a call that
+    /// only knows two-sided or not.
+    pub duplex: Option<String>,
+    /// `Orientation`/`orientation-requested` value.
+    pub orientation: Option<String>,
 }
 
 impl Default for PrintSettings {
@@ -84,6 +271,11 @@ impl Default for PrintSettings {
         Self {
             copies: 1,
             two_sided: false,
+            page_range: None,
+            page_size: None,
+            colour: None,
+            duplex: None,
+            orientation: None,
         }
     }
 }
@@ -289,7 +481,7 @@ pub fn retry_job(id: &str) -> Result<(), String> {
 pub fn print_document(
     queue: &str,
     path: &std::path::Path,
-    settings: PrintSettings,
+    settings: &PrintSettings,
 ) -> Result<(), String> {
     let queue = queue_name(queue)?;
     if !(1..=99).contains(&settings.copies) {
@@ -305,13 +497,59 @@ pub fn print_document(
     let path = path
         .to_str()
         .ok_or_else(|| "selected document name is not supported".to_string())?;
+    let options = print_options(&queue, settings)?;
     let copies = settings.copies.to_string();
-    let mut args = vec!["-d", queue.as_str(), "-n", copies.as_str()];
-    if settings.two_sided {
-        args.extend(["-o", "sides=two-sided-long-edge"]);
+    let mut args: Vec<String> = vec!["-d".into(), queue, "-n".into(), copies];
+    for (key, value) in &options {
+        args.push("-o".into());
+        args.push(format!("{key}={value}"));
     }
-    args.extend(["--", path]);
-    run("lp", &args)
+    args.push("--".into());
+    args.push(path.to_owned());
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    run("lp", &borrowed)
+}
+
+/// The `-o key=value` pairs `settings` asks of `queue`, each one a value the
+/// driver reported: an option the printer never listed is refused here rather
+/// than silently dropped by CUPS after the person chose it.
+fn print_options(queue: &str, settings: &PrintSettings) -> Result<Vec<(String, String)>, String> {
+    let mut options: Vec<(String, String)> = Vec::new();
+    if let Some(range) = &settings.page_range {
+        options.push(("page-ranges".into(), range.as_str().to_owned()));
+    }
+    if settings.two_sided && settings.duplex.is_none() {
+        options.push(("sides".into(), "two-sided-long-edge".into()));
+    }
+    let asked = [
+        ("PageSize", settings.page_size.as_deref()),
+        ("ColorModel", settings.colour.as_deref()),
+        ("Duplex", settings.duplex.as_deref()),
+        ("Orientation", settings.orientation.as_deref()),
+    ];
+    let unsupported = asked.iter().filter(|(_, value)| value.is_some()).count();
+    if unsupported == 0 {
+        return Ok(options);
+    }
+    // Whatever the driver reports decides which of them may travel; a queue
+    // that cannot answer keeps only what every printer reads (pages, sides).
+    let reported = printer_options(queue).unwrap_or_default();
+    for (name, value) in asked {
+        let Some(value) = value else { continue };
+        let choices = match name {
+            "PageSize" => &reported.page_sizes,
+            "ColorModel" => &reported.colour_modes,
+            "Duplex" => &reported.duplex_modes,
+            _ => &reported.orientations,
+        };
+        if PrinterOptions::choice(choices, value).is_none() {
+            return Err(format!(
+                "this printer does not offer {value} as its {name}; choose one it reports"
+            ));
+        }
+        options.push((name.to_owned(), value.to_owned()));
+    }
+    Ok(options)
 }
 
 fn queue_name(raw: &str) -> Result<String, String> {
@@ -638,9 +876,9 @@ mod tests {
                 print_document(
                     "Office",
                     std::path::Path::new("/does/not/matter"),
-                    PrintSettings {
+                    &PrintSettings {
                         copies: 0,
-                        two_sided: false,
+                        ..PrintSettings::default()
                     },
                 )
                 .is_err()
@@ -702,5 +940,339 @@ mod tests {
             &queues,
         );
         assert_eq!(offered, vec![other]);
+    }
+}
+
+/// What a subscription to the print service's notifications made by
+/// [`follow_changes`] carries as its user data: whose it is, by process.
+const FOLLOWER: &str = "tilo-follow:";
+
+/// The notifications a follower asks the print service for: queues added,
+/// removed or changed, and jobs made, moving on or done.
+const FOLLOWED_EVENTS: &str = "printer-added,printer-deleted,printer-state-changed,\
+printer-config-changed,job-created,job-state-changed,job-completed";
+
+/// The subscription a [`PrintFollow`] made, and whether it was let go
+/// before the subscription was.
+#[derive(Debug, Default)]
+struct Subscribed {
+    id: Option<u32>,
+    dropped: bool,
+}
+
+/// Following the print service for [`follow_changes`]; it stops, and its
+/// subscription is cancelled, when this is dropped.
+#[derive(Debug)]
+pub struct PrintFollow {
+    task: tilo_rt::JoinHandle<()>,
+    subscribed: std::sync::Arc<std::sync::Mutex<Subscribed>>,
+}
+
+impl Drop for PrintFollow {
+    fn drop(&mut self) {
+        self.task.abort();
+        let mut subscribed = self
+            .subscribed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        subscribed.dropped = true;
+        if let Some(id) = subscribed.id.take() {
+            // Cancelling asks the print service: never on the caller's thread.
+            let _ = std::thread::Builder::new()
+                .name("tilo-print-unfollow".into())
+                .spawn(move || cancel_subscription(id));
+        }
+    }
+}
+
+/// Call `on_change` on the app runtime each time the print service reports
+/// a queue or a job changed: it subscribes to the service's notifications,
+/// which it sends on the system bus, and listens for them. Nothing polls.
+/// The subscription is made off the calling thread, and subscriptions an
+/// earlier follower left behind (a process that ended without cancelling)
+/// are cancelled first.
+///
+/// # Errors
+///
+/// When the app runtime cannot start. A print service or a system bus that
+/// cannot be reached is logged and followed no further.
+pub fn follow_changes(on_change: impl Fn() + Send + Sync + 'static) -> Result<PrintFollow, String> {
+    follow_boxed(Box::new(on_change))
+}
+
+fn follow_boxed(on_change: Box<dyn Fn() + Send + Sync>) -> Result<PrintFollow, String> {
+    let runtime = tilo_rt::try_app().map_err(|error| error.to_string())?;
+    let subscribed = std::sync::Arc::new(std::sync::Mutex::new(Subscribed::default()));
+    let task = runtime.spawn(async move {
+        use futures_util::StreamExt as _;
+        let signals = async {
+            let connection = zbus::Connection::system().await?;
+            zbus::MessageStream::for_match_rule(
+                zbus::MatchRule::builder()
+                    .msg_type(zbus::message::Type::Signal)
+                    .interface("org.cups.cupsd.Notifier")?
+                    .build(),
+                &connection,
+                Some(64),
+            )
+            .await
+        };
+        let mut signals = match signals.await {
+            Ok(signals) => signals,
+            Err(error) => {
+                tracing::warn!(%error, "could not follow the print service");
+                return;
+            }
+        };
+        while signals.next().await.is_some() {
+            on_change();
+        }
+    });
+    let held = std::sync::Arc::clone(&subscribed);
+    std::thread::Builder::new()
+        .name("tilo-print-follow".into())
+        .spawn(move || {
+            cancel_left_behind();
+            let id = match subscribe() {
+                Ok(id) => id,
+                Err(error) => {
+                    tracing::warn!(%error, "could not subscribe to the print service's changes");
+                    return;
+                }
+            };
+            let mut subscribed = held
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if subscribed.dropped {
+                drop(subscribed);
+                cancel_subscription(id);
+            } else {
+                subscribed.id = Some(id);
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(PrintFollow { task, subscribed })
+}
+
+/// Run the IPP request `test` (an `ipptool` test) at the print service with
+/// `values` defined; what `ipptool` printed.
+fn ipp_request(test: &str, values: &[(&str, &str)]) -> Result<String, String> {
+    if !crate::process::which("ipptool") {
+        return Err("ipptool not installed".into());
+    }
+    let defines: Vec<String> = values
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    let mut args = vec!["-tv"];
+    for define in &defines {
+        args.extend(["-d", define.as_str()]);
+    }
+    args.extend(["ipp://localhost/", "/dev/stdin"]);
+    let output = bounded_command::run(
+        "ipptool",
+        &args,
+        Some(test.as_bytes()),
+        crate::process::MAX_CAPTURE_BYTES,
+        crate::DEFAULT_TIMEOUT,
+    )
+    .map_err(|error| error.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    if output.status.success() {
+        Ok(stdout)
+    } else {
+        Err(format!("ipptool: {stdout}"))
+    }
+}
+
+const SUBSCRIBE_TEST: &str = "{
+ OPERATION Create-Printer-Subscriptions
+ GROUP operation-attributes-tag
+ ATTR charset attributes-charset utf-8
+ ATTR language attributes-natural-language en
+ ATTR uri printer-uri $uri
+ GROUP subscription-attributes-tag
+ ATTR uri notify-recipient-uri dbus://
+ ATTR keyword notify-events $events
+ ATTR octetString notify-user-data $follower
+ ATTR integer notify-lease-duration 0
+ STATUS successful-ok
+ EXPECT notify-subscription-id OF-TYPE integer WITH-VALUE >0
+}
+";
+
+const LIST_TEST: &str = "{
+ OPERATION Get-Subscriptions
+ GROUP operation-attributes-tag
+ ATTR charset attributes-charset utf-8
+ ATTR language attributes-natural-language en
+ ATTR uri printer-uri $uri
+ ATTR boolean my-subscriptions true
+ STATUS successful-ok
+ STATUS client-error-not-found
+}
+";
+
+const CANCEL_TEST: &str = "{
+ OPERATION Cancel-Subscription
+ GROUP operation-attributes-tag
+ ATTR charset attributes-charset utf-8
+ ATTR language attributes-natural-language en
+ ATTR uri printer-uri $uri
+ ATTR integer notify-subscription-id $id
+ STATUS successful-ok
+ STATUS client-error-not-found
+}
+";
+
+/// Subscribe to the print service's notifications on the system bus; the
+/// subscription's id.
+fn subscribe() -> Result<u32, String> {
+    let follower = format!("{FOLLOWER}{}", std::process::id());
+    let output = ipp_request(
+        SUBSCRIBE_TEST,
+        &[("events", FOLLOWED_EVENTS), ("follower", &follower)],
+    )?;
+    subscriptions(&output)
+        .into_iter()
+        .map(|(id, _)| id)
+        .next()
+        .ok_or_else(|| "the print service named no subscription".to_owned())
+}
+
+fn cancel_subscription(id: u32) {
+    if let Err(error) = ipp_request(CANCEL_TEST, &[("id", &id.to_string())]) {
+        tracing::warn!(%error, id, "a print service subscription stayed");
+    }
+}
+
+/// Cancel the subscriptions a follower whose process has ended left.
+fn cancel_left_behind() {
+    let Ok(listed) = ipp_request(LIST_TEST, &[]) else {
+        return;
+    };
+    for (id, follower) in subscriptions(&listed) {
+        let ended = follower
+            .as_deref()
+            .and_then(|data| data.strip_prefix(FOLLOWER))
+            .and_then(|pid| pid.parse::<u32>().ok())
+            .is_some_and(|pid| !std::path::Path::new(&format!("/proc/{pid}")).exists());
+        if ended {
+            cancel_subscription(id);
+        }
+    }
+}
+
+/// Each subscription `ipptool -tv` printed, with its user data.
+fn subscriptions(output: &str) -> Vec<(u32, Option<String>)> {
+    output
+        .split("-- separator --")
+        .filter_map(|group| {
+            let value = |name: &str| {
+                group.lines().find_map(|line| {
+                    let line = line.trim();
+                    let (attribute, value) = line.split_once(" = ")?;
+                    (attribute.split_whitespace().next() == Some(name)).then(|| value.to_owned())
+                })
+            };
+            let id = value("notify-subscription-id")?.parse().ok()?;
+            Some((id, value("notify-user-data")))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod follow_tests {
+    /// What `ipptool -tv` prints of two subscriptions is read as their ids
+    /// and user data, each group on its own.
+    #[test]
+    fn subscriptions_are_read_group_by_group() {
+        let output = "    /dev/stdin [PASS]
+        status-code = successful-ok (successful-ok)
+        notify-events (keyword) = printer-added
+        notify-user-data (octetString) = tilo-follow:11
+        notify-subscription-id (integer) = 1
+        -- separator --
+        notify-events (keyword) = printer-added
+        notify-subscription-id (integer) = 2
+";
+        assert_eq!(
+            super::subscriptions(output),
+            vec![(1, Some("tilo-follow:11".to_owned())), (2, None)]
+        );
+    }
+}
+
+#[cfg(test)]
+mod print_option_tests {
+    use super::*;
+
+    /// What a colour duplex printer reports, as CUPS prints it.
+    const REPORT: &str = "\
+PageSize/Media Size: *A4 A5 Letter Legal
+ColorModel/Color Mode: *RGB Gray
+Duplex/2-Sided Printing: *None DuplexNoTumble DuplexTumble
+Resolution/Output Resolution: *600dpi 300dpi
+Orientation/Orientation: *3 4
+printer-make-and-model/Custom.10 = Acme Laser 4
+";
+
+    #[test]
+    fn the_drivers_own_options_come_out_with_their_defaults() {
+        let options = parse_lpoptions(REPORT);
+        assert_eq!(
+            options
+                .page_sizes
+                .iter()
+                .map(|choice| choice.key.as_str())
+                .collect::<Vec<_>>(),
+            ["A4", "A5", "Letter", "Legal"]
+        );
+        assert_eq!(PrinterOptions::default_key(&options.page_sizes), Some("A4"));
+        assert_eq!(
+            PrinterOptions::default_key(&options.colour_modes),
+            Some("RGB")
+        );
+        assert_eq!(
+            options
+                .duplex_modes
+                .iter()
+                .find(|choice| choice.key == "DuplexTumble")
+                .map(|choice| choice.label.as_str()),
+            Some("Two-sided, short edge")
+        );
+        assert_eq!(
+            PrinterOptions::default_key(&options.orientations),
+            Some("3"),
+            "the orientation values keep the numbers CUPS takes"
+        );
+        assert!(
+            options
+                .orientations
+                .iter()
+                .any(|choice| choice.label == "Landscape"),
+            "a person reads a word, not a 4"
+        );
+    }
+
+    #[test]
+    fn a_printer_that_reports_nothing_offers_nothing() {
+        let options = parse_lpoptions("");
+        assert_eq!(options, PrinterOptions::default());
+        assert!(
+            parse_lpoptions("Resolution/Output Resolution: *600dpi\n")
+                .page_sizes
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_page_range_must_be_one_cups_reads() {
+        for good in ["1-3", "1,4,9", "2-", "7", "1-3, 8-10"] {
+            assert!(PageRange::parse(good).is_ok(), "{good}");
+        }
+        for bad in ["", "  ", "0", "1-0", "5-2", "1,,3", "1-a", "-3", "one"] {
+            assert!(PageRange::parse(bad).is_err(), "{bad}");
+        }
     }
 }

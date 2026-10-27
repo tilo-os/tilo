@@ -242,6 +242,57 @@ fn screenshot_artifacts_keep_exact_pixels_and_exclusive_selection() {
 /// A screenshot taken through the main action is a file in Screenshots
 /// and an image/png offer on the clipboard, with the same pixels, and
 /// its receipt says it is both.
+/// The receipt's Open and Show in Files go through the one document-open
+/// path. With no app claiming a PNG and no Files installed, each says why
+/// as every open does, and nothing is handed to a host opener that would
+/// report success for a file nobody showed.
+#[test]
+#[serial_test::serial(process_env)]
+fn screenshot_open_and_show_in_files_go_through_document_open() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("Tilo Screenshot.png");
+    write_png(&path, 1, 1, &[1, 2, 3, 255]).unwrap();
+    // No host desktop entries or MIME defaults either: a host viewer would
+    // otherwise answer for the PNG.
+    let host = directory.path().join("host");
+    std::fs::create_dir_all(&host).unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_APPS_DATA_DIR", directory.path())
+        .set("XDG_DATA_HOME", &host)
+        .set("XDG_DATA_DIRS", &host)
+        .set("XDG_CONFIG_HOME", &host)
+        .set("XDG_CONFIG_DIRS", &host);
+    crate::shell::launcher::invalidate_app_cache();
+    crate::shell::host_apps::invalidate_cache();
+
+    let mut executor = CaptureExecutor::default();
+    executor.last_screenshot.set(path);
+    let mut frame_builder = FrameBuilder::new((800, 600));
+    executor.open_last_screenshot();
+    executor.reveal_last_screenshot();
+    assert_eq!(
+        executor.finish_io_blocking(&mut frame_builder),
+        Vec::new(),
+        "neither claims to have opened anything"
+    );
+    let titles: Vec<String> = frame_builder
+        .chrome()
+        .notifications()
+        .iter()
+        .map(|notification| notification.title.clone())
+        .collect();
+    assert_eq!(titles.len(), 2, "each failed open is told: {titles:?}");
+    assert!(
+        titles
+            .iter()
+            .all(|title| title.contains("Tilo Screenshot.png")),
+        "and names the screenshot: {titles:?}"
+    );
+    drop(env);
+    crate::shell::launcher::invalidate_app_cache();
+    crate::shell::host_apps::invalidate_cache();
+}
+
 #[test]
 fn a_screenshot_is_saved_into_screenshots_and_offered_on_the_clipboard() {
     use crate::compositor::selection::{

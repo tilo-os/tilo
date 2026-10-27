@@ -282,3 +282,4 @@ word-processor-resolve-comment = Resolved a comment
 word-processor-set-page-margins = Changed the page margins
 word-processor-generate-toc = Added a table of contents
 word-processor-note-file-written = Saved to its file
+status-page = Page { $page } of { $pages }

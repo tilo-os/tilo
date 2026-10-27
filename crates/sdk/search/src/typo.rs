@@ -93,8 +93,15 @@ impl Typos {
     }
 }
 
+/// Shortest typed word whose typo may be a wrong letter. Below it a typo is
+/// only a dropped, extra or swapped letter: a short word with one letter
+/// changed is most often another real word ("cats" is not "cuts" mistyped),
+/// while "nots" is still "notes" with a letter dropped.
+const SUBSTITUTION_SCALARS: usize = 5;
+
 /// Whether `word`, or with `prefix` some prefix of it, is within `distance`
-/// optimal-string-alignment edits of `query`.
+/// optimal-string-alignment edits of `query`. A query shorter than
+/// [`SUBSTITUTION_SCALARS`] pays two edits for a wrong letter.
 ///
 /// The table runs over `word` one scalar per row; a row whose every cell,
 /// and the row before it (a transposition reaches back two), exceeds
@@ -111,6 +118,7 @@ pub(crate) fn within(query: &[char], word: &[char], distance: usize, prefix: boo
     if prefix && n <= distance {
         return true;
     }
+    let substitution = if n < SUBSTITUTION_SCALARS { 2 } else { 1 };
     let width = n.saturating_add(1);
     let mut before: Vec<usize> = vec![usize::MAX; width];
     let mut previous: Vec<usize> = (0..width).collect();
@@ -131,7 +139,7 @@ pub(crate) fn within(query: &[char], word: &[char], distance: usize, prefix: boo
                 continue;
             };
             let mut cell = diagonal
-                .saturating_add(usize::from(wanted != scalar))
+                .saturating_add(if wanted == scalar { 0 } else { substitution })
                 .min(above.saturating_add(1))
                 .min(left.saturating_add(1));
             if row > 1
@@ -183,6 +191,17 @@ mod tests {
     }
 
     #[test]
+    fn a_short_word_is_not_another_short_word_with_one_letter_changed() {
+        assert!(!near("cats", "cuts", 1, false));
+        assert!(!near("cats", "cuts", 1, true));
+        assert!(!near("cats", "hats", 1, false));
+        assert!(near("cats", "cast", 1, false), "a swap is still one edit");
+        assert!(near("nots", "notes", 1, false), "a dropped letter too");
+        assert!(near("catz", "cats", 2, false));
+        assert!(near("kittem", "kitten", 1, false), "longer words keep it");
+    }
+
+    #[test]
     fn a_prefix_match_accepts_a_word_that_begins_near_the_query() {
         assert!(near("setin", "settings", 1, true));
         assert!(near("yotub", "youtube", 1, true));
@@ -195,6 +214,7 @@ mod tests {
     #[test]
     fn the_bounded_table_agrees_with_the_definition() {
         fn osa(a: &[char], b: &[char]) -> usize {
+            let substitution = if a.len() < SUBSTITUTION_SCALARS { 2 } else { 1 };
             let mut table = vec![vec![0usize; b.len() + 1]; a.len() + 1];
             for (i, row) in table.iter_mut().enumerate() {
                 row[0] = i;
@@ -204,7 +224,11 @@ mod tests {
             }
             for i in 1..=a.len() {
                 for j in 1..=b.len() {
-                    let cost = usize::from(a[i - 1] != b[j - 1]);
+                    let cost = if a[i - 1] == b[j - 1] {
+                        0
+                    } else {
+                        substitution
+                    };
                     let mut cell = (table[i - 1][j] + 1)
                         .min(table[i][j - 1] + 1)
                         .min(table[i - 1][j - 1] + cost);

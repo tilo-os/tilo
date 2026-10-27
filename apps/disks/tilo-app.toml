@@ -31,7 +31,7 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["system-info"]
-optional = ["files.paths", "threads"]
+optional = ["open-uri", "files.paths", "threads"]
 
 [resources]
 kinds = ["disks.system"]

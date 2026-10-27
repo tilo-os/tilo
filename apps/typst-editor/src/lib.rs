@@ -29,6 +29,7 @@ pub mod chrome;
 pub mod compile;
 pub mod diagnostics;
 pub mod editor;
+mod find;
 mod outline;
 pub mod page_text;
 pub mod pages;

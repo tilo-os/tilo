@@ -326,8 +326,8 @@ mod tests {
         // phase: catch_up_names_two_people_and_counts_the_rest
         {
             let entries = vec![
-                entry(1, "bob", 100),
-                entry(2, "ada", 101),
+                entry(1, "Bob", 100),
+                entry(2, "Ada", 101),
                 entry(3, "Sarah", 102),
                 entry(4, "Ada", 103),
             ];
@@ -338,7 +338,7 @@ mod tests {
             );
             assert_eq!(
                 digest.headline().as_deref(),
-                Some("bob, ada + 2 · Prepare launch brief")
+                Some("Bob, Ada + 2 · Prepare launch brief")
             );
         }
         // phase: a_participant_history_cannot_name_is_not_counted_as_a_person

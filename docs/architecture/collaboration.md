@@ -136,12 +136,12 @@ room.
 Only a locally governing administrator can mint an invite or change membership
 and capabilities. Whether this device may invite, and through which authority,
 is one decision (`shell::invite_policy::may_issue_invitation`) that the invite
-composer, the palette's `peer.invite` rows and the issuer all ask: `Invite` on
-the `peer.invite.named` action under the workspace's capability policy, then
+composer, the palette's `peer.invite` rows and the issuer all ask: the grant for
+the `peer.invite.named` action under the workspace's policy, then
 the room's governor — this person's relay (the admitted governor is the
 identity this room selects, which may be a workspace-specific identity rather
 than the device's default person), this device sharing a room it governs on
-its home relay, or, for a member who holds a delegated `Invite` grant in a
+its home relay, or, for a member who holds a delegated invite grant in a
 room someone else governs, a refusal that sends them to the owner rather than
 a composer or palette row the issuer would reject. Ordinary role controls
 expose Viewer, Commenter, and Editor;
@@ -150,32 +150,27 @@ by cycling a role chip. What a role may change depends on the path the change
 takes:
 
 - **Directed action invocations** (an action invoked through the session action
-  broker by a person, script or agent) are checked against the action's
-  declared permission requirement — `Read`, `Comment`, `Write`, `Invite` or
-  `Admin` — and the caller's live capabilities.
-- **Replicated app documents are checked only as a whole.** The SDK signs every
-  document change, snapshot or incremental and whatever action produced it, as
-  `OpClass::Splice`, which requires `Write`. The identity service checks the
-  role table and live capability restrictions before signing, and every broker
-  checks them again on receipt. Owners and Editors can therefore change any
-  part of an app document; Commenters and Viewers can change none of it, so a
-  comment stored inside an app document is refused for a Commenter; and an
-  Editor is not limited to particular actions.
+  broker by a person, script or agent) are decided against the grants on the
+  action's node in the published tree, filtered by the action's kind
+  ([permissions.md](permissions.md)).
+- **Replicated app documents are checked change by change.** The SDK signs
+  every document change, snapshot or incremental together with what each
+  change claims to be — its action key and the storage units it writes — and
+  a receiver, a relay that cannot read a sealed payload included, decides
+  every claim against the author's grants before merging it. Owners and
+  Editors therefore hold the grants to change an app document; a Commenter's
+  grant covers comments and reactions, and nothing else in it.
 - **Governance, compaction and redaction operations** are signed with their own
-  classes, which the role table grants to the owner only.
+  claims, which the room's grants give the owner alone.
 
-Per-action enforcement does not exist for replicated app state, and signing the
-action's declared class would not create it: the broker holds no Automerge
-document, the payload may be MLS ciphertext, and an Automerge change does not
-name the action that made it, so a Commenter could label any edit as a comment.
-Enforcing actions such as "commenters may add comments" needs structure the
-receiver can check — for example comments kept as their own records that
-accept only `Comment`-class changes. Until then, treat the app-document role
-split as write or no write.
+Per-action enforcement is a property of the claims, not of the payload: the
+broker holds no Automerge document and the payload may be MLS ciphertext, so
+whether a change is a comment or a rewrite is decided by the claim the author
+signed, under the same rule-in-the-tree as every other action.
 
 Publishing a surface stream, granting or injecting remote control, and room
-state responses likewise require `Write`; passive presence, requests, and
-validated history reads require `Read`.
+state responses likewise need a grant for the change they claim; passive
+presence, requests, and validated history reads need a `Read` grant.
 
 Live session handles in cursor, app-presence, remote-input, stream, and
 scrollback messages are bound to the authenticated transport endpoint before

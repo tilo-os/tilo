@@ -15,12 +15,12 @@ globalThis.__tiloPage ||= (() => {
   const MAX_LINES = 1200, MAX_CHARS = 100000, MAX_VISITED = 40000;
   const MAX_TEXT = 200, MAX_NAME = 120, MAX_VALUE = 200, MAX_OPTIONS = 30;
   const INPUT_ROLES = {button: 'button', submit: 'button', reset: 'button', image: 'button',
-    file: 'file', color: 'button', checkbox: 'checkbox', radio: 'radio', range: 'slider',
+    file: 'file', color: 'color', checkbox: 'checkbox', radio: 'radio', range: 'slider',
     number: 'spinbutton', search: 'searchbox'};
   const INTERACTIVE = new Set(['link', 'button', 'checkbox', 'radio', 'switch', 'textbox',
     'searchbox', 'combobox', 'listbox', 'option', 'slider', 'spinbutton', 'tab', 'menuitem',
-    'menuitemcheckbox', 'menuitemradio', 'treeitem', 'clickable', 'file', 'hint', 'draggable',
-    'canvas', 'hoverable']);
+    'menuitemcheckbox', 'menuitemradio', 'treeitem', 'clickable', 'file', 'color', 'hint',
+    'draggable', 'canvas', 'hoverable']);
   const CONTAINERS = new Set(['navigation', 'main', 'banner', 'contentinfo', 'complementary',
     'form', 'dialog', 'alertdialog', 'region', 'search', 'list', 'listitem', 'table', 'row',
     'cell', 'columnheader', 'rowheader', 'menu', 'menubar', 'tablist', 'tabpanel', 'tree',
@@ -34,7 +34,17 @@ globalThis.__tiloPage ||= (() => {
     'title', 'base', 'svg', 'object', 'embed']);
   const NOT_TEXT = new Set(['button', 'submit', 'reset', 'image', 'file', 'checkbox', 'radio',
     'hidden']);
-  const SET_VALUE = new Set(['date', 'time', 'datetime-local', 'month', 'week', 'color', 'range']);
+  const SET_VALUE = new Set(['date', 'time', 'datetime-local', 'month', 'week', 'range']);
+  // A colour a person picks is `#rrggbb`; the shorthand `#rgb` names the same
+  // colour, and a colour input holds whichever it was given as `#rrggbb`.
+  const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+  // Colours named in words are read too, as the colour they name: an agent
+  // that says "navy" means the input's own `#000080`.
+  const NAMED_COLORS = {black: '#000000', silver: '#c0c0c0', gray: '#808080', grey: '#808080',
+    white: '#ffffff', maroon: '#800000', red: '#ff0000', purple: '#800080', fuchsia: '#ff00ff',
+    magenta: '#ff00ff', green: '#008000', lime: '#00ff00', olive: '#808000', yellow: '#ffff00',
+    navy: '#000080', blue: '#0000ff', teal: '#008080', aqua: '#00ffff', cyan: '#00ffff',
+    orange: '#ffa500', pink: '#ffc0cb', brown: '#a52a2a', gold: '#ffd700'};
 
   const ids = new WeakMap(), refs = new Map();
   let next = 0, doc = 0;
@@ -61,6 +71,134 @@ globalThis.__tiloPage ||= (() => {
   // pointer's rest has to be mirrored through the page's own style sheets.
   let gestureMirror = false;
   const MAX_POINTER_STYLES = 4000;
+  // What a turn of the wheel turned: the box it turns over, and where in it
+  // the wheel turns. The closest scroll container of the element the caller
+  // named — a list, a table's own body — moves before the document does, as it
+  // does under a hand resting there.
+  let scrolling = null;
+  const MAX_SCROLL_TURN = 2000;
+  // How many turns in a row the wheel may give nothing before the page is
+  // taken to have stopped moving for it.
+  const MAX_SCROLL_STILL = 4;
+  // How far the wheel is sent toward an end of the page: past any page.
+  const WHEEL_TO_THE_END = 1e6;
+  // The box an element's own overflow scrolls, found up its tree; the page's
+  // own scrolling box when it is the page.
+  function scrollBox(element) {
+    const root = document.scrollingElement || document.documentElement;
+    for (let node = element; node && node.nodeType === 1; node = node.parentElement || node.getRootNode().host) {
+      const style = getComputedStyle(node);
+      if (/(auto|scroll|overlay)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 1) return node;
+    }
+    return root;
+  }
+  const scrollable = element => Math.max(element.scrollHeight - element.clientHeight, 0);
+  const scrollRoot = () => document.scrollingElement || document.documentElement;
+  // How much further a box can go in the direction the wheel turns it.
+  const room = box => Math.max(scrollable(box) - scrollYOffset(box), 0);
+  // How far down a box is scrolled. The page's own box needs no special case:
+  // the window holds the document's scrolling element and the document, and
+  // asking either of them for what it holds never moves the page.
+  const scrollYOffset = box => box.scrollTop;
+  // How far the last scroll moved the box the wheel turned over, taken by the
+  // read that answers it: null when no scroll is being answered.
+  let scrollMoved = null;
+  const takeScrollMoved = () => { const moved = scrollMoved; scrollMoved = null; return moved; };
+  const FRAME_SETTLE_MS = 250, FRAME_SETTLE_STILL = 2, FRAME_MS = 16;
+  // The wheel turns over a page that has laid itself out, as a person's does:
+  // a sheet that arrives late, and the reflow it causes, are waited for. The
+  // wait ends as soon as the page's own size holds still. It is measured on a
+  // timer, not an animation frame: a window behind another draws no frames,
+  // and the wait must still end for a page nobody is looking at.
+  const scrollFrames = () => new Promise(done => {
+    const start = performance.now();
+    let size = '', still = 0;
+    const tick = () => {
+      const now = performance.now(), box = document.scrollingElement || document.documentElement;
+      const held = `${box.scrollHeight}x${innerWidth}x${innerHeight}`;
+      still = held !== size ? 0 : still + 1; size = held;
+      if (still >= FRAME_SETTLE_STILL || now - start >= FRAME_SETTLE_MS) { done(); return; }
+      setTimeout(tick, FRAME_MS);
+    };
+    setTimeout(tick, FRAME_MS);
+  });
+  // Where the wheel turns, and how far the box under it still has to go:
+  // the whole distance asked for, or everything the box still holds.
+  async function scrollTarget(command) {
+    scrollMoved = null;
+    await scrollFrames();
+    // Bringing an element into view turns the wheel over its nearest
+    // scrollable box, at a point inside it that is on screen now.
+    if (typeof command.into_view === 'string') {
+      const element = resolve(command.into_view);
+      const box = scrollBox(element);
+      const visible = element.getBoundingClientRect(), area = box.getBoundingClientRect();
+      const top = area.top + Math.max(0, Math.min(visible.top - area.top, area.height - 1));
+      const point = {x: area.left + Math.max(0, Math.min(area.width / 2, area.width - 1)), y: top};
+      if (!(point.x >= 0 && point.y >= 0 && point.x < innerWidth && point.y < innerHeight))
+        throw failure('not_visible', `${command.into_view} is off the page; scroll the page first`);
+      // The row is centred in its box when there is room for that, and the
+      // wheel turns toward it from where the box is scrolled to now.
+      const delta = Math.round(visible.top - area.top - (area.height - visible.height) / 2);
+      const from = scrollYOffset(box);
+      const left = delta > 0 ? Math.min(delta, room(box)) : Math.max(delta, -from);
+      scrolling = {box, x: point.x, y: point.y, rest: left, travelled: Math.sign(left), start: from, still: 0};
+      return {ok: true, x: point.x, y: point.y, left};
+    }
+    // The box the caller named, or the page itself; a point inside it that
+    // the wheel can turn over is its visible centre.
+    const element = typeof command.element === 'string' ? resolve(command.element) : null;
+    const box = element ? scrollBox(element) : (document.scrollingElement || document.documentElement);
+    // The box is remembered by what it is, not by what the last turn did to
+    // it: scrolling it makes it the document more records for good.
+    const root = !box || box === document.scrollingElement || box === document.documentElement;
+    const area = root ? {left: 0, top: 0, width: innerWidth, height: innerHeight} : box.getBoundingClientRect();
+    const point = element ? (clip(element.getBoundingClientRect()) || clip(area)) : {x: innerWidth / 2, y: innerHeight / 2};
+    if (!point) throw failure('not_visible', `${command.element} has no box on the page`);
+    const scroller = root ? scrollRoot() : box;
+    const from = scrollYOffset(scroller);
+    let left = 0, travelled = 0;
+    if (command.to === 'top' || command.to === 'bottom') {
+      // An end of the page is a whole page away, more than any distance the
+      // wheel is allowed: the wheel keeps turning until the page stops
+      // moving, so a page that loads more on the way down goes on, and the
+      // turns end only when a turn gives nothing.
+      travelled = command.to === 'bottom' ? 1 : -1;
+      left = travelled * WHEEL_TO_THE_END;
+    } else if (typeof command.by === 'number') {
+      // A distance is the whole distance asked for: how far it actually moves
+      // the page is the wheel's own business, and what the box cannot take it
+      // keeps looking for as the page under it grows.
+      travelled = Math.sign(command.by);
+      left = command.by;
+    }
+    // A box already at the end the wheel would take it to leaves the wheel
+    // nothing to do, and the answer says so at once.
+    if (left * travelled <= 0) { scrollMoved = 0; return {ok: true, x: point.x, y: point.y, left: 0}; }
+    scrolling = {box: scroller, x: point.x, y: point.y, rest: left, travelled, start: from, still: 0};
+    return {ok: true, x: point.x, y: point.y, left};
+  }
+  // What the box the wheel turns over has left of the distance after a turn:
+  // a list that renders more as it scrolls says so here, and the wheel turns
+  // again, as a hand's next turn would.
+  function scrollLeft() {
+    if (!scrolling) return {ok: true, x: innerWidth / 2, y: innerHeight / 2, left: 0};
+    const box = scrolling.box, now = scrollYOffset(box), moved = Math.abs(now - scrolling.start);
+    scrollMoved = (scrollMoved || 0) + Math.round(now - scrolling.start);
+    scrolling.rest -= scrolling.travelled > 0 ? Math.min(moved || now, scrolling.rest)
+      : -Math.min(moved || -now, -scrolling.rest);
+    scrolling.start = now;
+    // A turn that moved nothing may have been given nothing by the page yet —
+    // a frame still settling, a box whose content arrives later — so it is
+    // tried again, a few times, before the wheel says the page has stopped.
+    // The turns the wheel is allowed are what ends a page that never moves.
+    if (!moved && ++scrolling.still <= MAX_SCROLL_STILL)
+      return {ok: true, x: scrolling.x, y: scrolling.y, left: scrolling.travelled > 0 ? Math.min(scrolling.rest, room(box))
+        : -Math.max(-scrolling.rest - Math.max(now, 0), 0)};
+    const left = !moved ? 0 : scrolling.travelled > 0 ? Math.min(scrolling.rest, room(box))
+      : -Math.max(-scrolling.rest - Math.max(now, 0), 0);
+    return {ok: true, x: scrolling.x, y: scrolling.y, left: Math.round(left)};
+  }
   // The class the page's own sheets never use: a resting pointer puts it on
   // the elements it is over, and a hover-only rule reads `:hover` as it.
   const MARKER = '__tilo-hover__';
@@ -282,6 +420,12 @@ globalThis.__tiloPage ||= (() => {
   function details(element, kind) {
     const out = [], tag = element.localName;
     if (kind === 'heading') out.push(`level=${/^h[1-6]$/.test(tag) ? tag[1] : element.getAttribute('aria-level') || 2}`);
+    // A colour input's value is the colour it shows, not text it holds, so it
+    // is stated outright and filled by name like the other value controls.
+    if (kind === 'color' && tag === 'input') {
+      out.push('type=color');
+      out.push(`value=${quote(element.value || '#000000')}`);
+    }
     if (kind === 'textbox' || kind === 'searchbox' || kind === 'spinbutton' || kind === 'slider') {
       if (tag === 'input' || tag === 'textarea') {
         const input = tag === 'textarea' ? 'textarea' : type(element);
@@ -466,10 +610,16 @@ globalThis.__tiloPage ||= (() => {
   }
 
   function outline() {
-    const {lines, frames: listed} = outlineLines();
+    const {lines, frames: listed, cut} = outlineLines();
     setLastLines(lines);
     const frame = frameId();
-    return {ok: true, message: frame ? `Read ${lines.length} lines in frame ${frame}` : `Read ${lines.length} lines`,
+    const where = frame ? ` in frame ${frame}` : '';
+    // A read that stopped short says so in its answer, not only in its last
+    // line: an agent that reads the message and acts on it would otherwise
+    // believe it has seen the whole page, when what it was asked to check may
+    // be in the part it never saw.
+    return {ok: true, message: cut ? `Read ${lines.length} lines${where}, and stopped there: ${cut}`
+        : `Read ${lines.length} lines${where}`,
       outline: lines.join('\n'), data: {frames: listed}};
   }
 
@@ -477,6 +627,9 @@ globalThis.__tiloPage ||= (() => {
   // subsequence; refs are stable within a document, so an unchanged element
   // keeps its line.
   function changes() {
+    // What a scroll answers says how far it took the page, so a turn that
+    // changed no line still tells the caller the page moved, and by how much.
+    const moved = takeScrollMoved();
     const before = getLastLines(), {lines} = outlineLines();
     setLastLines(lines);
     if (!before)
@@ -495,8 +648,9 @@ globalThis.__tiloPage ||= (() => {
       else if (j < m && (i >= n || table[i][j + 1] >= table[i + 1][j])) { out.push('+ ' + lines[j++]); added++; }
       else { out.push('- ' + before[i++]); removed++; }
     }
-    return {ok: true, message: added || removed ? `${added} lines added, ${removed} removed` : 'Nothing changed',
-      outline: out.join('\n')};
+    const diff = added || removed ? `${added} lines added, ${removed} removed` : 'Nothing changed';
+    const told = moved === null ? diff : moved ? `Scrolled ${Math.abs(moved)}px ${moved > 0 ? 'down' : 'up'}; ${diff[0].toLowerCase()}${diff.slice(1)}` : `Did not move; ${diff[0].toLowerCase()}${diff.slice(1)}`;
+    return {ok: true, message: told, outline: out.join('\n')};
   }
 
   // What a click or a hover at viewport point (x, y) would act on: the
@@ -818,6 +972,12 @@ globalThis.__tiloPage ||= (() => {
           ? name(element, kind) : '';
         const start = lines.length;
         if (!emit(depth, label ? `${kind} ${quote(label)}` : kind)) return;
+        // A box a person can scroll has to be reachable to turn a wheel over
+        // it: its ref is named even though a scroll is not its role.
+        if (element.scrollHeight > element.clientHeight || element.scrollWidth > element.clientWidth) {
+          const at = lines[lines.length - 1].lastIndexOf('[ref=');
+          if (at < 0) lines[lines.length - 1] += ` [ref=${refOf(element)}]`;
+        }
         walk(element, depth + 1, inner);
         flush();
         const count = lines.length - start - 1;
@@ -834,8 +994,15 @@ globalThis.__tiloPage ||= (() => {
     if (document.body) visit(document.body, 0, {inside: false, pointer: false, visible: true});
     flush();
     prune();
-    if (truncated) lines.push('- text "… outline truncated; act on what is listed or scroll and read again"');
-    return {lines, truncated, frames: frames()};
+    // What stopped the read, so the reader knows whether more of the page is
+    // still there to reach and how to reach it.
+    const cap = chars >= MAX_CHARS && lines.length < MAX_LINES
+      ? `${MAX_CHARS} characters of outline` : `${MAX_LINES} outline lines`;
+    const cut = !truncated ? '' : `this read carries ${cap} and the page goes on past them: ` +
+      'read the page again once it has finished loading, or name an element by where it ' +
+      'is on the screen with read-page-element-at';
+    if (truncated) lines.push(`- text "… ${cut}"`);
+    return {lines, cut, frames: frames()};
   }
 
   function clip(rect) {
@@ -879,6 +1046,7 @@ globalThis.__tiloPage ||= (() => {
   function locate(ref, crossOrigin) {
     const element = resolve(ref);
     enabled(element, ref);
+    chooserRefusal(ref, element, 'operating');
     // Clicking a submit button submits, so it needs the same consent.
     if ((element.localName === 'button' || element.localName === 'input') &&
         (element.type === 'submit' || element.type === 'image') && element.form)
@@ -913,6 +1081,65 @@ globalThis.__tiloPage ||= (() => {
     return {ok: true, message: `Found ${summary(element)}`, data: {x: box.left, y: box.top, width: box.width, height: box.height}};
   }
 
+  // Where a picture of the page is taken: the named element's own box, or the
+  // view, both in the page's own CSS pixels. A box is scrolled into view first,
+  // so what the caller is told the picture holds is what it holds.
+  function captureRegion(ref) {
+    if (!ref) return {ok: true, message: 'The view', data: {x: scrollX, y: scrollY, width: innerWidth, height: innerHeight}};
+    const element = resolve(ref);
+    element.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
+    const box = element.getBoundingClientRect();
+    if (!(box.width > 0 && box.height > 0))
+      throw failure('not_visible', `${ref} has no box on the page`);
+    return {ok: true, message: `Found ${summary(element)}`,
+      data: {x: box.left + scrollX, y: box.top + scrollY, width: box.width, height: box.height}};
+  }
+
+  // The colour `text` names, as the `#rrggbb` an input's value holds, or null
+  // when it names none.
+  function colorValue(text) {
+    const written = String(text ?? '').trim().toLowerCase();
+    if (HEX_COLOR.test(written)) {
+      // An input holds a colour in full: `#abc` is the colour `#aabbcc`.
+      const digits = written.slice(1);
+      if (digits.length === 3) return '#' + [...digits].map(digit => digit + digit).join('');
+      return written;
+    }
+    return NAMED_COLORS[written] ?? null;
+  }
+
+  // A colour input shows a colour and opens the platform's own picker when it
+  // is operated; neither a picker nor a typed word reaches the page's value,
+  // so the colour is set through the input's own setter and announced.
+  function fillColor(ref, element, text) {
+    if (element.disabled) throw failure('not_editable', `${ref} is disabled`);
+    const colour = colorValue(text);
+    if (!colour)
+      throw failure('invalid_color',
+        `${ref} is a colour input and ${quote(clean(text, MAX_VALUE))} is not a colour; give one as #rrggbb, such as #1d70b8`);
+    element.scrollIntoView({block: 'center', behavior: 'instant'});
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    set.call(element, colour);
+    element.dispatchEvent(new InputEvent('input', {bubbles: true, composed: true, inputType: 'insertText', data: colour}));
+    element.dispatchEvent(new Event('change', {bubbles: true}));
+    element.blur();
+    if (colorValue(element.value) !== colour)
+      throw failure('rejected',
+        `${ref} did not accept ${colour}; it holds ${quote(clean(element.value, MAX_VALUE))}`);
+    return {ok: true, message: `Filled ${summary(element)} with ${colour}`};
+  }
+
+  // A colour input's operation opens the platform's own colour picker, which
+  // the engine cannot see or close: the action would hold the tab until
+  // somebody closed a window that is not part of the page. A file input's
+  // chooser is held by the browser process instead, and answered by
+  // fill-page-files, so only the colour picker is refused here.
+  function chooserRefusal(ref, element, verb) {
+    if (element.localName !== 'input' || type(element) !== 'color') return;
+    throw failure('native_chooser',
+      `${ref} is a colour input, and ${verb} it opens the platform's colour picker, which no agent can see or use; set the colour with fill-page instead, giving #rrggbb such as #1d70b8`);
+  }
+
   function fill(ref, text, allowSecret) {
     const element = resolve(ref), tag = element.localName, kind = type(element);
     if (secret(element) && !allowSecret)
@@ -920,6 +1147,9 @@ globalThis.__tiloPage ||= (() => {
     const field = tag === 'textarea' || (tag === 'input' && !NOT_TEXT.has(kind));
     if (kind === 'file')
       throw failure('not_editable', `${ref} (${summary(element)}) takes files, not text; choose them with fill-page-files`);
+    // A colour is set as one colour, not typed into it as text: the input
+    // takes no text and refuses anything but `#rrggbb`.
+    if (kind === 'color' && tag === 'input') return fillColor(ref, element, text);
     if (!field && !element.isContentEditable)
       throw failure('not_editable', `${ref} (${summary(element)}) is not a text field; click or select it instead`);
     if (element.disabled || element.readOnly) throw failure('not_editable', `${ref} is disabled or read-only`);
@@ -935,7 +1165,10 @@ globalThis.__tiloPage ||= (() => {
         selection.removeAllRanges();
         selection.addRange(range);
       }
-      inserted = document.execCommand(text ? 'insertText' : 'delete', false, text);
+      // A region is emptied here and then typed into by keys (see `typed`),
+      // so the page hears the edit it would hear from a person: every key's
+      // beforeinput, and no one write of the whole text in between.
+      inserted = document.execCommand(field && text ? 'insertText' : 'delete', false, text);
     }
     if (field && (!inserted || element.value !== text)) {
       // Controls without editing (dates, colours) or pages that cancel the
@@ -951,7 +1184,82 @@ globalThis.__tiloPage ||= (() => {
     if (field && element.value !== text)
       throw failure('rejected', secret(element) ? `${ref} did not accept the text`
         : `${ref} did not accept ${quote(clean(text, MAX_VALUE))}; it holds ${quote(clean(element.value, MAX_VALUE))}`);
-    return {ok: true, message: `Filled ${summary(element)}`};
+    if (field) return {ok: true, message: `Filled ${summary(element)}`};
+    if (!text) return {ok: true, message: `Filled ${summary(element)}`};
+    // The native editing command runs none of the page's beforeinput
+    // listeners and writes one paragraph per line, while a person at the
+    // keyboard gives the page a line at a time, each edit heard before it is
+    // made. So the region is emptied here and its text typed by keys, which
+    // the host does (see `typed`).
+    // The region is empty and focused, with the caret where its text was:
+    // what it holds now is what the typing over it writes.
+    const caret = document.createRange();
+    caret.selectNodeContents(element);
+    caret.collapse(false);
+    const selection = getSelection();
+    selection.removeAllRanges();
+    selection.addRange(caret);
+    typedRegions.set(element, {text});
+    return {ok: true, message: `Filled ${summary(element)}`, input: inputRuns(text),
+      kept: true, shown: secret(element) ? '' : caretText(element)};
+  }
+
+  // The region's text as a caret writes it: a block boundary is a line break,
+  // a <br> that ends a block is the empty line after it, and the trailing
+  // break a region puts at its end is not a line of its own.
+  function caretText(element) {
+    let text = '';
+    const isBlock = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|DD|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H[1-6]|HEADER|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|UL)$/;
+    const walk = node => {
+      for (const child of node.childNodes) {
+        if (child.nodeType === 3) { text += child.data; continue; }
+        if (child.nodeType !== 1) continue;
+        const name = child.localName.toUpperCase();
+        if (name === 'BR') { text += '\n'; continue; }
+        const as_block = isBlock.test(name);
+        if (as_block && text && !text.endsWith('\n')) text += '\n';
+        walk(child);
+        if (as_block && !text.endsWith('\n')) text += '\n';
+      }
+    };
+    walk(element);
+    return text.endsWith('\n') ? text.slice(0, -1) : text;
+  }
+
+  // What typing writes, line by line: the field's whole text is its own first
+  // line, and text with line breaks is one line after another. A carriage
+  // return is not a line break of its own.
+  function inputRuns(text) {
+    const unified = text.replace(/\r\n?/g, '\n');
+    if (!unified.includes('\n')) return [unified];
+    return unified.split('\n');
+  }
+
+  // The region a typed fill is writing, once its last key has reached the page.
+  // It says whether the text is all there, and withdraws the change event that
+  // was announced before the typing, so the page hears one edit and one
+  // completion, as it does from a person.
+  const typedRegions = new WeakMap();
+  // Text as the lines a person would read, whatever blocks a page made of them.
+  function linesOf(text) {
+    return text.split('\n').map(line => line.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
+  }
+
+  function typed() {
+    const element = activeTextElement();
+    const region = element && typedRegions.get(element);
+    typedRegions.delete(element);
+    if (!region) throw failure('rejected', 'The field the text was typed into is gone');
+    const shown = caretText(element);
+    // An editor with a model of its own draws the text again after every edit,
+    // with blocks and line breaks of its making: what it holds is the lines
+    // typed, not the nodes they were typed as.
+    if (linesOf(shown) !== linesOf(region.text)) {
+      // Nothing typed reached a page that changed its own text: say what the
+      // page says, not what the fill meant to write.
+      throw failure('rejected', `${refOf(element)} did not take the whole text; it holds ${quote(clean(shown, MAX_VALUE))}`);
+    }
+    return {ok: true, message: `Filled ${summary(element)}`, shown};
   }
 
   function select(ref, values) {
@@ -992,6 +1300,7 @@ globalThis.__tiloPage ||= (() => {
   function focus(ref, key, crossOrigin) {
     const element = resolve(ref);
     enabled(element, ref);
+    chooserRefusal(ref, element, 'pressing a key on');
     // Enter in a form field submits it implicitly.
     if (key === 'Enter' && element.form) guardSubmission(element.form, null, crossOrigin);
     element.scrollIntoView({block: 'center', behavior: 'instant'});
@@ -1064,7 +1373,7 @@ globalThis.__tiloPage ||= (() => {
   // log. Preparation never focuses a field or exports its contents. A final
   // edit consumes its lease before page handlers run and uses Chromium's undo
   // path; unlike fill(), it must never fall back to setting another value.
-  let textLease = null, committingTextLease = null, composing = false;
+  let textLease = null, committingTextLease = null;
   let nativeTextElement = null, nativeTextEditor = null;
   const nativeSelection = ShadowRoot.prototype.getSelection;
   function nativeTextInputElement() { return nativeTextElement; }
@@ -1093,8 +1402,8 @@ globalThis.__tiloPage ||= (() => {
     if (!owned?.nativeEdit || !event.isTrusted || !composedContains(owned.element, event.target))
       retireTextLease();
   }, true);
-  addEventListener('compositionstart', () => { composing = true; retireTextLease(); }, true);
-  addEventListener('compositionend', () => { composing = false; }, true);
+  // Whether composition is still active is __tiloTextComposition's call.
+  addEventListener('compositionstart', retireTextLease, true);
 
   function activeTextElement() {
     let element = document.activeElement;
@@ -1124,7 +1433,7 @@ globalThis.__tiloPage ||= (() => {
     const composition = globalThis.__tiloTextComposition;
     if (!composition || typeof composition.active !== 'function' || composition.active())
       throw failure('text_input_composition', 'Composition state is active or unavailable');
-    if (!element?.isConnected || !document.hasFocus() || activeTextElement() !== element || composing)
+    if (!element?.isConnected || !document.hasFocus() || activeTextElement() !== element)
       throw failure('text_input_changed', 'The original text field is no longer available');
     const textSecurity = getComputedStyle(element).webkitTextSecurity;
     if (secret(element) || /(^|\s)(cc-[a-z-]+|one-time-code|current-password|new-password)(\s|$)/i.test(element.getAttribute('autocomplete') || '') ||
@@ -1538,7 +1847,7 @@ globalThis.__tiloPage ||= (() => {
   }
 
   return {
-    nativeTextInputElement, configureNativeTextEditor, fillFilesElement, fence,
+    nativeTextInputElement, configureNativeTextEditor, fillFilesElement, fence, typed,
     run(command) {
       try {
         if (!doc) doc = command.doc;
@@ -1597,13 +1906,18 @@ globalThis.__tiloPage ||= (() => {
           // is enough and nothing is applied.
           case 'need_styles': { const n = markHoverTargets(); return {ok: true, need_styles: n > 0, doc: typeof doc === 'number' ? doc : command.doc}; }
           case 'changes': return changes();
+          // A turn of the wheel: where it turns, and what is left of the
+          // distance once the page has given what it has.
+          case 'scroll_target': return scrollTarget(command);
+          case 'scroll_left': return scrollLeft();
           case 'at': return frameId() ? atInFrame() : at(command.x, command.y);
           case 'frame_offset': return frameOffset(command.frame, command.anchored);
           case 'frame_fence': return fence();
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
           case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);
           case 'locate_box': return locateBox(command.element);
-          case 'fill': arm('script'); return fill(command.element, command.text, command.secret);
+          case 'capture': return captureRegion(command.element);
+          case 'fill': { arm('script'); return fill(command.element, command.text, command.secret); }
           case 'fill_files': arm('script'); return fillFilesTarget(command.element, command.paths);
           case 'select': arm('script'); return select(command.element, command.values);
           case 'submit': arm('script'); return submit(command.element, command.cross_origin);

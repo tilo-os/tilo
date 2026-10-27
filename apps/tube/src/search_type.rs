@@ -18,7 +18,7 @@ pub fn model_entries(model: &crate::model::TubeModel) -> Vec<SearchEntry> {
                 video.display_title(dearrow),
                 format!("{} {}", video.title, video.id),
             )
-            .anchored(format!("tube.video:{}", video.id))
+            .anchored(video_anchor(&video.id))
             .grouped("Videos")
             .subtitled(video.channel_name.clone())
             .with_icon("play"),
@@ -79,10 +79,48 @@ pub fn query_entry(query: &str) -> Option<SearchEntry> {
     )
 }
 
+/// The rows of the videos `YouTube` answered for `query` ([`crate::suggest`]),
+/// in its order, under [`query_entry`]'s row; each opens its video. Found
+/// by the query they answer, whatever their titles say.
+pub fn suggested_entries(
+    query: &str,
+    videos: &[crate::model::Video],
+    dearrow: bool,
+) -> Vec<SearchEntry> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    videos
+        .iter()
+        .take(crate::suggest::SUGGESTED_VIDEOS)
+        .zip(1..)
+        .map(|(video, place)| {
+            SearchEntry::new(video.display_title(dearrow), query)
+                .anchored(video_anchor(&video.id))
+                .grouped("YouTube")
+                .subtitled(video.channel_name.clone())
+                .with_icon("play")
+                .boosted(QUERY_BOOST.saturating_sub(PLACE.saturating_mul(place)))
+        })
+        .collect()
+}
+
+/// The anchor of the hit that opens the video `id`.
+pub fn video_anchor(id: &str) -> String {
+    format!("tube.video:{id}")
+}
+
 /// The anchor prefix of [`query_entry`]'s row.
 const SEARCH_ANCHOR: &str = "tube.search:";
 /// How far [`query_entry`]'s row floats over the videos the query matches.
 const QUERY_BOOST: i32 = 1000;
+/// How far each suggested video sinks below the one before it. A search
+/// ranks an app's rows by how well each matched plus its boost, a match
+/// ranking from 0 to 100: a step wider than that keeps the order whatever
+/// the titles say ("lofi hip hop radio" begins with "lofi", the row that
+/// searches for it only contains it).
+const PLACE: i32 = 101;
 
 /// What opening the anchor `anchor` runs: the video (from the catalogue or
 /// the watch history), the creator or the playlist it names.

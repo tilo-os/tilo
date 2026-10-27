@@ -59,6 +59,8 @@ pub struct Coach<S: 'static> {
     current: Option<Current>,
     started: Option<Instant>,
     last_began: Option<Instant>,
+    /// The last instant [`Self::tick`] advanced to.
+    ticked: Option<Instant>,
     /// The record changed since the host last took it.
     dirty: bool,
 }
@@ -73,6 +75,7 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
             current: None,
             started: None,
             last_began: None,
+            ticked: None,
             dirty: false,
         }
     }
@@ -161,6 +164,7 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
         timing: Timing,
     ) {
         let started = *self.started.get_or_insert(now);
+        self.ticked = Some(now);
         if let Some(current) = self.current {
             self.advance(current, now, quiet, anchored, timing);
         }
@@ -215,7 +219,12 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
                 due = Some(due.map_or(left + RETURN_AFTER, |d| d.min(left + RETURN_AFTER)));
             }
         }
-        due
+        // A moment the last tick already reached and began nothing at is
+        // held back by what holds now (typing, a menu, an anchor off
+        // screen), not by the clock: waking for it again would only ask for
+        // a frame on every frame until that changes, and the change comes
+        // with a frame of its own.
+        due.filter(|at| self.ticked.is_none_or(|ticked| *at > ticked))
     }
 
     fn advance(

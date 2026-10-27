@@ -424,7 +424,8 @@ mod tests {
         use tilo_desktop_model::projection;
         use tilo_desktop_model::window_share::{window_node, window_share_id};
 
-        let salt: u16 = 0x0A51;
+        // The windows run on the device whose key mints under this salt.
+        let salt = tilo_desktop_model::ids::device_salt_of_key(&[0x5a; 32]);
         let own = |counter: u64| (u64::from(salt) << 48) | counter;
         let (chat, notes) = (own(3), own(4));
         let mut tree = WorkspaceTree::bootstrap_default_with_salt(salt);
@@ -472,15 +473,14 @@ mod tests {
             projection::RoomLayout::Personal.id(),
         )
         .unwrap();
-        let owners = doc
+        let identities = doc
             .put_object(
                 automerge::ROOT,
-                projection::ROOM_CONTENTS_OWNERS_KEY,
+                "peer_identities_v1",
                 automerge::ObjType::Map,
             )
             .unwrap();
-        doc.put(&owners, format!("{salt:04x}"), hex::encode([0x5a; 32]))
-            .unwrap();
+        doc.put(&identities, hex::encode([0x5a; 32]), "{}").unwrap();
         doc.commit();
         tree.project_room_document_for_test(room, &doc);
         assert!(
@@ -547,7 +547,8 @@ mod tests {
             WindowShows, shows_node, window_node, window_share_id, window_shows_share_id,
         };
 
-        let salt: u16 = 0x0A51;
+        // The windows run on the device whose key mints under this salt.
+        let salt = tilo_desktop_model::ids::device_salt_of_key(&[0x5a; 32]);
         let own = |counter: u64| (u64::from(salt) << 48) | counter;
         let (terminal, notes) = (own(3), own(4));
         let mut tree = WorkspaceTree::bootstrap_default_with_salt(salt);
@@ -598,15 +599,14 @@ mod tests {
             projection::RoomLayout::Personal.id(),
         )
         .unwrap();
-        let owners = doc
+        let identities = doc
             .put_object(
                 automerge::ROOT,
-                projection::ROOM_CONTENTS_OWNERS_KEY,
+                "peer_identities_v1",
                 automerge::ObjType::Map,
             )
             .unwrap();
-        doc.put(&owners, format!("{salt:04x}"), hex::encode([0x5a; 32]))
-            .unwrap();
+        doc.put(&identities, hex::encode([0x5a; 32]), "{}").unwrap();
         let mut policy = projection::room_policy_of(&doc, &room_text);
         let note = WindowShows {
             record: String::new(),

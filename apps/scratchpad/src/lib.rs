@@ -4,9 +4,15 @@
 //! the note's body: typing is the body's own field edit. Storage, sync,
 //! collaboration, history, undo, permissions and the action palette come from
 //! the framework.
+//!
+//! The window bar shows where the window is: the note's opening line, the way
+//! a document is named by its first words, so the bar says which note this is
+//! instead of only which app. The window draws no header row and no title of
+//! its own.
 
 pub mod locales;
 mod native_probe;
+mod note_window;
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -69,7 +75,7 @@ impl ResourceApp for Scratchpad {
         let editor = cx
             .input(cx.paths().body)
             .with_id("note-editor")
-            .with_accessible_name("Note")
+            .with_accessible_name(ui::i18n::I18nManager::lookup_plain("scratchpad-note-name"))
             .with_plain_chrome()
             .with_text_role(NOTE_ROLE)
             .with_placeholder("Start writing…")
@@ -85,7 +91,9 @@ impl ResourceApp for Scratchpad {
         // Saving is the system's job: the window says when a save stalls or
         // fails. Say only that the note is not kept on this device at all.
         let status = Text::from_state(&cx.save_status(), |status| match status {
-            RecordSaveStatus::MemoryOnly => "Not saved on this device".to_owned(),
+            RecordSaveStatus::MemoryOnly => {
+                ui::i18n::I18nManager::lookup_plain("scratchpad-memory-only")
+            }
             RecordSaveStatus::Saved | RecordSaveStatus::Saving | RecordSaveStatus::Failed(_) => {
                 String::new()
             }
@@ -112,9 +120,39 @@ impl ResourceApp for Scratchpad {
                     )),
             ))
             .push(Box::new(status));
-        Box::new(native_probe::NativeProbe::new(content, scroll))
+        let location = cx.value(|note: &Note| opening(&note.body));
+        Box::new(note_window::NoteWindow::new(
+            Box::new(native_probe::NativeProbe::new(content, scroll)),
+            location,
+        ))
     }
 }
+
+/// What the window bar calls the note: its opening line, trimmed, with its
+/// whitespace closed up, as far as a bar has room for; a note that has not
+/// been written yet is a note.
+pub fn opening(body: &str) -> String {
+    let line = body
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.is_empty() {
+        return ui::i18n::I18nManager::lookup_plain("scratchpad-note");
+    }
+    // A bar elides what it cannot show; the tab label stays short enough to
+    // read at a glance.
+    let mut title: String = line.chars().take(TITLE_CHARS).collect();
+    if line.chars().count() > TITLE_CHARS {
+        title.push('…');
+    }
+    title
+}
+
+/// How many characters of the note's opening the window bar's location
+/// carries before it is elided.
+const TITLE_CHARS: usize = 60;
 
 ui::dev_reload_entry!(Scratchpad);
 

@@ -21,7 +21,8 @@ use crate::shell::peer_sync_overlay::{PeerSyncRequest, PeerSyncResponse};
 use crate::shell::state::{RoomId, Tab, TileContent, WorkspaceTree};
 use crate::shell::window_menu::{WindowMenuAction, WindowMenuRow};
 
-const SALT: u16 = 0x0A51;
+/// The salt this device's key (`[0x5a; 32]`) mints under.
+const SALT: u16 = tilo_desktop_model::ids::device_salt_of_key(&[0x5a; 32]);
 const SURFACE: u64 = 0x5151;
 const APP: &str = "org.alacritty.Alacritty";
 
@@ -134,12 +135,12 @@ impl Fixture {
             .room_doc
             .put_object(
                 automerge::ROOT,
-                projection::ROOM_CONTENTS_OWNERS_KEY,
+                "peer_identities_v1",
                 automerge::ObjType::Map,
             )
             .unwrap();
         self.room_doc
-            .put(&owners, format!("{SALT:04x}"), hex::encode([0x5a; 32]))
+            .put(&owners, hex::encode([0x5a; 32]), "{}")
             .unwrap();
         self.take_in_room();
     }

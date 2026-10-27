@@ -1674,7 +1674,7 @@ impl WasmPeer {
         let device_key = config.cert.device_public_key;
         let reporter_cert = config.cert.clone();
         let owner_cert = config.host_cert.clone();
-        install_identity(&config.cert, config.display_name);
+        let display_name = config.display_name;
         let handle = PeerHandle::start(
             PeerConfig {
                 host: Host::Https(Arc::new(PageHttp(post))),
@@ -1691,6 +1691,11 @@ impl WasmPeer {
             next.set(id.wrapping_add(1).max(1));
             id
         });
+        // A lobby started beside the room's peer does not rename the
+        // page's person.
+        if crate::page_person::claim(id) {
+            install_identity(&reporter_cert, display_name);
+        }
         // Every peer replicates the room it joins, so a desktop mounted
         // through it always has a replica to attach to. A peer kept in no
         // profile (a watching page's, whose device lives only in memory)
@@ -1793,7 +1798,7 @@ impl WasmPeer {
                 .map_err(js_error)?;
             // The room the page replicates is the one its person talks in
             // privately; a page that only watches has no conversations.
-            if !self.handle.watching() {
+            if !self.handle.watching() && crate::page_person::speaks(self.id) {
                 crate::person_chat::install(self.handle.clone(), room);
                 if let Some(identity) = ui::local_identity::load() {
                     name_in_room(&self.handle, room, &identity.display_name);
@@ -2461,15 +2466,21 @@ impl WasmPeer {
         if let Some(room) = self.person_room.borrow().as_deref() {
             name_in_room(&self.handle, room, &name);
         }
-        install_identity(&self.reporter_cert, name);
+        if crate::page_person::speaks(self.id) {
+            install_identity(&self.reporter_cert, name);
+        }
     }
 
-    /// End the session. The page no longer acts as the certified user.
+    /// End the session. The page no longer acts as the certified user; a
+    /// lobby disposed beside the room's peer leaves the person's identity
+    /// and conversations to that one.
     pub fn dispose(&self) {
         self.listeners.borrow_mut().clear();
         self.handle.close();
         crate::replication::close(self.id);
-        crate::person_chat::uninstall();
-        ui::local_identity::install_source(None);
+        if crate::page_person::release(self.id) {
+            crate::person_chat::uninstall();
+            ui::local_identity::install_source(None);
+        }
     }
 }

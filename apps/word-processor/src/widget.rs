@@ -1092,6 +1092,11 @@ pub struct WordProcessorWidget {
     scroll_y: f64,
     scroll_viewport: f64,
     max_scroll: f64,
+    /// How many pages the document has, as the last pass paginated it.
+    pages: usize,
+    /// The distance from one page's top to the next's, in screen px: one page
+    /// down is this far.
+    page_pitch: f64,
     /// How much of the canvas the window's search covers from its top, in
     /// content px: the document scrolls that far before its start, so a
     /// match near the start can be shown clear of the search's options.
@@ -1405,6 +1410,8 @@ impl WordProcessorWidget {
             scroll_y: 0.0,
             scroll_viewport: 0.0,
             max_scroll: 0.0,
+            pages: 1,
+            page_pitch: 0.0,
             find_inset: 0.0,
             find_cover: None,
             sheet: crate::styles::StyleSheet::default(),
@@ -1984,6 +1991,26 @@ impl WordProcessorWidget {
                 self.save_error = Some(Rect::ZERO);
                 format!("export failed: {e}")
             })
+    }
+
+    /// The page is this window's content, so the window's zoom gestures
+    /// reach it ([`ui::content_zoom::ContentZoom`]): Ctrl+Plus, Ctrl+Minus
+    /// and Ctrl+0, Ctrl+scroll and a pinch scale the sheet under the bar,
+    /// and the bar says the level. They are the same steps the status
+    /// band's zoom field takes, so a key and a typed percentage agree.
+    pub(crate) fn zoom_page(&mut self, step: ui::content_zoom::ZoomStep) -> f32 {
+        match step {
+            ui::content_zoom::ZoomStep::In => self.zoom_by(ZOOM_STEP),
+            ui::content_zoom::ZoomStep::Out => self.zoom_by(-ZOOM_STEP),
+            // Actual size for a page: 100 %, the size its type is set in.
+            ui::content_zoom::ZoomStep::Reset => self.set_zoom(1.0),
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a zoom factor is a small positive float"
+        )]
+        let factor = self.zoom.factor() as f32;
+        factor
     }
 
     /// Set the zoom factor (clamped) and request a repaint. Returns whether it

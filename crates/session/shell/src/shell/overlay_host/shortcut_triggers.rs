@@ -274,9 +274,12 @@ impl ShellOverlayHost {
         if !replace_trigger_chords(&mut keymap, chords) {
             return;
         }
-        if !self.desktop_controls.is_explicit()
-            && let Err(error) = keymap.save()
-        {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(
+            "chords".into(),
+            serde_json::to_value(&keymap.actions).unwrap_or_default(),
+        );
+        if let Err(error) = self.keep_shortcuts(&keymap, "set-action-chords", &arguments) {
             tracing::warn!(%error, "shortcut chords were not saved to settings");
         }
         self.shortcut_config = keymap;

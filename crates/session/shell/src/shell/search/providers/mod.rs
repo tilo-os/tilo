@@ -5,6 +5,7 @@
 pub mod actions;
 pub mod app_content;
 pub mod applications;
+pub mod ask_agent;
 pub(crate) mod authentication_prompts;
 mod background_index;
 pub mod continue_places;
@@ -13,9 +14,11 @@ pub mod desktop_windows;
 pub mod downloaded_programs;
 pub mod file_picker;
 pub mod files;
+pub mod focused_window;
 pub mod happening_now;
 pub mod host_applications;
 pub mod live_app_actions;
+mod live_app_jobs;
 pub mod now_playing;
 pub mod people;
 pub mod permission_prompts;
@@ -33,12 +36,14 @@ pub mod web;
 pub use actions::ActionsProvider;
 pub use app_content::AppContentProvider;
 pub use applications::{ApplicationsProvider, NativeApplicationsProvider};
+pub use ask_agent::AskAgentProvider;
 pub use continue_places::ContinueProvider;
 pub use continuity::{
     CallContinuityActionsProvider, ContinueFromDeviceProvider, DeviceContinuityActionsProvider,
 };
 pub use desktop_windows::DesktopWindowsProvider;
 pub use files::FilesProvider;
+pub use focused_window::FocusedWindowProvider;
 pub use host_applications::HostApplicationsProvider;
 pub use live_app_actions::LiveAppActionsProvider;
 pub use people::PeopleProvider;

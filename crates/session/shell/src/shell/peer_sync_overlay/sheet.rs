@@ -40,6 +40,10 @@ use crate::shell::i18n::{t, t_args};
 pub(super) const WHO_FIELD: &str = "peer-sync-who";
 /// The join field's address.
 pub(super) const LINK_FIELD: &str = "peer-sync-link";
+/// The row of the invitation the join field holds the text of, and the code
+/// it carries.
+pub(super) const JOIN_INVITE: &str = "peer-sync-join-invite";
+pub(super) const JOIN_CODE: &str = "peer-sync-join-code";
 /// The modal's address; its footer buttons are `<this>.primary` and
 /// `<this>.secondary`.
 pub(super) const SHEET: &str = "peer-sync";
@@ -174,6 +178,14 @@ impl Recipient {
 enum JoinDetail {
     /// Nothing typed: what to type.
     Hint,
+    /// An invitation: the workspace it names, the person it was made for
+    /// when it names one, what it gives, and the code it carries.
+    Invite {
+        workspace: String,
+        invited: Option<String>,
+        access: String,
+        code: String,
+    },
     /// A site or a link the sheet understands.
     Understood(String),
     /// Something that is not a site or a link yet: how it begins and ends,
@@ -185,6 +197,25 @@ impl JoinDetail {
     fn of(typed: &str) -> Self {
         if typed.trim().is_empty() {
             return Self::Hint;
+        }
+        if let Ok(invitation) = tilo_peer_state::join::decode_and_verify_invitation_text(
+            typed.trim(),
+            None,
+            &tilo_user_identity::RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        ) {
+            let grant = invitation.grant();
+            return Self::Invite {
+                workspace: match grant.invitee_name.clone() {
+                    Some(name) => t_args("peer-sync-invite-for", &[("name", name.into())]),
+                    None => t("peer-sync-invite-workspace"),
+                },
+                invited: grant.invitee_name.clone(),
+                access: received_access(grant.role, grant.expires_at_ns / 1_000_000_000),
+                // The device that signed it, which the person who invited
+                // them sees as theirs.
+                code: identity_fingerprint(&grant.issuer.device_public_key),
+            };
         }
         crate::shell::network::join_field::describe(typed).map_or_else(
             || {
@@ -902,9 +933,57 @@ fn pending_section(pending: &[PendingInvitationSummary], presses: &Presses) -> E
 }
 
 /// Under the join field: what was typed, in the person's terms.
+/// What an invitation received gives, and until when: "Editor access,
+/// expires in 2 days".
+fn received_access(role: tilo_peer_state::join::MemberRole, expiry: u64) -> String {
+    use tilo_peer_state::join::MemberRole;
+    let role = match role {
+        MemberRole::Viewer => role_label(InviteRole::Viewer),
+        MemberRole::Commenter => role_label(InviteRole::Commenter),
+        MemberRole::Editor => role_label(InviteRole::Editor),
+        MemberRole::Moderator => t("peer-sync-role-moderator"),
+    };
+    let (unit, count) = super::time_until(expiry);
+    t_args(
+        "peer-sync-received-role-expires",
+        &[
+            ("role", role.into()),
+            ("unit", unit.into()),
+            ("count", count.into()),
+        ],
+    )
+}
+
 fn join_detail(detail: &JoinDetail) -> Element {
     match detail {
         JoinDetail::Hint => caption(t("peer-sync-paste-token")),
+        JoinDetail::Invite {
+            workspace,
+            invited,
+            access,
+            code,
+        } => {
+            // Someone the invite names arrives as them; one for whoever
+            // holds it has no one to name.
+            let row = match invited {
+                Some(name) => {
+                    ListRow::new(JOIN_INVITE, name.clone()).avatar(name.clone(), name.clone())
+                }
+                None => ListRow::new(JOIN_INVITE, workspace.clone()).icon(ui::icons::Icon::Link),
+            };
+            Box::new(
+                Column::new()
+                    .with_intrinsic_height()
+                    .with_no_padding()
+                    .with_rhythm(Rhythm::Related)
+                    .push(Box::new(row.secondary(access.clone())))
+                    .push(Box::new(
+                        ListRow::new(JOIN_CODE, code.clone())
+                            .icon(ui::icons::Icon::Shield)
+                            .secondary(t("peer-sync-code-check")),
+                    )),
+            )
+        }
         JoinDetail::Understood(line) => caption(line.clone()),
         JoinDetail::Incomplete(summary) => Box::new(
             Column::new()

@@ -155,7 +155,7 @@ impl ShellOverlayHost {
             self.overview_press = None;
             return false;
         }
-        if self.overview_naming_takes_press(event) {
+        if self.overview_naming_takes_press(event, scale_factor) {
             *handled = true;
             return true;
         }

@@ -211,6 +211,102 @@ pub(crate) fn evaluate(
     Ok(value)
 }
 
+/// The functions [`evaluate`] knows, lower case.
+pub(crate) const FUNCTIONS: [&str; 37] = [
+    "sum",
+    "avg",
+    "average",
+    "mean",
+    "min",
+    "max",
+    "count",
+    "round",
+    "roundup",
+    "rounddown",
+    "abs",
+    "floor",
+    "ceil",
+    "ceiling",
+    "percent",
+    "pct",
+    "date",
+    "today",
+    "add_days",
+    "adddays",
+    "add_business_days",
+    "addbusinessdays",
+    "workday",
+    "business_days",
+    "days_between",
+    "daysbetween",
+    "days",
+    "add_months",
+    "addmonths",
+    "edate",
+    "add_years",
+    "addyears",
+    "business_days_between",
+    "networkdays",
+    "days_inclusive",
+    "days_exclusive",
+    "days_within",
+];
+
+/// `text`, a whole value written as an expression without its `{{= … }}`
+/// (`workday(2026-10-14, 10)`, `round(289*0.9, 2)`), as what it computes:
+/// `None` when it is not one, so is left to be read otherwise. Only what
+/// calls a function counts, and only when every name in it is one of
+/// [`FUNCTIONS`] and it names nothing a document holds: text that merely
+/// looks like a call (`Call(me)`, `Sheet1!B2`) is not computed.
+pub(crate) fn bare(text: &str) -> Option<Result<Value, String>> {
+    let chars: Vec<char> = text.trim().chars().collect();
+    let mut calls = false;
+    let mut at = 0;
+    while let Some(&c) = chars.get(at) {
+        if c == '"' {
+            // Quoted text, a doubled quote within it kept.
+            at = at.saturating_add(1);
+            while let Some(&inner) = chars.get(at) {
+                at = at.saturating_add(1);
+                if inner == '"' && chars.get(at) != Some(&'"') {
+                    break;
+                }
+                if inner == '"' {
+                    at = at.saturating_add(1);
+                }
+            }
+        } else if c.is_alphanumeric() || c == '_' {
+            let start = at;
+            while chars
+                .get(at)
+                .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '.'))
+            {
+                at = at.saturating_add(1);
+            }
+            if !c.is_ascii_digit() {
+                let name: String = chars.get(start..at).unwrap_or_default().iter().collect();
+                if !FUNCTIONS.contains(&name.to_lowercase().as_str()) {
+                    return None;
+                }
+                let mut next = at;
+                while chars.get(next).is_some_and(|c| c.is_whitespace()) {
+                    next = next.saturating_add(1);
+                }
+                calls |= chars.get(next) == Some(&'(');
+            }
+        } else if c.is_whitespace() || "+-*/^%(),;".contains(c) {
+            at = at.saturating_add(1);
+        } else {
+            return None;
+        }
+    }
+    calls.then(|| {
+        evaluate(&chars.iter().collect::<String>(), &mut |text| {
+            Err(format!("`{text}` is not a value"))
+        })
+    })
+}
+
 struct Parser<'a> {
     chars: Vec<char>,
     at: usize,
@@ -369,6 +465,22 @@ impl Parser<'_> {
 
     fn number(&mut self) -> Result<Value, String> {
         let start = self.at;
+        // An ISO date is a date, not two subtractions.
+        let date: String = self
+            .chars
+            .get(start..start.saturating_add(10))
+            .unwrap_or_default()
+            .iter()
+            .collect();
+        if let Some(day) = dates::parse(&date)
+            && !self
+                .chars
+                .get(start.saturating_add(10))
+                .is_some_and(|c| c.is_alphanumeric() || matches!(c, '.' | '_'))
+        {
+            self.at = start.saturating_add(10);
+            return Ok(Value::Date(day));
+        }
         while self.peek().is_some_and(|c| c.is_ascii_digit() || c == '.') {
             self.at = self.at.saturating_add(1);
         }

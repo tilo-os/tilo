@@ -60,7 +60,8 @@ I2C_INPUT_BUILTIN = {
     "i2c-qcom-geni": "CONFIG_I2C_QCOM_GENI",
     "i2c-hid-of": "CONFIG_I2C_HID_OF",
     "i2c-core": "CONFIG_I2C",
-    "hid-core": "CONFIG_HID",
+    # HID core links into hid.ko (drivers/hid/Makefile: hid-y := hid-core.o ...).
+    "hid": "CONFIG_HID",
     "evdev": "CONFIG_INPUT_EVDEV",
     "atkbd": "CONFIG_INPUT_KEYBOARD",
 }

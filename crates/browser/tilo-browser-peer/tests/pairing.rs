@@ -1,3 +1,8 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "the test places its clock a whole number of seconds after the request"
+)]
+
 //! Pairing a person's new device through a host, as the page does it: the
 //! new device holds no root, asks the host to certify it for the person
 //! (`certify`) and shows its pairing code; a device of theirs that holds
@@ -339,8 +344,28 @@ fn short_request(person: [u8; 32], device: &SigningKey, wait_ns: u64) -> Certifi
     .unwrap()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn only_a_holder_of_the_named_root_answers_and_an_unanswered_request_expires() {
+#[test]
+fn only_a_holder_of_the_named_root_answers_and_an_unanswered_request_expires() {
+    // The test holds the process's wall clock while a request waits out its
+    // lifetime, and the host and the page read that clock from their own
+    // tokio worker threads: it takes the process to itself, with a runtime
+    // of its own, so no test beside it reads that time.
+    let process = || tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "only_a_holder_of_the_named_root_answers_and_an_unanswered_request_expires",
+        || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("a runtime for this test alone")
+                .block_on(an_unanswered_request_expires_between_the_roots(process()));
+        },
+    );
+}
+
+async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::testing::OwnProcess) {
     // Alice's host governs a room Bob, Dave and Erin are guests of: each
     // was invited through the room and came in on a browser.
     let (alice, _) = UserIdentity::generate("Alice", 1);
@@ -458,7 +483,7 @@ async fn only_a_holder_of_the_named_root_answers_and_an_unanswered_request_expir
     // clock is held while it is asked and then moved past its lifetime, so
     // a slow run neither expires it early nor waits for it.
     let asked_at = tilo_clock::wall();
-    tilo_clock::freeze_wall(asked_at);
+    let _asking = tilo_clock::testing::hold_wall_everywhere(process, asked_at);
     let device = new_key();
     let request = short_request(person(&dave), &device, 3_000_000_000);
     let CertifyReply::Pending { pairing_code } =
@@ -475,7 +500,8 @@ async fn only_a_holder_of_the_named_root_answers_and_an_unanswered_request_expir
         },
         "a request waits through its lifetime"
     );
-    tilo_clock::freeze_wall(asked_at + std::time::Duration::from_secs(3));
+    let expired_at = asked_at + std::time::Duration::from_secs(3);
+    let _expired = tilo_clock::testing::hold_wall_everywhere(process, expired_at);
     let reply = wait_for("the request to expire", || async {
         match carrier::certify_wait(&*https, digest).await.unwrap() {
             CertifyReply::Pending { pairing_code: code } => {

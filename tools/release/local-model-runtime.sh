@@ -24,7 +24,9 @@ fedora_minimal=registry.tilo.so/tilo/fedora-minimal@sha256:160ca210f19cb881f9f5d
 # NVIDIA's CUDA bases, their linux/amd64 images.
 cuda_devel=registry.tilo.so/tilo/cuda@sha256:e542739fcaa4f45da5add8c4cf5769783a61628b2518304a5bbe4ace468b8c8f
 cuda_runtime=registry.tilo.so/tilo/cuda@sha256:1199283a7fd5fc7dcb472ea4c6b6d8eb378ef8c0b9aae5e731491c01a219ca43
-ubuntu_snapshot=20261020T000000Z
+# Kitware's CMake release for the CUDA build, whose base has the compilers but no CMake.
+cmake_version=3.31.6
+cmake_sha256=5a1133ff103c71eb5120e2cc3de922733e7d8a26a98ae716397e8676adb367bf
 # vllm/vllm-openai v0.32.0, its linux/amd64 image.
 vllm_version=0.32.0
 vllm_image=docker.io/vllm/vllm-openai@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34
@@ -65,6 +67,13 @@ fetch_llama_source() {
   echo "$llama_sha256  $dest/llama.cpp.tar.gz" | sha256sum --check --quiet
 }
 
+fetch_cmake() {
+  local dest=$1
+  curl --fail --silent --show-error --location --proto '=https' --retry 3 --output "$dest/cmake.tar.gz" \
+    "https://github.com/Kitware/CMake/releases/download/v$cmake_version/cmake-$cmake_version-linux-x86_64.tar.gz"
+  echo "$cmake_sha256  $dest/cmake.tar.gz" | sha256sum --check --quiet
+}
+
 # Name the image an OCI archive holds: rewrite its index with the reference annotation podman
 # load reads. The manifest, and so the digest, stays as built.
 name_archive() {
@@ -76,7 +85,19 @@ name_archive() {
   printf '{"schemaVersion":2,"manifests":[%s,"annotations":{"org.opencontainers.image.ref.name":"%s"}}]}' \
     "$manifest" "$name" > "$dir/index.json"
   tar --delete -f "$archive" index.json
-  tar --append -f "$archive" -C "$dir" --mtime=@0 --owner=0 --group=0 --numeric-owner index.json
+  tar --append -f "$archive" -C "$dir" index.json
+  rm -rf "$dir"
+  normalize_archive "$archive"
+}
+
+# Write the OCI archive again with its entries in name order and no times or owners, so the same
+# image is the same archive and its receipt holds for every build of it.
+normalize_archive() {
+  local archive=$1 dir
+  dir=$(mktemp -d "$scratch/layout.XXXXXX")
+  tar -xf "$archive" -C "$dir"
+  tar -cf "$archive" -C "$dir" --sort=name --format=gnu --mtime=@0 --owner=0 --group=0 \
+    --numeric-owner --mode=u=rwX,go=rX oci-layout index.json blobs
   rm -rf "$dir"
 }
 
@@ -88,9 +109,9 @@ build_llama() {
     --build-arg "LLAMA_BUILD_NUMBER=$llama_build" --build-arg "LLAMA_BUILD_COMMIT=${llama_commit:0:7}")
   case $id in
     llama-cpp-cuda-*)
+      fetch_cmake "$context"
       bash tools/ci/publish/oci-build.sh "$context" "$runtimes/llama-cpp-cuda.Containerfile" "$out" "${common[@]}" \
-        --build-arg "BUILD_BASE=$cuda_devel" --build-arg "RUN_BASE=$cuda_runtime" \
-        --build-arg "UBUNTU_SNAPSHOT=$ubuntu_snapshot"
+        --build-arg "BUILD_BASE=$cuda_devel" --build-arg "RUN_BASE=$cuda_runtime"
       ;;
     *)
       bash tools/ci/publish/oci-build.sh "$context" "$runtimes/llama-cpp.Containerfile" "$out" "${common[@]}" \
@@ -114,6 +135,7 @@ build_vllm() {
   # Only the manifest's media types change on the way to OCI; the layers are upstream's bytes.
   skopeo copy --retry-times 3 --format oci "docker://$vllm_image" \
     "oci-archive:$out/$id.oci.tar:registry.tilo.so/tilo/local-model-runtime-$id:$vllm_version"
+  normalize_archive "$out/$id.oci.tar"
   base_digest=$vllm_image
   version=$vllm_version
 }

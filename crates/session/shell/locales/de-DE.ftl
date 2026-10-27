@@ -26,8 +26,13 @@ continuity-other-device = deinem anderen Gerät
 tab-closed-toast = { $title } geschlossen
 tab-closed-group-toast = { $count } Tabs geschlossen
 tab-closed-undo = Rückgängig
+workspace-first-reached = Dies ist der erste Arbeitsbereich
+workspace-last-reached = Dies ist der letzte Arbeitsbereich
+strip-first-reached = Dies ist die erste Leiste
+strip-last-reached = Dies ist die letzte Leiste
 workspace-left-toast = { $name } verlassen
 workspace-joined-name = Geteilter Arbeitsbereich
+workspace-personal-name = Persönlich
 workspace-needs-join-again = Erneut beitreten, um teilzunehmen
 workspace-not-joined-yet = Noch nicht beigetreten
 workspace-not-ready-no-documents = Dieser Arbeitsbereich ist noch nicht bereit: Apps können darin Dokumente öffnen, sobald er es ist.
@@ -211,18 +216,9 @@ shortcut-category-accessibility = Bedienungshilfen
 keyboard-shortcuts-resource = Tastenkürzel
 keyboard-shortcuts-list = Tastenkürzel auflisten
 keyboard-shortcuts-list-description = Jedes Tastenkürzel des Desktops mit Bezeichnung, aktueller und voreingestellter Belegung, Änderbarkeit und Kategorie
-keyboard-shortcuts-reset-all = Alle Tastenkürzel zurücksetzen
-keyboard-shortcuts-reset-all-description = Jedes änderbare Tastenkürzel des Desktops auf seine Voreinstellung zurücksetzen
-keyboard-shortcut-rebind = Tastenkürzel für { $shortcut } ändern
-keyboard-shortcut-rebind-description = { $shortcut } liegt auf { $chords } (Voreinstellung { $defaults }). Gib eine andere Belegung an; eine bereits vergebene wird abgelehnt und ihr Inhaber genannt.
-keyboard-shortcut-reset = Tastenkürzel für { $shortcut } zurücksetzen
-keyboard-shortcut-reset-description = { $shortcut } wieder auf { $defaults } legen
-keyboard-shortcut-conflict = { $chord } ist bereits für „{ $shortcut }“ belegt.
-keyboard-shortcut-invalid = Dieses Tastenkürzel wird nicht unterstützt.
-
-# Tastaturhilfe (F1)
 guide-title = Tastenkürzel
 guide-reopen-hint = Wähle ein Navigationskürzel, um es zu ändern
+guide-chord-row = Diese Tastenkombination ändern, belegt mit { $chord }
 guide-done = Fertig
 guide-press-new-shortcut = Neues Tastenkürzel für „{ $action }“ drücken · Esc bricht ab
 guide-message-esc-cancels = { $message } · Esc bricht ab
@@ -485,11 +481,12 @@ portal-launcher-reason = Prüfe den Starter, bevor er zu deiner App-Bibliothek h
 portal-launcher-confirm = Starter hinzufügen
 portal-launcher-icon-supplied = Mitgeliefertes Bild (geprüft)
 portal-launcher-icon-monogram = Tilo-Monogramm
-portal-chooser-nothing-granted = Dieser App wurden keine Dateien zur Auswahl freigegeben.
+portal-chooser-cannot-give = Dieses Gerät kann Apps gerade keine Dateien geben, die Sie auswählen. Melden Sie sich ab und wieder an und versuchen Sie es dann erneut.
+portal-chooser-not-managed = Nur wer diesen Arbeitsbereich verwaltet, kann seinen Apps Ihre Dateien geben. Bitten Sie eine dieser Personen, die Datei im Arbeitsbereich zu teilen.
 portal-chooser-file-not-granted = Dieser App wurde { $path } nicht freigegeben.
 portal-chooser-no-file = Es gibt keine Datei zum Öffnen.
 portal-chooser-session-closing = Die Sitzung wird beendet.
-portal-chooser-other-workspace = Der Arbeitsbereich der App ist nicht der angezeigte.
+portal-chooser-other-workspace = Der Arbeitsbereich dieser App wird gerade nicht angezeigt. Wechseln Sie zu ihm und versuchen Sie es dann erneut.
 portal-chooser-open-uri-undeclared = Diese App hat nicht angegeben, dass sie Links öffnet.
 portal-chooser-save-disabled = Speichern auf dem Datenträger ist auf diesem Gerät ausgeschaltet.
 portal-launcher-icon-compass = Tilo-Webkompass
@@ -573,6 +570,7 @@ host-activity-action-move-boundary = Grenze der Arbeitssitzung verschieben
 host-activity-action-undo = Änderungen rückgängig machen
 host-activity-action-restore = Auf den Stand davor zurücksetzen
 host-activity-action-undo-run = Agentenaufgabe rückgängig machen
+host-activity-action-undo-record = Diese Änderung rückgängig machen
 host-activity-action-open = Öffnen
 host-activity-action-choose-source = Morgenquelle wählen
 host-activity-action-source = Morgenquelle verwenden
@@ -1043,6 +1041,7 @@ status-summary-empty = Systemstatus
 status-other-displays-a11y = Weitere Bildschirme
 
 # Notification toasts
+notification-sender-claims = App sagt: { $name }
 notification-source-caption = { $app } · Von { $device }
 notification-app-host-apps = Host-Apps
 notification-app-power = Energie
@@ -1119,7 +1118,9 @@ launch-error-no-display = Der Desktop startet noch. Versuche es gleich noch einm
 launch-error-no-workspace = Wähle einen Arbeitsbereich und versuche es dann erneut.
 launch-error-shell-owned-intent = Öffne dieses Ziel über die Desktop-Steuerelemente.
 launch-error-identity-unavailable = Die Identität des Arbeitsbereichs konnte nicht geladen werden. Versuche es erneut.
-launch-error-not-listed-here = Diese App gehört nicht zu den Apps dieses Arbeitsbereichs. Bitte eine Person, die den Arbeitsbereich verwaltet, sie hinzuzufügen.
+launch-error-app-not-in-workspace = Dieser Arbeitsbereich enthält { $app } nicht. Eine verwaltende Person kann sie hinzufügen.
+launch-error-device-not-admitted = Dieses Gerät ist nicht mehr in diesem Arbeitsbereich. Tritt ihm mit einer Einladung erneut bei.
+launch-error-app-authorship-refused = Der Host dieses Arbeitsbereichs hat dir nicht erlaubt, { $app } hinzuzufügen.
 launch-error-registry-unreadable = Die App-Liste konnte nicht gelesen werden. Versuche es erneut.
 launch-error-sandbox-supervision = Die Dateiberechtigungen der App konnten nicht überwacht werden. Versuche es erneut.
 launch-error-host-app-refused = Der Desktop-Eintrag dieser App kann nicht gestartet werden.
@@ -1167,11 +1168,22 @@ shell-workspace-renamed = Arbeitsbereich umbenannt
 shell-tab-menu-close = Tab schließen
 shell-tab-menu-split-right = Rechts abtrennen
 shell-tab-menu-new-group = In neue Gruppe verschieben
+shell-window-menu-reveal = Zu diesem Fenster gehen
 shell-window-menu-full-screen = Vollbild
 shell-window-menu-exit-full-screen = Vollbild beenden
+# The way out of a window that just filled the display, said over it once.
+# "{ $key }" is the leaving key, labelled as the person's keyboard labels it.
+shell-fullscreen-way-out = { $key } beendet das Vollbild.
 shell-window-menu-maximize = Maximieren
 shell-window-menu-restore = Wiederherstellen
+shell-window-menu-width = Breite
+shell-window-menu-width-half = Halbe Breite
+shell-window-menu-width-narrow = Schmal
+shell-window-menu-width-normal = Normal
+shell-window-menu-width-wide = Breit
+shell-window-menu-width-equal = Alle angleichen
 shell-window-menu-move-to-strip = In Leiste verschieben
+shell-window-menu-move-to-display = Auf Bildschirm verschieben
 shell-window-menu-move-to-workspace = In Arbeitsbereich verschieben
 shell-window-menu-share = Mit { $place } teilen
 shell-window-menu-stop-sharing = Nicht mehr teilen
@@ -1380,6 +1392,13 @@ search-answer-copied = Kopiert
 search-answer-money-stale = { $amount } = · Kurse { $age }
 search-matches = Passt zu „{ $word }“
 search-answer-open-address = { $address } öffnen
+search-provider-ask-agent = Einen Agenten fragen
+search-kind-agent = Agent
+search-ask-agent = Einen Agenten fragen: { $query }
+search-ask-agent-subtitle = Eine Aufgabe für { $agent }
+search-ask-agent-no-agent = In diesem Workspace arbeitet noch kein Agent. Füge einen hinzu, um zu fragen.
+search-ask-agent-no-model = Der Agent hat kein KI-Modell. Wähle eines in den Einstellungen.
+search-ask-agent-offline = Du bist offline, und das Modell des Agenten liegt im Internet.
 search-provider-web = Web
 search-kind-web = Web
 search-kind-websites = Websites
@@ -1459,6 +1478,7 @@ search-action-shortcut-help-toggle-subtitle = F1 öffnet sie überall; Super+/ i
 search-action-desktop-tour-open = Desktop-Tour starten
 search-action-desktop-tour-open-subtitle = Die dreiminütige Einführung in Navigation, Organisation und Zusammenarbeit noch einmal ansehen
 search-provider-device-local = Private Fenster
+search-provider-focused-window = Dieses Fenster
 search-action-feedback-open = Feedback geben
 search-action-feedback-open-subtitle = Ein Problem oder eine Idee zum Fenster im Vordergrund melden; du prüfst, was gesendet wird
 search-action-feedback-point = Feedback zu einem Teil geben
@@ -2179,7 +2199,6 @@ peer-sync-paste-token = Eine Website eingeben oder einen Arbeitsbereichs- oder E
 peer-sync-identity-copied = Kopiert
 peer-sync-invite-failed = Die Einladung konnte nicht erstellt werden. Versuche es gleich noch einmal.
 peer-sync-identity-unavailable = Deine Tilo-Identität konnte nicht kopiert werden. Versuche es gleich noch einmal.
-peer-sync-joined-room = Raum { $room } beigetreten
 peer-sync-join-refused = Diesem Link konnte nicht beigetreten werden. Prüfe, ob er vollständig und noch gültig ist, oder bitte um einen neuen.
 peer-sync-resend-failed = Die Einladung konnte nicht erneut kopiert werden. Versuche es gleich noch einmal.
 peer-sync-invite-canceled = Einladung widerrufen
@@ -2212,9 +2231,30 @@ peer-sync-role-expires = { $role }, { $unit ->
        *[other] { $count } Tagen
     } ab
 }
+peer-sync-received-role-expires = Zugriff als { $role }, { $unit ->
+    [now] läuft gleich ab
+    [seconds] läuft in { $count ->
+        [one] 1 Sekunde
+       *[other] { $count } Sekunden
+    } ab
+    [minutes] läuft in { $count ->
+        [one] 1 Minute
+       *[other] { $count } Minuten
+    } ab
+    [hours] läuft in { $count ->
+        [one] 1 Stunde
+       *[other] { $count } Stunden
+    } ab
+   *[days] läuft in { $count ->
+        [one] 1 Tag
+       *[other] { $count } Tagen
+    } ab
+}
+peer-sync-code-check = Prüfe, ob die Person, die dich eingeladen hat, denselben Code sieht
 peer-sync-role-viewer = Betrachter
 peer-sync-role-commenter = Kommentator
 peer-sync-role-editor = Bearbeiter
+peer-sync-role-moderator = Moderator
 peer-sync-copy = Kopieren
 peer-sync-cancel = Abbrechen
 peer-sync-join = Beitreten
@@ -2222,6 +2262,8 @@ peer-sync-copy-identity = Meine Identität kopieren
 peer-sync-role-heading = Zugriff
 peer-sync-recipient-hint = Wähle jemanden, den du kennst, oder füge die Tilo-Identität ein, die dir die Person geschickt hat.
 peer-sync-invite-anyone = Jeder mit dieser Einladung
+peer-sync-invite-workspace = Ein geteilter Arbeitsbereich
+peer-sync-invite-for = Eingeladen als { $name }
 peer-sync-paste-invite-hint = Etwa tilo.coffee oder einen Link, den man dir geschickt hat.
 peer-sync-join-site = Tritt dem Arbeitsbereich auf { $host } bei
 peer-sync-join-invitation-link = Eine Einladung in einen Arbeitsbereich auf { $host }
@@ -2303,6 +2345,7 @@ window-move-hosted-workspace = Diesen Arbeitsbereich führt sein Besitzer, und d
 window-move-not-permitted = In diesem Arbeitsbereich darfst du diese App nicht öffnen.
 window-move-already-moving = Dieses Fenster wird bereits verschoben.
 window-move-nobody-to-confirm = Zum Verschieben eines Fensters muss die Person an diesem Desktop zustimmen, was mitgeht, und es ist niemand da.
+window-move-personal = Die Einstellungen gehören nur dir und bleiben in deinem persönlichen Arbeitsbereich.
 window-transfer-title = „{ $window }“ nach { $to } verschieben?
 window-transfer-carries = Das Dokument in „{ $window }“ geht mit seinem vollständigen Bearbeitungsverlauf nach { $to }, und das Fenster öffnet sich dort so, wie du es verlassen hast.
 window-transfer-move-detail = Verschieben: Es verlässt { $from }; der Verlauf dort vermerkt, dass es nach { $to } verschoben wurde.
@@ -3068,7 +3111,7 @@ search-kw-navigation-axis-enable = experimentell, navigation, achsen
 search-kw-navigation-axis-disable = experimentell, navigation, achsen
 search-kw-navigation-axis-gather = fenster finden, fenster zurückholen, verlorenes fenster, fenster zentrieren
 search-kw-overview-toggle = übersicht, arbeitsbereiche, alle arbeitsbereiche, aktivitäten, überblick
-search-kw-settings-open = arbeitsbereich einstellungen, raum einstellungen, arbeitsbereich optionen
+search-kw-settings-open = arbeitsbereich einstellungen, arbeitsbereich optionen
 search-kw-settings-members-open = personen, mitglieder, mitwirkende, benutzer, rollen, rechte
 search-kw-settings-privacy-open = datenschutz, sicherheit, zugriff, berechtigungen
 search-kw-settings-apps-open = apps, dateien, standard-apps, arbeitsbereich apps
@@ -3164,6 +3207,57 @@ search-kw-session-suspend = ruhezustand, standby, energiesparmodus, schlafen, be
 search-kw-session-restart = neu starten, neustart, rechner neu starten, reboot
 search-kw-session-shut-down = herunterfahren, ausschalten, abschalten, pc ausschalten, runterfahren
 search-kw-session-logout = abmelden, ausloggen, logout, sitzung beenden
+search-kw-input-source-next = nächstes layout, layout wechseln, eingabequelle, tastatursprache, schreibsprache
+search-kw-feedback-open = rückmeldung, feedback, problem melden, fehler melden, vorschlag
+search-kw-feedback-point = rückmeldung hierzu, problem zeigen, das melden
+search-kw-identity-device-pair-asking = kopplungsanfragen, wartende geräte, geräteanfragen
+search-kw-identity-device-pair-answer = kopplung beantworten, anfrage beantworten
+search-kw-identity-list = identitäten, konten, meine konten
+search-kw-identity-activate = konto verwenden, identität wechseln, standardkonto
+search-kw-identity-remove = konto entfernen, identität löschen, konto vergessen
+search-kw-identity-protect = schlüssel schützen, konto sichern, identität verschlüsseln
+search-kw-identity-devices-list = meine geräte, vertraute geräte, geräteliste, verknüpfte geräte
+search-kw-identity-home-peer-remove = heimserver entfernen, server vergessen, server entkoppeln
+search-kw-identity-home-peer-retry-removals = entfernen wiederholen, server fertig entfernen
+search-kw-quick-settings-network = wlan netze, verfügbare netzwerke, mit wlan verbinden, netzwerk wählen, hotspot
+search-kw-quick-settings-bluetooth = bluetooth geräte, kopfhörer koppeln, kopfhörer verbinden, lautsprecher verbinden
+search-kw-projection-close = spiegeln beenden, übertragung beenden, präsentation beenden
+search-kw-display-shared-inspect = geteilte bildschirme, wer sieht meinen bildschirm
+search-kw-display-shared-include = bildschirm teilen, anzeige einbeziehen
+search-kw-display-layout-extend = bildschirm erweitern, desktop erweitern, zweiter monitor, beide bildschirme
+search-kw-display-layout-mirror = bildschirm spiegeln, bildschirm duplizieren, gleiches bild
+search-kw-display-layout-builtin-only = nur laptop bildschirm, nur interner bildschirm, externen monitor aus
+search-kw-display-layout-external-only = nur externer monitor, nur zweiter bildschirm, laptop bildschirm aus
+search-kw-display-outputs-inspect = bildschirme, monitore, angeschlossene bildschirme
+search-kw-display-change-keep = änderungen behalten, auflösung behalten, anzeige bestätigen
+search-kw-display-change-revert = anzeige zurücksetzen, auflösung zurück, anzeige wiederherstellen
+search-kw-bluetooth-pairing-decline = kopplung ablehnen, bluetooth ablehnen
+search-kw-peer-pair-device = gerät hinzufügen, handy verbinden, neues gerät, telefon koppeln
+search-kw-bot-add = bot hinzufügen, integration, automatisierung
+search-kw-app-uninstall = deinstallieren, app entfernen, app löschen
+search-kw-app-remove-from-apps = app ausblenden, aus liste entfernen
+search-kw-bot-remove = bot entfernen, bot löschen
+search-kw-member-role-set = rolle ändern, berechtigungen, zum admin machen, zugriffsrechte
+search-kw-member-remove = person entfernen, mitglied entfernen, zugang entziehen
+search-kw-invitation-issue = einladungslink, einladung erstellen, neue einladung
+search-kw-invitation-list = offene einladungen, gesendete einladungen
+search-kw-invitation-resend = einladung erneut senden, erinnern
+search-kw-invitation-cancel = einladung widerrufen, einladung zurückziehen, einladung löschen
+search-kw-agent-remove = assistent entfernen, ki entfernen
+search-kw-strip-remove = streifen löschen, zeile entfernen
+search-kw-workspace-create = neuer arbeitsbereich, arbeitsbereich hinzufügen, neuer desktop, neues projekt
+search-kw-workspace-rename = arbeitsbereich umbenennen, arbeitsbereich benennen
+search-kw-workspace-delete = arbeitsbereich löschen, arbeitsbereich entfernen, arbeitsbereich archivieren
+search-kw-workspace-move-earlier = arbeitsbereich nach oben, arbeitsbereiche sortieren
+search-kw-workspace-move-later = arbeitsbereich nach unten, arbeitsbereiche sortieren
+search-kw-group-move-to-strip = fenster in zeile verschieben, fenster in streifen
+search-kw-group-close = fenster schließen, beenden, app schließen
+search-kw-tab-move-to-workspace = in arbeitsbereich verschieben, tab verschieben, auf anderen desktop
+search-kw-quick-settings-wifi-set-enabled = wlan an, wlan aus, wlan einschalten, wlan ausschalten
+search-kw-quick-settings-bluetooth-set-enabled = bluetooth an, bluetooth aus, bluetooth einschalten, bluetooth ausschalten
+search-kw-quick-settings-airplane-mode-set-enabled = flugmodus an, flugmodus aus
+search-kw-workspace-archived-restore = arbeitsbereich wiederherstellen, aus archiv holen
+search-kw-workspace-archived-delete = endgültig löschen, archivierten arbeitsbereich löschen
 
 storage-app-name = Speicher
 storage-volume-home = deine Dateien
@@ -3189,6 +3283,16 @@ host-crash-records-read = Einzelheiten eines Problems lesen
 host-crash-records-read-detail = Alles, was der Bericht über ein Problem enthält. Er bleibt auf diesem Computer.
 
 ## Desk widgets
+
+desk-widgets-a11y = Schreibtisch-Widgets
+desk-widget-music = Musik
+desk-widget-team = Menschen hier
+desk-widget-calendar = Kalender
+desk-widget-system-monitor = Systemmonitor
+desk-widget-open = { $widget } öffnen
+desk-widget-close = { $widget } schließen
+desk-widget-pin = Dieses Widget immer in diesem Arbeitsbereich anzeigen
+desk-widget-unpin = Dieses Widget nicht mehr immer anzeigen
 
 desk-team-title = In diesem Arbeitsbereich
 # Where a person is: their strip, then the window they are on.

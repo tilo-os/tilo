@@ -47,7 +47,7 @@ fn button(
 ) -> Button {
     Button::new(id, label)
         .role(role)
-        .on_click(ask(requests, request))
+        .on_effect(ask(requests, request))
 }
 
 fn text(value: &str, role: TextRole) -> Element {

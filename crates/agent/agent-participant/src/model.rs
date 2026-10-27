@@ -26,17 +26,25 @@ use tilo_browser_peer::DocumentRoute;
 pub use tilo_model_gateway::host_backend::ApiKey;
 
 use crate::planner::{
-    NoReads, Obligations, PlanContext, Planner, Reads, Step, StepAction, Wait, observation_within,
-    readable, rendered_picture, written_steps,
+    NoReads, Obligations, PlanContext, Planner, Reads, Role, Step, StepAction, Wait,
+    observation_within, readable, rendered_picture, written_steps,
 };
 use crate::vision::{Picture, Seen};
 
+mod catalog;
+#[cfg(test)]
+mod catalog_tests;
 mod converse;
+#[cfg(test)]
+mod item_model_tests;
 mod openai;
+#[cfg(test)]
+mod picture_read_tests;
 mod scripted;
 #[cfg(test)]
 pub(crate) mod tests;
 
+pub use catalog::{CatalogUse, Lookup, Section};
 pub(crate) use converse::as_role;
 pub use converse::{GatewayTurns, PlanTurns};
 pub use openai::{CLOUD_MODEL, ModelChoice, OpenAiModel};
@@ -89,6 +97,19 @@ pub struct Briefing {
     /// Which part of a coordinated task the plan is ([`PlanContext::role`]):
     /// in one, the `plan` tool takes items as a coordinator lists them.
     pub role: crate::planner::Role,
+    /// How much of what the apps can do the plan is told
+    /// ([`PlanContext::catalog`]).
+    pub catalog: crate::profile::Catalog,
+    /// In [`crate::profile::Catalog::Relevant`], one line per granted app,
+    /// before the reference: the same for every plan of the agent. Empty
+    /// otherwise.
+    pub index: String,
+    /// The apps the reference describes in full, in its order.
+    pub described_apps: Vec<String>,
+    /// In [`crate::profile::Catalog::Relevant`], the apps the reference
+    /// leaves out, by app id, with their operations in full for
+    /// `list_operations` to answer with.
+    pub lookups: BTreeMap<String, catalog::Lookup>,
 }
 
 impl Briefing {
@@ -298,6 +319,10 @@ impl PlanModel for GatewayModel {
 /// Explicit steps as written; anything else planned by a model.
 pub struct ModelPlanner {
     model: Box<dyn PlanModel>,
+    /// The model the items of a coordinated task plan with, when it is not
+    /// [`Self::model`] ([`crate::profile::DECOMPOSE_ITEM_MODEL_ENV`]); the
+    /// coordinator's turns and whole tasks plan with that.
+    item_model: Option<Box<dyn PlanModel>>,
     /// Whether its tasks are checked against their requests once done.
     checks_work: bool,
     /// Whether the last plan it made was the model's.
@@ -309,6 +334,11 @@ pub struct ModelPlanner {
     obligations: Obligations,
     /// Whether its tasks are coordinated, an agent per item.
     decomposes: bool,
+    /// How much of what the apps can do its plans are told.
+    catalog: crate::profile::Catalog,
+    /// What the last plan the model made was told of the apps and used,
+    /// until it is taken.
+    catalog_use: Option<CatalogUse>,
 }
 
 impl ModelPlanner {
@@ -317,12 +347,23 @@ impl ModelPlanner {
     pub fn new(model: Box<dyn PlanModel>) -> Self {
         Self {
             model,
+            item_model: None,
             checks_work: false,
             by_model: false,
             continued: None,
             obligations: Obligations::default(),
             decomposes: false,
+            catalog: crate::profile::Catalog::All,
+            catalog_use: None,
         }
+    }
+
+    /// This planner, telling its plans as much of what the apps can do as
+    /// `catalog` says ([`crate::profile::CATALOG_ENV`]).
+    #[must_use]
+    pub const fn cataloguing(mut self, catalog: crate::profile::Catalog) -> Self {
+        self.catalog = catalog;
+        self
     }
 
     /// This planner, with each item of its tasks' checklists done by an
@@ -330,6 +371,14 @@ impl ModelPlanner {
     #[must_use]
     pub fn decomposing(mut self, on: bool) -> Self {
         self.decomposes = on;
+        self
+    }
+
+    /// This planner, the items of its coordinated tasks planned by `model`
+    /// ([`crate::profile::DECOMPOSE_ITEM_MODEL_ENV`]).
+    #[must_use]
+    pub fn with_item_model(mut self, model: Box<dyn PlanModel>) -> Self {
+        self.item_model = Some(model);
         self
     }
 
@@ -574,6 +623,8 @@ fn app_open_offer(app: &str, second: bool) -> Offer {
             resource_kind: surface::APPLICATION_KIND.to_owned(),
             resource_label: app.to_owned(),
             action_label: format!("open {app} on a new, empty document"),
+            keywords: Vec::new(),
+            icon: None,
             description: Some(description),
             locus: tilo_actions::ExecutionLocus::ServerPreferred,
             kind: tilo_actions::OperationKind::Effect,
@@ -672,99 +723,21 @@ const SNAPSHOT_INTRO: &str = "What the documents this request is about hold now 
 fn briefing(context: &PlanContext, catalogue: &Catalogue) -> Briefing {
     let offered: std::collections::BTreeSet<String> =
         catalogue.offers.iter().map(Offer::id).collect();
-    let mut reference = String::new();
-    let mut shown = Vec::new();
-    let mut any_left_out = false;
-    let mut described = std::collections::BTreeSet::new();
-    for (app, descriptors) in &context.reference {
-        let mut ordered: Vec<&ActionDescriptor> = descriptors
-            .iter()
-            .filter(|descriptor| planned(descriptor, descriptors))
-            .collect();
-        ordered.sort_by_key(|descriptor| descriptor.kind != tilo_actions::OperationKind::Document);
-        let mut section = String::new();
-        let mut left_out = 0_usize;
-        for descriptor in ordered {
-            let offer = Offer {
-                app: app.clone(),
-                broker_peer_id: None,
-                broker_provider: None,
-                descriptor: noted(descriptor),
-            };
-            let id = offer.id();
-            let mut detail = format!("{id} — {}", offer.descriptor.action_label);
-            if let Some(description) = &offer.descriptor.description {
-                let _ = write!(detail, ". {description}");
-            }
-            detail.push('\n');
-            if offer.wants_content() {
-                detail.push_str("    takes what the previous step produced (it is given it)\n");
-            }
-            // The framework's `group` takes a list of what `apply` takes:
-            // its schema is `apply`'s again, so it is said in a line.
-            let grouped = offer.descriptor.address.action == GROUP_ACTION
-                && descriptors.iter().any(|other| {
-                    other.address.action == APPLY_ACTION
-                        && other.resource_kind == descriptor.resource_kind
-                });
-            if grouped {
-                let _ = writeln!(
-                    detail,
-                    "    actions: array (required) — the edits, each {{\"action\": \"apply\", \"args\": \
-                     <the argument object apply takes>}}"
-                );
-            } else {
-                detail.push_str(&tilo_agent::tools::argument_lines_compact(&offer, "    "));
-            }
-            let size = detail.chars().count();
-            if size > MOST_OPERATION_CHARS
-                || section.chars().count().saturating_add(size) > MOST_REFERENCE_CHARS
-            {
-                left_out = left_out.saturating_add(1);
-                continue;
-            }
-            section.push_str(&detail);
-            described.insert((
-                app.clone(),
-                offer.descriptor.resource_kind.clone(),
-                offer.descriptor.address.action.clone(),
-            ));
-            if offered.contains(&id) {
-                shown.push(id);
-            }
-        }
-        if section.is_empty() {
-            continue;
-        }
-        if reference.is_empty() {
-            reference.push_str(REFERENCE_INTRO);
-            reference.push('\n');
-        }
-        let _ = writeln!(reference, "## {app}");
-        reference.push_str(&section);
-        if left_out > 0 {
-            any_left_out = true;
-            let _ = writeln!(
-                reference,
-                "({left_out} more operations of {app}: their signatures are listed with the \
-                 ids; ask `describe_operation` for one only if that is not enough.)"
-            );
-        }
-    }
-    let state = briefing_state(context, catalogue);
-    Briefing {
-        reference,
-        state,
-        shown,
-        left_out: any_left_out,
-        described,
+    let mut briefing = Briefing {
+        state: briefing_state(context, catalogue),
         cache_key: Some(cache_key(&context.room)),
         searchable: context.searchable.clone(),
         may_plan_nothing: context.may_plan_nothing,
         pictures: Vec::new(),
         retries: context.retries.clone(),
         role: context.role.clone(),
+        ..Briefing::default()
+    };
+    for (app, descriptors) in &context.reference {
+        let section = catalog::app_section(app, descriptors, &offered);
+        catalog::describe(&mut briefing, app, &section, REFERENCE_INTRO);
     }
+    briefing
 }
 
 /// The prompt-cache routing key of every planning request in `room`: a
@@ -842,6 +815,8 @@ fn open_record_descriptor(app: &str, record: &str, title: Option<&str>) -> Actio
         resource_kind: surface::APPLICATION_KIND.to_owned(),
         resource_label,
         action_label,
+        keywords: Vec::new(),
+        icon: None,
         description: Some(format!(
             "A {app} document this room already has, which people may be looking at. \
              Opening it puts its operations on the list, and they change this document: \
@@ -904,20 +879,43 @@ impl<'a> PlanningReads<'a> {
         }
     }
 
-    /// What a re-plan's first turn shows: the newest picture the task's
-    /// steps looked at, to a model that sees.
+    /// What a re-plan's first turn shows a model that sees: the newest
+    /// picture the task's steps looked at, then the pictures its steps read
+    /// since its last plan ([`PlanContext::read_pictures`]), the room's own
+    /// only where the agent may show them.
     fn newest_look(&mut self) -> Vec<Picture> {
-        let context = self.context;
-        let Some(newest) = context.pictures.last().filter(|_| self.sees) else {
+        if !self.sees {
             return Vec::new();
-        };
-        match self.picture(newest, true) {
-            Ok(picture) => vec![picture],
-            Err(why) => {
-                tracing::debug!(%why, "agent: a looked-at picture is not shown");
-                Vec::new()
+        }
+        let context = self.context;
+        let mut shown: Vec<(String, bool)> = context
+            .pictures
+            .last()
+            .map(|newest| (newest.clone(), true))
+            .into_iter()
+            .collect();
+        for address in &context.read_pictures {
+            let rendered = crate::vision::content_hash(address)
+                .is_some_and(|hash| self.rendered.contains(&hash));
+            if (rendered || context.room_pictures)
+                && !shown.iter().any(|(looked, _)| looked == address)
+            {
+                shown.push((address.clone(), rendered));
             }
         }
+        shown.truncate(crate::vision::MOST_PICTURES_PER_PLAN);
+        shown
+            .into_iter()
+            .filter_map(
+                |(address, rendered)| match self.picture(&address, rendered) {
+                    Ok(picture) => Some(picture),
+                    Err(why) => {
+                        tracing::debug!(%why, "agent: a looked-at picture is not shown");
+                        None
+                    }
+                },
+            )
+            .collect()
     }
 
     /// The picture at `address` as the model is shown it; `rendered` when
@@ -989,6 +987,31 @@ impl PlanReads for PlanningReads<'_> {
         let (route, address, output) = self.run(id, arguments)?;
         let mut text = observation_within(&route.app_id, &address, &output, MOST_READ_CHARS)
             .unwrap_or_else(|| format!("{id} answered nothing"));
+        if let Some(value) = &output.value
+            && let Some(picture) = crate::vision::read_picture(value)
+        {
+            // Content read as text that is a picture is shown, as a look
+            // shows it, or refused saying why.
+            let name = crate::vision::read_picture_name(value, &picture);
+            let rendered = crate::vision::content_hash(&picture)
+                .is_some_and(|hash| self.rendered.contains(&hash));
+            let why = if !self.sees {
+                Some(crate::vision::NOT_SEEING)
+            } else if !rendered && !self.context.room_pictures {
+                Some(crate::vision::ROOM_WITHHELD)
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                return Err(crate::vision::withheld(&name, why));
+            }
+            let looked = self.look(&picture)?;
+            text.push_str("\nShown as a picture.");
+            return Ok(Seen {
+                text,
+                pictures: looked.pictures,
+            });
+        }
         let mut pictures = Vec::new();
         if let Some(rendered) = rendered_picture(&output) {
             if let Some(hash) = crate::vision::content_hash(&rendered) {
@@ -1003,7 +1026,7 @@ impl PlanReads for PlanningReads<'_> {
                     Err(why) => Some(why),
                 }
             } else {
-                Some("this model is not shown pictures".to_owned())
+                Some(crate::vision::NOT_SEEING.to_owned())
             };
             if let Some(why) = withheld {
                 let _ = write!(text, "\n({rendered} picture not shown: {why})");
@@ -1053,9 +1076,9 @@ impl PlanReads for PlanningReads<'_> {
         }
         let rendered = self.rendered.contains(&hash);
         if !rendered && !self.context.room_pictures {
-            return Err(format!(
-                "{address} is a picture from the room, and this agent may not show the room's \
-                 pictures to its model; plan with what the request and the reads say of it"
+            return Err(crate::vision::withheld(
+                &address,
+                crate::vision::ROOM_WITHHELD,
             ));
         }
         let picture = crate::vision::prepare(&address, &bytes, rendered)?;
@@ -1087,6 +1110,18 @@ impl Planner for ModelPlanner {
         self.decomposes
     }
 
+    fn sees(&self) -> bool {
+        self.model.sees()
+    }
+
+    fn catalog(&self) -> crate::profile::Catalog {
+        self.catalog
+    }
+
+    fn take_catalog(&mut self) -> Option<CatalogUse> {
+        self.catalog_use.take()
+    }
+
     fn plan_reading(
         &mut self,
         task: &str,
@@ -1096,6 +1131,7 @@ impl Planner for ModelPlanner {
         // A task that is exactly the rest this planner last deferred is that
         // task planned again; anything else is a new task.
         self.obligations = Obligations::default();
+        self.catalog_use = None;
         let replans = match self.continued.take() {
             Some((rest, replans)) if rest == task => replans.saturating_add(1),
             _ => 0,
@@ -1103,9 +1139,18 @@ impl Planner for ModelPlanner {
         if let Some(steps) = written_steps(task, context) {
             return steps;
         }
+        // An item's agent plans with the item model, when there is one.
+        let model = match (&context.role, self.item_model.as_mut()) {
+            (Role::Item { .. }, Some(items)) => items,
+            _ => &mut self.model,
+        };
+        let sees = model.sees();
         let (catalogue, targets) = catalogue(context);
         let mut briefing = briefing(context, &catalogue);
-        let mut read = PlanningReads::new(&targets, context, reads, self.model.sees());
+        if context.catalog == crate::profile::Catalog::Relevant {
+            catalog::narrow(&mut briefing, task, context, &catalogue);
+        }
+        let mut read = PlanningReads::new(&targets, context, reads, sees);
         briefing.pictures = read.newest_look();
         // A request that names exactly one operation of an open record, all
         // of whose arguments it states, is that operation: the model would
@@ -1115,15 +1160,19 @@ impl Planner for ModelPlanner {
             .then(|| single_operation(task, &catalogue, &targets))
             .flatten();
         self.by_model = direct.is_none();
-        let answer = match direct {
-            Some(answer) => answer,
-            None => self.model.choose_briefed(
+        let answer = if let Some(answer) = direct {
+            answer
+        } else {
+            catalog::begin(CatalogUse::of(&briefing));
+            let chosen = model.choose_briefed(
                 &with_results(task, context),
                 &briefing,
                 &catalogue,
                 MOST_STEPS,
                 &mut read,
-            )?,
+            );
+            self.catalog_use = catalog::take();
+            chosen?
         };
         if let Some(refused) = planned_nothing(&answer, context) {
             return Err(refused);
@@ -1135,13 +1184,8 @@ impl Planner for ModelPlanner {
             adjust: answer.adjust.clone(),
             reply: answer.reply.clone(),
         };
-        let (mut steps, rest, wait) = answer_steps(
-            answer,
-            task,
-            (&catalogue, &targets),
-            context,
-            self.model.sees(),
-        )?;
+        let (mut steps, rest, wait) =
+            answer_steps(answer, task, (&catalogue, &targets), context, sees)?;
         if let Some(wait) = wait {
             // The wait ends this plan: what `then` left is planned with
             // what arrived, so it rides with the wait.

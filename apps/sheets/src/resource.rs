@@ -1320,6 +1320,7 @@ const SCENARIOS: &[&str] = &[
     "comments",
     "bold",
     "find",
+    "replace",
     "cellmenu",
 ];
 
@@ -1381,6 +1382,27 @@ impl ResourceApp for SheetsShell {
             invokes.extend(crate::sample::fill_seeds());
         }
         invokes
+    }
+
+    /// The find shots are the window bar's search: its field with a query in
+    /// it, driving the sheet's matches. The grid draws no find of its own.
+    /// Replace opens the search on its replacement, and steps to a match the
+    /// sheet shows beside the options it covers the top of the grid with.
+    fn scenario_input(
+        name: Option<&str>,
+        input: &mut ui::headless::FrameHarness,
+    ) -> Result<(), String> {
+        match name {
+            Some("find") => {
+                input.search_in_window(ui::window_toolbar::SearchOpening::Find, "a");
+            }
+            Some("replace") => {
+                input.search_in_window(ui::window_toolbar::SearchOpening::Replace, "Total");
+                input.step_window_search(true);
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn view(cx: &mut ViewCx<Workbook>) -> Element {

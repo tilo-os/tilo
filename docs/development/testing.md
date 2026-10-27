@@ -30,11 +30,14 @@ For example, while changing the shell's workspace overview:
 
 ```sh
 t test test-x86_64/shell --test 'concept_parity_spec::overview_add_workspace::'
-t test clippy/shell
+t test clippy-x86_64/shell clippy-aarch64/shell
 t cargo check --locked -p shell --tests
 ```
 
-The first command runs one module, not the package's full test coverage. Follow
+The first command runs one module, not the package's full test coverage. The
+shell's code differs between x86_64 and aarch64, so its checks run on each
+(`test-<arch>`, `clippy-<arch>`); a package whose code is the same on both has
+one `test/<package>` and one `clippy/<package>`. Follow
 focused feedback with the affected package/integration checks. The last command
 checks test compilation but does not execute tests; on a non-Linux builder it
 cannot check Linux-only compositor code.

@@ -3,6 +3,9 @@
 //! `wayland-2`, …) handed to `DisplayHandle::insert_client`. Doesn't open a
 //! TTY, talk to DRM/KMS, render, or forward input — those live elsewhere.
 
+use crate::compositor::shell_text_input::{
+    FieldSituation, KeyboardHolder, SessionState, field_owner,
+};
 use crate::shell::input_policy::{
     is_lock_chord, is_mouse_keys_toggle, is_remote_input_kill_switch,
 };
@@ -839,16 +842,10 @@ impl WakeTally {
     }
 }
 
+mod lock_media;
 mod lock_view;
+use lock_media::{LOCK_MEDIA_REFRESH, lock_media_changed, lock_now_playing, send_lock_transport};
 use lock_view::{LockClock, publish_accessibility_tree, retain_session_redraw};
-
-/// A widget poll already ran in this tick's pump. Its deadline waking the
-/// loop is not a present: the tree, the layout, and any animation are the
-/// pump's result and the animation bit. Painting because the deadline
-/// merely came due kept idle apps submitting frames.
-fn present_for_app_poll(pump_changed: bool, _deadline_due: bool) -> bool {
-    pump_changed
-}
 
 /// App-side scheduling for one native tick. Keep the pump's redraw decision
 /// and the post-paint park together: a poll is work, not necessarily pixels,
@@ -859,13 +856,16 @@ struct NativeAppTick {
 }
 
 impl NativeAppTick {
-    fn after_pump(frame: &FrameBuilder, changed: bool, tick_started: Instant) -> Self {
-        let deadline_due = frame
-            .next_wake_deadline()
-            .is_some_and(|at| at <= tick_started);
+    /// A widget poll already ran in this tick's pump. Its deadline waking
+    /// the loop is not a present: the tree, the layout, and any animation
+    /// are the pump's result and the animation bit. Painting because the
+    /// deadline merely came due kept idle apps submitting frames, so the
+    /// tree's deadlines are not asked here, only once the tick has painted
+    /// ([`Self::park_deadline`]).
+    fn after_pump(changed: bool, tick_started: Instant) -> Self {
         Self {
             tick_started,
-            redraw: present_for_app_poll(changed, deadline_due),
+            redraw: changed,
         }
     }
 
@@ -965,16 +965,12 @@ mod idle_work_tests;
 
 /// A widget deadline wakes the loop once. A widget may keep an overdue
 /// deadline until a paint consumes it, while a due deadline alone does not
-/// paint (`present_for_app_poll`): a deadline that was already due when
+/// paint ([`NativeAppTick::after_pump`]): a deadline that was already due when
 /// this tick started was answered by it, and waking for it again would run
 /// the loop flat out without painting until something unrelated paints.
 fn widget_park_deadline(tick_started: Instant, deadline: Option<Instant>) -> Option<Instant> {
     deadline.filter(|deadline| *deadline > tick_started)
 }
-
-/// How often a locked session re-reads its players, so the lock card follows
-/// a track change or a pause made elsewhere.
-const LOCK_MEDIA_REFRESH: Duration = Duration::from_secs(1);
 
 /// The output id of the display the person works on, as the desktop's
 /// partition records it.
@@ -985,58 +981,6 @@ fn focused_display_id(frame_builder: &FrameBuilder) -> Option<u32> {
         .desktop
         .outputs
         .focused_display()
-}
-
-/// The player the lock screen shows: the one the now-playing card would,
-/// among players that are playing or paused. A stopped player has nothing
-/// to control from a locked screen.
-fn lock_now_playing() -> Option<crate::shell::now_playing::PlayerSnapshot> {
-    use crate::shell::now_playing::{MprisSource, NowPlayingSource, PlaybackStatus, active_index};
-    let source = MprisSource;
-    source.refresh();
-    let players: Vec<_> = source
-        .players()
-        .into_iter()
-        .filter(|player| player.status != PlaybackStatus::Stopped)
-        .collect();
-    let index = active_index(&players, None)?;
-    players.into_iter().nth(index)
-}
-
-/// Whether the lock card must repaint: anything it shows changed. The
-/// playhead is not shown on the lock screen, so its movement is not a change.
-fn lock_media_changed(
-    before: Option<&crate::shell::now_playing::PlayerSnapshot>,
-    after: Option<&crate::shell::now_playing::PlayerSnapshot>,
-) -> bool {
-    match (before, after) {
-        (None, None) => false,
-        (Some(before), Some(after)) => {
-            before.bus_name != after.bus_name
-                || before.status != after.status
-                || before.title != after.title
-                || before.artist != after.artist
-                || before.artwork != after.artwork
-                || before.can_play != after.can_play
-                || before.can_pause != after.can_pause
-                || before.can_go_next != after.can_go_next
-                || before.can_go_previous != after.can_go_previous
-        }
-        _ => true,
-    }
-}
-
-/// Send one lock-screen transport command to exactly the player the lock
-/// card shows. Transport is all a locked session may do to media.
-fn send_lock_transport(
-    player: Option<&crate::shell::now_playing::PlayerSnapshot>,
-    transport: crate::shell::quick_settings::now_playing::Transport,
-) -> bool {
-    use crate::shell::now_playing::{MprisSource, NowPlayingSource};
-    let Some(player) = player.filter(|player| transport.enabled(player)) else {
-        return false;
-    };
-    MprisSource.send(&player.bus_name, transport.command())
 }
 
 fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut Instant) -> bool {
@@ -4422,6 +4366,19 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "waits_for_clock": chrome.identity_waits_for_clock(),
                     "recovery": std::env::var_os(crate::shell::identity_provisioning::IDENTITY_RECOVERY_ENV)
                         .is_some_and(|value| value == "1"),
+                }),
+            );
+            fields.insert(
+                "seat_keyboard".into(),
+                serde_json::json!(self.seat.map(State::seat_keyboard_json)),
+            );
+            // A trim asked for by a window close, still to run or running
+            // (`heap_trim`), and how many trims have run.
+            fields.insert(
+                "heap_trim".into(),
+                serde_json::json!({
+                    "pending": crate::shell::heap_trim::close_trim_pending(),
+                    "trims": crate::shell::heap_trim::trims_completed(),
                 }),
             );
         }
@@ -7903,27 +7860,6 @@ fn spatial_departure_edge(
 #[cfg(test)]
 mod spatial_edge_tests;
 
-/// Tell the person where "Send…" put their screenshot, or why it did not.
-fn notify_screenshot_sent(
-    frame_builder: &mut FrameBuilder,
-    sent: Result<crate::shell::screenshot_send::SendReceipt, String>,
-) {
-    match sent {
-        Ok(receipt) => frame_builder.with_chrome(|chrome| {
-            chrome.push_notification(
-                crate::shell::i18n::t("capture-screenshot-sent"),
-                receipt.message(),
-            );
-        }),
-        Err(error) => frame_builder.with_chrome(|chrome| {
-            chrome.push_error_notification(
-                crate::shell::i18n::t("capture-screenshot-not-sent"),
-                error,
-            );
-        }),
-    }
-}
-
 fn finish_nearby_drop(
     event: &WindowEvent,
     network: &crate::shell::network::ShellNetwork,
@@ -8102,6 +8038,9 @@ fn power_notification_to_incoming(
     crate::notifications::IncomingNotification {
         dbus_id: bridge.alloc_id(),
         app_name: crate::shell::i18n::t("notification-app-power"),
+        app_icon: None,
+        desktop_entry: None,
+        image_data: None,
         summary: n.summary,
         body: n.body,
         actions: Vec::new(),
@@ -8534,9 +8473,25 @@ fn attach_peer_presence(
         "collab: subscribed to {} room(s) for peer presence",
         rooms.len()
     );
+    bind_window_routes(frame_builder, broker);
     frame_builder.set_peer_presence(crate::shell::peer_presence::PeerPresence::attach(
         broker, net, rooms,
     ));
+}
+
+/// Tell the in-process apps which records the session's windows hold, as
+/// its broker knows them: what a report about a window records.
+fn bind_window_routes(
+    frame_builder: &mut FrameBuilder,
+    broker: &crate::shell::collab_broker::BrokerHandle,
+) {
+    let fanout = Arc::clone(&broker.fanout);
+    frame_builder.with_chrome(|chrome| {
+        if let Some(apps) = chrome.hosted_inputs.in_process() {
+            apps.borrow_mut()
+                .bind_window_routes(Arc::new(move || fanout.window_records()));
+        }
+    });
 }
 
 fn spawn_session_identity_broker(
@@ -9562,6 +9517,9 @@ pub fn run() {
     //
     // The shell lays out the logical desktop spanning every output; each
     // output then draws its part into its own sub-rect of the scene.
+    // `HEAP-MILESTONE` lines through startup: which step the idle compositor's heap
+    // came from (`crate::shell::heap_trim::log_milestone`).
+    crate::shell::heap_trim::log_milestone("backend-ready");
     let initial_size = match logical_geometry(backend.outputs()) {
         (0, 0) => (1600, 900),
         size => size,
@@ -9690,6 +9648,7 @@ pub fn run() {
         peer_sync_possible: enable_peer_sync,
         notice: state_notice,
     } = load_session_tree(enable_peer_sync);
+    crate::shell::heap_trim::log_milestone("session-tree-loaded");
     let mut state = State::new_with_workspace_tree(
         event_loop.handle(),
         display_handle.clone(),
@@ -9760,6 +9719,7 @@ pub fn run() {
             tracing::warn!(%error, "could not create the history description wake source; descriptions are sent on the next wake");
         }
     }
+    crate::shell::heap_trim::log_milestone("desktop-built");
     let clipboard_store = state.selection_store();
     frame_builder
         .host_mut()
@@ -10692,6 +10652,9 @@ pub fn run() {
     let mut last_lock_clock_refresh = Instant::now();
     let mut lock_player: Option<crate::shell::now_playing::PlayerSnapshot> = None;
     let mut lock_pointer: Option<vello::kurbo::Point> = None;
+    // The now-playing transport Tab or the arrows reached on the lock screen;
+    // `None` is its password field.
+    let mut lock_media_focus: Option<crate::shell::quick_settings::now_playing::Transport> = None;
     // The keyboard the lock screen draws for unlocking by touch: shown from
     // the first touch, gone at the next physical key. No input method runs
     // while locked; the passcode never leaves the lock screen.
@@ -10921,6 +10884,7 @@ pub fn run() {
     // still asked to wait here is reported to the main-thread audit.
     super::liveness::audit_storage_waits();
     let no_storage_waits = durable_store::waiting::forbid_on_this_thread();
+    crate::shell::heap_trim::log_milestone("services-started");
     while !close_requested {
         dictation_vocabulary.refresh(&mut state);
         if termination.requested() {
@@ -11304,7 +11268,12 @@ pub fn run() {
             session_changed = true;
         }
         let mut event_step = "accessibility";
+        // Pointer events a touch contact became, still at the front of the
+        // queue: the input-route lines say a click came from a finger.
+        let mut from_touch_ahead = 0_usize;
         while let Some(event) = pending_events.pop_front() {
+            let from_touch = from_touch_ahead > 0;
+            from_touch_ahead = from_touch_ahead.saturating_sub(1);
             // Another of the person's devices' input is this device's own,
             // except that it does not say someone is here.
             let (event, origin) = match event {
@@ -11510,15 +11479,77 @@ pub fn run() {
                             }
                             _ => {}
                         }
-                        match key {
-                            Some(key) => {
-                                lock.handle_key(key);
+                        // The now-playing card's transport is reachable
+                        // from the keyboard as it is from a reader and the
+                        // pointer: Tab reaches its buttons, the arrows move
+                        // between them, Enter and Space act, Escape goes
+                        // back to the field.
+                        let media_available = lock_player.as_ref().is_some_and(|player| {
+                            crate::shell::quick_settings::now_playing::Transport::ALL
+                                .into_iter()
+                                .any(|transport| transport.enabled(player))
+                        });
+                        let media_handled = if let WindowEvent::KeyboardInput { event, .. } = wev
+                            && event.state == ElementState::Pressed
+                            && !event.repeat
+                            && !lock.is_verifying()
+                            && media_available
+                        {
+                            use winit::keyboard::NamedKey as K;
+                            match &event.logical_key {
+                                Key::Named(K::Tab) => {
+                                    lock_media_focus = lock_screen::media_focus_step(
+                                        lock_media_focus,
+                                        lock_player.as_ref(),
+                                        !test_control_ctx.modifiers.state().shift_key(),
+                                    );
+                                    true
+                                }
+                                Key::Named(K::ArrowLeft | K::ArrowRight)
+                                    if lock_media_focus.is_some() =>
+                                {
+                                    lock_media_focus = lock_screen::media_focus_step(
+                                        lock_media_focus,
+                                        lock_player.as_ref(),
+                                        matches!(&event.logical_key, Key::Named(K::ArrowRight)),
+                                    );
+                                    true
+                                }
+                                Key::Named(K::Enter | K::Space) if lock_media_focus.is_some() => {
+                                    if let Some(transport) = lock_screen::media_focused_transport(
+                                        lock_media_focus,
+                                        lock_player.as_ref(),
+                                    ) {
+                                        send_lock_transport(lock_player.as_ref(), transport);
+                                    }
+                                    true
+                                }
+                                Key::Named(K::Escape) if lock_media_focus.is_some() => {
+                                    lock_media_focus = None;
+                                    true
+                                }
+                                _ => {
+                                    // Typing belongs to the password field:
+                                    // taking a key there returns focus to it.
+                                    lock_media_focus = None;
+                                    false
+                                }
                             }
-                            None => {
-                                lock.handle_event(wev, &test_control_ctx.modifiers);
+                        } else {
+                            false
+                        };
+                        if !media_handled {
+                            match key {
+                                Some(key) => {
+                                    lock.handle_key(key);
+                                }
+                                None => {
+                                    lock.handle_event(wev, &test_control_ctx.modifiers);
+                                }
                             }
                         }
-                        // Any keystroke changes the masked field / error, so force a repaint this tick.
+                        // Any keystroke changes the masked field, the media
+                        // focus or an error, so force a repaint this tick.
                         session_changed = true;
                     } else if route == PriorityRoute::PowerKey {
                         // The hardware power key always does something visible, locked or
@@ -11721,6 +11752,20 @@ pub fn run() {
                                 wev,
                                 &test_control_ctx.modifiers,
                             );
+                        if let WindowEvent::MouseInput { state: button, .. } = wev {
+                            // Where a click went before the chrome saw it: a
+                            // client's surface, or on to the chrome.
+                            tracing::info!(
+                                target: tilo_startup_metrics::INPUT_ROUTE_TARGET,
+                                ?button,
+                                from_touch,
+                                to_client,
+                                cursor = ?state.client_input.pointer_position(),
+                                grab = %state.client_input.grab_label(),
+                                pointer_focus = ?state.client_input.pointer_focus(),
+                                "click routed"
+                            );
+                        }
                         if let Some(steps) = key_steps.as_mut() {
                             steps.steps.mark("client");
                         }
@@ -11750,6 +11795,15 @@ pub fn run() {
                                 &mut test_control_ctx.focus,
                             );
                             session_changed |= chrome_handled;
+                            if let WindowEvent::MouseInput { state: button, .. } = wev {
+                                tracing::info!(
+                                    target: tilo_startup_metrics::INPUT_ROUTE_TARGET,
+                                    ?button,
+                                    from_touch,
+                                    chrome_handled,
+                                    "click reached the chrome"
+                                );
+                            }
                             if let Some(steps) = key_steps.as_mut() {
                                 steps.steps.mark("chrome");
                             }
@@ -11780,6 +11834,7 @@ pub fn run() {
                         .rev()
                         {
                             pending_events.push_front(BackendEvent::Input(event));
+                            from_touch_ahead = from_touch_ahead.saturating_add(1);
                         }
                     }
                 }
@@ -12398,6 +12453,7 @@ pub fn run() {
             if followed == Some(crate::shell::owner_session::Follow::Unlock) {
                 // As after the person's own unlock: the next lock starts bare.
                 lock_keyboard = lock_screen::LockTouchKeyboard::default();
+                lock_media_focus = None;
                 frame_builder.set_lock_keyboard_keys(Vec::new());
                 frame_builder.set_lock_surfaces(Vec::new());
             }
@@ -12598,6 +12654,7 @@ pub fn run() {
             if outcome == UnlockOutcome::Unlocked {
                 // The next lock starts without the keyboard and its layer.
                 lock_keyboard = lock_screen::LockTouchKeyboard::default();
+                lock_media_focus = None;
                 frame_builder.set_lock_keyboard_keys(Vec::new());
                 frame_builder.set_lock_surfaces(Vec::new());
                 apply_session_transitions!(session.request_unlock(Instant::now()));
@@ -12621,6 +12678,7 @@ pub fn run() {
             backend.cancel_touch();
             frame_builder.host_mut().cancel_direct_touch_gestures();
             lock.reset();
+            lock_media_focus = None;
         }
         if session.is_locked() != prev_locked {
             retained_lock.clear();
@@ -12650,6 +12708,7 @@ pub fn run() {
             end_spatial_control(network, &mut spatial_control);
         }
         prev_locked = session.is_locked();
+        screen_dimmer.keep_session_truthful(&mut session);
         // The dimming overlay is part of the scene, so switching it needs a frame.
         if screen_dimmer.overlay_alpha() != prev_dim_overlay {
             prev_dim_overlay = screen_dimmer.overlay_alpha();
@@ -12708,6 +12767,10 @@ pub fn run() {
             });
         }
 
+        // The window with the person's focus is no longer asking for it.
+        frame_builder.with_chrome(|chrome| {
+            crate::shell::attention::clear_focused(&chrome.tree());
+        });
         // Client fullscreen is a per-output overlay drawn above everything,
         // laid out in the desktop beneath the shell only while the shell
         // takes the input over it (`FrameBuilder::set_client_fullscreen_group`).
@@ -12895,18 +12958,29 @@ pub fn run() {
         // be typed at all otherwise. `field_owner` is that decision, written
         // and tested on its own.
         let session_locked = session.is_locked();
-        let owner = crate::compositor::shell_text_input::field_owner(
-            session_locked,
-            state.client_input.keyboard_focus().is_some(),
-            session_locked.then(|| lock.ime_field()).flatten(),
-            frame_builder.host().shell_prompt_up(),
-            receipts_only,
-            speech_field_needed,
+        let session_state = if session_locked {
+            SessionState::Locked {
+                lock_field: lock.ime_field(),
+            }
+        } else {
+            SessionState::Unlocked
+        };
+        let owner = field_owner(
+            FieldSituation {
+                session: session_state,
+                keyboard: if state.client_input.keyboard_focus().is_some() {
+                    KeyboardHolder::Client
+                } else {
+                    KeyboardHolder::Shell
+                },
+                shell_prompt_up: frame_builder.host().shell_prompt_up(),
+                palette_visible: frame_builder.host().palette_visible(),
+                fields_withheld: receipts_only && !speech_field_needed,
+            },
             frame_builder.focused_ime_field(test_control_ctx.focus),
-            test_control_ctx.focus.map(u64::from),
-            frame_builder.host().palette_visible(),
+            frame_builder.native_field_identity(test_control_ctx.focus),
         );
-        let shell_field = owner.as_ref().map(|(field, _)| field.clone());
+        let shell_field = owner.as_ref().map(|(field, _)| *field);
         let owner_id = owner.map(|(_, id)| id);
         if shell_field.is_some() && shell_text_input.is_none() {
             match crate::compositor::shell_text_input::ShellTextInput::connect(&mut state) {
@@ -12917,7 +12991,7 @@ pub fn run() {
             }
         }
         if let Some(proxy) = shell_text_input.as_mut() {
-            let identity = owner_id.clone();
+            let identity = owner_id;
             let typed = proxy.sync_for_field(&mut state, shell_field, identity);
             let keys = state.take_shell_field_keys();
             // Text carries the keyboard's modifiers; a virtual keyboard's key
@@ -13420,9 +13494,8 @@ pub fn run() {
                     (*surface, crate::shell::network::room_topic_id(*room))
                 }));
             }
-            // This session's legacy windows, as its own tabs in the rooms
-            // other devices govern, so their members have a tab to show.
-            // Only those rooms' tabs are copied, and only their own legacy ones.
+            // This device's layout of the rooms its native owner holds,
+            // written as its own changes and sent to their governors.
             if hosted_legacy_checked.elapsed() >= std::time::Duration::from_millis(500) {
                 hosted_legacy_checked = Instant::now();
                 let rooms = tree_handle
@@ -13433,7 +13506,7 @@ pub fn run() {
                     .map(crate::shell::state::Workspace::room)
                     .collect::<Vec<_>>();
                 for room in rooms {
-                    net.publish_hosted_legacy_windows(room, &tree_handle);
+                    net.publish_governed_layout(room, &tree_handle);
                     net.follow_room_app_versions(room);
                 }
                 let generation = tree_handle.generation();
@@ -14026,7 +14099,7 @@ pub fn run() {
         let transition_run = frame_builder.chrome().transition_paints_remaining() > 0;
         let still_moving = animation_demand.any() || transition_run;
         let animating = animation_settle.due(still_moving);
-        let app_tick = NativeAppTick::after_pump(&frame_builder, apps_changed, iter_t0);
+        let app_tick = NativeAppTick::after_pump(apps_changed, iter_t0);
         let output_presentation_count = state.output_presentation_surfaces.len();
         let presentation_frame_changed = update_output_presentation_repaint_pending(
             &mut output_presentation_repaint_pending,
@@ -14050,6 +14123,7 @@ pub fn run() {
         } else {
             lock_player = None;
             lock_pointer = None;
+            lock_media_focus = None;
         }
         deliver_held_key_releases!();
         let pump_done = Instant::now();
@@ -14123,6 +14197,20 @@ pub fn run() {
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
             owed: content_owed,
         };
+        // Input, a session change, a marker gone or an output presentation
+        // may move what the desktop lays out; a client's new buffer, the
+        // cursor, peers' pointers or an animation alone do not. The tree's
+        // revisions and the widgets' own notes count apart
+        // (`FrameBuilder::relayout_if_owed`).
+        if redraw_reasons.force
+            || redraw_reasons.backend_event
+            || redraw_reasons.session
+            || redraw_reasons.presentation
+            || markers_retired
+            || accessibility_changed
+        {
+            frame_builder.owe_layout();
+        }
         let display_dark = session.is_blanked();
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
@@ -14306,7 +14394,7 @@ pub fn run() {
             // tab switch, resize) is applied here, right before the scene is built.
             let t_layout_start = Instant::now();
             let paint_cpu = metrics.cpu_snapshot();
-            frame_builder.relayout();
+            frame_builder.relayout_if_owed();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
             let relaid_out = Instant::now();
             metrics::profile::record_phase(
@@ -14339,6 +14427,7 @@ pub fn run() {
                     &lock,
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
+                    lock_media_focus,
                     lock_keyboard.shown(),
                     alert.as_deref(),
                 );
@@ -14397,6 +14486,7 @@ pub fn run() {
                     // Count-only summary on the lock screen — no bodies leak.
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
+                    lock_media_focus,
                     lock_keyboard.shown(),
                     alert.as_deref(),
                 );
@@ -14551,19 +14641,10 @@ pub fn run() {
                                 screenshot.take(),
                                 &mut bridge,
                             );
-                            notify_screenshot_sent(&mut frame_builder, sent);
-                        }
-                        CaptureOutcome::ScreenshotSent(sent) => {
-                            notify_screenshot_sent(&mut frame_builder, sent);
-                        }
-                        CaptureOutcome::Copied { width, height } => {
-                            tracing::info!(width, height, "screenshot copied");
-                        }
-                        CaptureOutcome::Floated { id } => {
-                            tracing::debug!(%id, "live capture mirror created");
-                        }
-                        CaptureOutcome::Pinned { id } => {
-                            tracing::debug!(%id, "screenshot pinned as a frozen reference");
+                            crate::compositor::capture::tell_outcome(
+                                &mut frame_builder,
+                                CaptureOutcome::ScreenshotSent(sent),
+                            );
                         }
                         CaptureOutcome::FloatingClosed { id } => {
                             if let Some((connection, public_id)) = external_floating_parts(&id) {
@@ -14581,115 +14662,8 @@ pub fn run() {
                             }
                             tracing::debug!(%id, "live capture mirror closed");
                         }
-                        CaptureOutcome::RecordingStarted(path) => {
-                            // The compositor-owned pill supplies immediate,
-                            // spatial confirmation and then settles into the
-                            // top bar. A toast here would duplicate it and
-                            // unnecessarily cover application content.
-                            tracing::debug!(path = %path.display(), "recording started");
-                        }
-                        CaptureOutcome::RecordingPaused { path, paused } => {
-                            tracing::debug!(
-                                path = %path.display(),
-                                paused,
-                                "recording state changed"
-                            );
-                        }
-                        CaptureOutcome::RecordingAudioLost { path, reason } => {
-                            frame_builder.with_chrome(|chrome| {
-                                chrome.push_notification(
-                                    crate::shell::i18n::t("capture-recording-audio-lost"),
-                                    crate::shell::i18n::t_args(
-                                        "capture-recording-audio-lost-body",
-                                        &[
-                                            ("path", path.display().to_string().into()),
-                                            ("reason", reason.into()),
-                                        ],
-                                    ),
-                                );
-                            });
-                        }
-                        CaptureOutcome::RecordingStopped { path, frames } => {
-                            // The recording pill morphs in-place into a
-                            // clickable saved receipt. Avoid a second surface
-                            // competing for attention in the top-right corner.
-                            tracing::info!(path = %path.display(), frames, "recording saved");
-                        }
-                        CaptureOutcome::RecordingOpened(path) => {
-                            tracing::debug!(path = %path.display(), "recording opened");
-                        }
-                        CaptureOutcome::RecordingRevealed(path) => {
-                            tracing::debug!(path = %path.display(), "recording folder opened");
-                        }
-                        CaptureOutcome::ReplayStarted => {
-                            tracing::info!("recent capture enabled");
-                        }
-                        CaptureOutcome::ReplaySaved { path, seconds } => {
-                            tracing::info!(path = %path.display(), seconds, "recent capture saved");
-                        }
-                        CaptureOutcome::ReplayStopped => {
-                            tracing::info!("recent capture disabled");
-                        }
-                        CaptureOutcome::ReplayAudioLost(reason) => {
-                            frame_builder.with_chrome(|chrome| {
-                                chrome.push_warning_notification(
-                                    crate::shell::i18n::t("capture-recent-audio-lost"),
-                                    reason,
-                                );
-                            });
-                        }
-                        CaptureOutcome::ScreenshotOpened(path) => {
-                            tracing::debug!(path = %path.display(), "screenshot opened");
-                        }
-                        CaptureOutcome::ScreenshotMarkupOpened(path) => {
-                            tracing::debug!(path = %path.display(), "screenshot markup opened");
-                        }
-                        CaptureOutcome::ScreenshotMarkupClosed => {
-                            tracing::debug!("screenshot markup closed");
-                        }
-                        CaptureOutcome::ScreenshotRevealed(path) => {
-                            tracing::debug!(path = %path.display(), "screenshot folder opened");
-                        }
-                        CaptureOutcome::PortalScreenshotSaved(path) => {
-                            tracing::warn!(path = %path.display(), "portal screenshot completed after its request expired");
-                        }
-                        CaptureOutcome::PortalScreenshotCancelled => {
-                            tracing::debug!(
-                                "portal screenshot selector cancelled after its request expired"
-                            );
-                        }
-                        CaptureOutcome::Uncapturable(source) => {
-                            tracing::warn!(?source, "capture found nothing to read");
-                            frame_builder.with_chrome(|chrome| {
-                                chrome.push_error_notification(
-                                    crate::shell::i18n::t("capture-failed"),
-                                    crate::shell::i18n::t(match source {
-                                        ui::widget::SourceMode::Window => {
-                                            "capture-uncapturable-window"
-                                        }
-                                        ui::widget::SourceMode::Region => {
-                                            "capture-uncapturable-selection"
-                                        }
-                                        ui::widget::SourceMode::Strip => {
-                                            "capture-uncapturable-strip"
-                                        }
-                                        ui::widget::SourceMode::Display => {
-                                            "capture-uncapturable-screen"
-                                        }
-                                    }),
-                                );
-                            });
-                        }
-                        CaptureOutcome::Failed(error) => {
-                            // The reason is for the log; the person is told
-                            // the outcome and what to try.
-                            tracing::warn!(%error, "capture failed");
-                            frame_builder.with_chrome(|chrome| {
-                                chrome.push_error_notification(
-                                    crate::shell::i18n::t("capture-failed"),
-                                    crate::shell::i18n::t("capture-failed-body"),
-                                );
-                            });
+                        outcome => {
+                            crate::compositor::capture::tell_outcome(&mut frame_builder, outcome);
                         }
                     }
                 }
@@ -14942,8 +14916,8 @@ pub fn run() {
             }
         } else if had_backend_events || accessibility_changed {
             // Input was dispatched but the frame deferred — lay out anyway so the *next*
-            // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
-            frame_builder.relayout();
+            // event hit-tests post-input rects, not the pre-overlay tree.
+            frame_builder.relayout_if_owed();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
             // The post-dispatch `flush_configures` below sends this layout's sizes.
             publish_layout_to_clients(
@@ -14964,6 +14938,7 @@ pub fn run() {
                         &lock,
                         frame_builder.chrome().notification_count(),
                         lock_player.as_ref(),
+                        lock_media_focus,
                         lock_keyboard.shown(),
                         alert.as_deref(),
                     )
@@ -16071,11 +16046,10 @@ mod tests {
             "an unchanged desktop releases a waiting callback without presenting"
         );
         assert!(
-            !present_for_app_poll(false, true),
+            !NativeAppTick::after_pump(false, now).redraw,
             "a poll whose tree, layout, and animations did not change must not present"
         );
-        assert!(present_for_app_poll(true, true));
-        assert!(!present_for_app_poll(false, false));
+        assert!(NativeAppTick::after_pump(true, now).redraw);
         assert_eq!(
             client_followup_deadline(client_followup_needed(true, false), now),
             None,
@@ -20130,6 +20104,13 @@ mod tests {
                 "on_screen_keyboard_surface": null,
             })
         );
+        let sources = chrome["seat_keyboard"]["sources"]
+            .as_array()
+            .expect("the seat keyboard's XKB sources");
+        assert!(!sources.is_empty(), "the seat keymap has a source");
+        assert_eq!(chrome["seat_keyboard"]["active"], 0);
+        assert!(chrome["heap_trim"]["pending"].is_boolean());
+        assert!(chrome["heap_trim"]["trims"].is_u64());
     }
 
     /// The state dump says who asks for animation frames, and asking must
@@ -20405,6 +20386,8 @@ mod tests {
                         resource_kind: "calculator.graph".into(),
                         resource_label: "A presentation label without routing metadata".into(),
                         action_label: "Hide".into(),
+                        keywords: Vec::new(),
+                        icon: None,
                         description: Some("Do not infer identity from this text".into()),
                         locus: tilo_actions::ExecutionLocus::default(),
                         kind: tilo_actions::OperationKind::View,

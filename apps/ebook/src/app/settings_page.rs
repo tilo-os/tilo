@@ -105,30 +105,12 @@ pub(super) const SETTINGS_TABS: [(SettingsTab, &str); 4] = [
 impl BooksApp {
     pub(super) fn draw_settings(&mut self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;
-        let r = self.rect;
-        let band = self.draw_page_header(ctx);
-        let size = ControlSize::Regular;
-        let height = size.height(theme);
-        let width = button_width(ctx, "Library", Some(Icon::ChevronLeft), size);
-        let x0 = band.x0 + f64::from(theme.tokens.spacing.s3);
-        let back = Rect::new(
-            x0,
-            band.center().y - height / 2.0,
-            x0 + width,
-            band.center().y + height / 2.0,
-        );
-        self.button(
-            ctx,
-            ButtonFace::new(back, "Library")
-                .icon(Icon::ChevronLeft)
-                .accessible_name("Back to library")
-                .role(ButtonRole::Plain),
-            Action::CloseSettings,
-        );
-
+        // Back to the library and the page's name are the window bar's slots
+        // ([`crate::window_bar`]): the page opens under the bar with its
+        // title, as the library does.
         let rhythm = &theme.tokens.spacing.rhythm;
         let gutter = f64::from(rhythm.group);
-        let body = Rect::new(r.x0, band.y1, r.x1, r.y1);
+        let body = self.rect;
         let col = SettingsColumn {
             x: body.x0 + gutter,
             w: (body.width() - 2.0 * gutter).clamp(1.0, PAGE_MAX_W),

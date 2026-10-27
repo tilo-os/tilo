@@ -78,6 +78,7 @@ fn paint_arriving_slot(
 
 mod access_rows;
 mod affordances;
+mod choice;
 mod editing;
 #[cfg(test)]
 mod editing_tests;
@@ -855,6 +856,9 @@ pub struct TreeImpl<T, M = TreeNode<T>> {
     focused_affordance: Option<String>,
     affordance_focus_valid: bool,
     on_select: Option<Box<dyn FnMut(NodeId)>>,
+    /// Choosing a node, published as the tree's view action
+    /// ([`TreeImpl::on_view`]).
+    view: Option<choice::TreeChoice>,
     on_expand: Option<Box<dyn FnMut(NodeId, bool)>>,
     on_load_request: Option<Box<dyn FnMut(TreeLoadRequest)>>,
     on_activate: Option<Box<dyn FnMut(NodeId)>>,
@@ -1132,6 +1136,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             focused_affordance: None,
             affordance_focus_valid: false,
             on_select: None,
+            view: None,
             on_expand: None,
             on_load_request: None,
             on_activate: None,
@@ -1641,9 +1646,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             return;
         }
         self.selection.select_only(id);
-        if let Some(cb) = self.on_select.as_mut() {
-            cb(id);
-        }
+        self.report_selected(id);
     }
 
     pub fn selected(&self) -> Option<NodeId> {
@@ -2441,9 +2444,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         } else {
             self.selection.select_only(id);
         }
-        if let Some(callback) = &mut self.on_select {
-            callback(id);
-        }
+        self.report_selected(id);
     }
 
     fn on_left_press(
@@ -2944,6 +2945,12 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
 }
 
 impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -3221,11 +3228,10 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
             .flatten();
         let body = Rect::new(self.rect.x0, self.body_top(), self.rect.x1, self.rect.y1);
         // A settled tree damages the rows that changed (a renamed or hovered
-        // row, the rename field's caret), not its column. Rows in motion,
-        // a drag, an open menu, delegated rows and navigation tiles prove
-        // nothing, and repaint the tree.
-        let tracks_rows = !self.is_nav()
-            && self.mounted_rows.is_empty()
+        // row, the rename field's caret), not its column; navigation rows
+        // too, which paint inside their row. Rows in motion, a drag, an open
+        // menu and delegated rows prove nothing, and repaint the tree.
+        let tracks_rows = self.mounted_rows.is_empty()
             && !self.transitions.is_active(now)
             && !self.reorder.is_active()
             && !self.reorder.is_tracking()
@@ -3363,8 +3369,18 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                             &row_rect,
                         );
                     }
-                    let painted =
-                        self.draw_nav_row(scene, transform, text_renderer, theme, id, row_rect);
+                    // The pointer where the row paints: unscrolled with it.
+                    let pointer = self
+                        .last_cursor
+                        .map(|point| point + vello::kurbo::Vec2::new(0.0, shift + give));
+                    let painted = self.draw_nav_row(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        id,
+                        (row_rect, pointer),
+                    );
                     if faded {
                         scene.pop_layer();
                     }
@@ -4673,6 +4689,44 @@ mod tests {
                 TreeNode::leaf(3, "child2", ()),
             ],
         )
+    }
+
+    /// Choosing a node is the tree's published view action: an agent's
+    /// choice shows the node and reaches the app as a person's does, and
+    /// one the tree does not have is refused.
+    #[test]
+    fn an_agent_chooses_a_node_through_the_published_view_action() {
+        let chosen = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&chosen);
+        let tree = TreeView::new(sample_tree())
+            .on_view("files.tree", move |node| seen.borrow_mut().push(node));
+        let mut h = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            tree,
+            (300, 300),
+            crate::Theme::dark(),
+        );
+        let resources = h.resources();
+        let control = resources
+            .iter()
+            .find(|resource| resource.id.0 == "tilo.control:files.tree")
+            .expect("the tree publishes its choice");
+        let choices: Vec<&str> = control.actions[0].params()[0]
+            .choices
+            .iter()
+            .map(AsRef::as_ref)
+            .collect();
+        assert_eq!(choices, ["1", "2", "3"]);
+        let entry =
+            |key: &str| serde_json::Map::from_iter([("entry".into(), serde_json::json!(key))]);
+        h.invoke_published("tilo.control:files.tree", "select", &entry("3"))
+            .expect("an agent chooses a node");
+        assert_eq!(h.root::<TreeView<()>>().selected(), Some(3));
+        assert_eq!(chosen.borrow().as_slice(), [3]);
+        assert!(
+            h.invoke_published("tilo.control:files.tree", "select", &entry("9"))
+                .is_err()
+        );
     }
 
     fn reorder_tree() -> TreeNode<&'static str> {

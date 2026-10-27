@@ -695,7 +695,7 @@ mod tests {
                 "opaque-runtime-id · Agent"
             );
             assert_eq!(participant_display_label("agent:"), "Unknown agent · Agent");
-            assert_eq!(participant_display_label("ada"), "ada");
+            assert_eq!(participant_display_label("Ada"), "Ada");
 
             let actor = automerge::ActorId::from("agent:scribe".as_bytes());
             let resolved = AuthorDirectory::new().resolve(&actor.to_hex_string());
@@ -740,9 +740,9 @@ mod tests {
             assert_eq!(dir.resolve(&hex).name, "wp-1234");
             assert!(!dir.is_registered(&hex));
 
-            dir.register(&hex, HistoryAuthor::new("ada", 210.0, "abcdef01"));
+            dir.register(&hex, HistoryAuthor::new("Ada", 210.0, "abcdef01"));
             let a = dir.resolve(&hex);
-            assert_eq!(a.name, "ada");
+            assert_eq!(a.name, "Ada");
             assert_eq!(a.avatar_hue, 210.0);
             assert_eq!(a.identity_short, "abcdef01");
             assert!(dir.is_registered(&hex));
@@ -871,11 +871,11 @@ mod tests {
     #[cfg(unix)]
     fn the_local_identity_is_read_from_firstboot_json_or_left_unknown() {
         {
-            let (bytes, public_key) = firstboot_identity_bytes("ada", [0, 255, 0]);
+            let (bytes, public_key) = firstboot_identity_bytes("Ada", [0, 255, 0]);
 
             let id =
                 runtime_identity_host::load_from_bytes(&bytes).expect("firstboot shape parses");
-            assert_eq!(id.display_name(), "ada");
+            assert_eq!(id.display_name(), "Ada");
             assert_eq!(id.avatar_color(), [0, 255, 0]);
             assert_eq!(
                 id.group_public_key(),
@@ -891,7 +891,7 @@ mod tests {
 
             let author =
                 local_identity_author().expect("an identity on disk resolves to an author");
-            assert_eq!(author.name, "ada");
+            assert_eq!(author.name, "Ada");
             assert!(
                 (author.avatar_hue - 120.0).abs() < 0.5,
                 "green avatar colour"

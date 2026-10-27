@@ -8,6 +8,11 @@
 //! technique taken from `SearXNG` (AGPL-3.0-or-later). `PROVENANCE.md` records
 //! both.
 //!
+//! A search may ask for filtered results ([`SafeMode::Strict`]). Every
+//! engine that offers a filter is asked with its own parameter; one that
+//! does not is reported as skipped and named, never asked unfiltered in a
+//! filtered search.
+//!
 //! An answer is never trusted to have the expected shape:
 //!
 //! - An engine that shows a challenge it shows every client like this one is
@@ -30,6 +35,34 @@ use serde::Serialize;
 use url::Url;
 
 use crate::html::{Document, NodeId, Selector, collapse_whitespace};
+
+/// What a search asks the engines to leave out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SafeMode {
+    /// No filter.
+    Off,
+    /// Filtered results: adult content is left out.
+    Strict,
+}
+
+impl SafeMode {
+    /// The value as the service's parameter names it.
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Strict => "strict",
+        }
+    }
+
+    /// The choice named `id`.
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        [Self::Off, Self::Strict]
+            .into_iter()
+            .find(|safe| safe.id() == id)
+    }
+}
 
 /// One search engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -89,14 +122,23 @@ impl Engine {
         }
     }
 
-    /// The request that asks this engine `query`, or `None` when the engine
-    /// does not take such a query.
-    pub fn request(self, query: &str) -> Option<EngineRequest> {
+    /// Whether this engine can be asked for [`SafeMode::Strict`] results.
+    /// Marginalia's public endpoint offers no filter, so a filtered search
+    /// names it as skipped instead of asking it unfiltered.
+    #[must_use]
+    pub const fn filters(self) -> bool {
+        !matches!(self, Self::Marginalia)
+    }
+
+    /// The request that asks this engine `query` under `safe`, or `None` when
+    /// the engine does not take such a query. An engine that cannot filter is
+    /// never asked with [`SafeMode::Strict`]; the caller skips it.
+    pub fn request(self, query: &str, safe: SafeMode) -> Option<EngineRequest> {
         match self {
-            Self::Bing => bing::request(query),
-            Self::Brave => brave::request(query),
-            Self::DuckDuckGo => duckduckgo::request(query),
-            Self::Google => google::request(query),
+            Self::Bing => bing::request(query, safe),
+            Self::Brave => brave::request(query, safe),
+            Self::DuckDuckGo => duckduckgo::request(query, safe),
+            Self::Google => google::request(query, safe),
             Self::Marginalia => marginalia::request(query),
         }
     }
@@ -359,7 +401,7 @@ mod tests {
     #[test]
     fn every_engine_builds_a_request_to_its_own_host() {
         for engine in Engine::ALL {
-            let request = engine.request("rust").unwrap();
+            let request = engine.request("rust", SafeMode::Off).unwrap();
             assert_eq!(request.url.scheme(), "https", "{engine}");
             let in_form = request.form.iter().flatten().any(|(_, v)| v == "rust");
             assert!(
@@ -370,6 +412,49 @@ mod tests {
             assert_eq!(Engine::from_id(engine.id()), Some(engine));
         }
         assert_eq!(Engine::from_id("altavista"), None);
+        assert_eq!(SafeMode::from_id("strict"), Some(SafeMode::Strict));
+        assert_eq!(SafeMode::from_id("moderate"), None);
+    }
+
+    #[test]
+    fn an_engine_that_can_filter_is_asked_to() {
+        // Google, Bing, Brave and DuckDuckGo each carry their own filter
+        // parameter; Marginalia has none and says so rather than being asked
+        // unfiltered.
+        for engine in [
+            Engine::Google,
+            Engine::Bing,
+            Engine::Brave,
+            Engine::DuckDuckGo,
+        ] {
+            assert!(engine.filters(), "{engine}");
+            let request = engine.request("rust", SafeMode::Strict).unwrap();
+            let asked: Vec<(String, String)> = request
+                .form
+                .as_ref()
+                .map(|fields| {
+                    fields
+                        .iter()
+                        .map(|(k, v)| ((*k).to_owned(), v.clone()))
+                        .collect()
+                })
+                .unwrap_or_else(|| {
+                    request
+                        .url
+                        .query_pairs()
+                        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                        .collect()
+                });
+            let filter = asked
+                .iter()
+                .find(|(key, _)| matches!(key.as_str(), "safe" | "adlt" | "safesearch" | "kp"));
+            let (_, value) = filter.unwrap_or_else(|| panic!("{engine} carries no filter"));
+            assert!(
+                matches!(value.as_str(), "active" | "strict" | "1"),
+                "{engine}: {value}"
+            );
+        }
+        assert!(!Engine::Marginalia.filters());
     }
 
     #[test]

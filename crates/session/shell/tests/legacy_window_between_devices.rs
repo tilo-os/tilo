@@ -46,6 +46,11 @@ const HEIGHT: u32 = 720;
 const DAMAGE_INTERVAL: Duration = Duration::from_micros(16_667);
 const FRAMES: u32 = 180;
 const INPUT_SAMPLES: u8 = 40;
+/// How long the viewer waits for frames the host has already sent before it
+/// says they never arrived. This is delivery, not the timing the first-picture
+/// line records: a unit lost on the way leaves a gap the rest of the stream
+/// cannot fill.
+const DELIVERY_WAIT: Duration = Duration::from_secs(5);
 
 async fn spawn_device() -> (
     mpsc::Sender<NetCmd>,
@@ -116,6 +121,48 @@ fn percentile(sorted: &[Duration], percent: usize) -> Duration {
 )]
 fn millis(duration: Duration) -> f64 {
     duration.as_micros() as f64 / 1000.0
+}
+
+/// What this run's timing was measured on, printed beside it: a first-picture
+/// wall clock is read against the machine it was taken on, and the historical
+/// failures of this line cut neither way without it.
+fn runner_conditions() -> String {
+    let cores = std::thread::available_parallelism().map_or(0, std::num::NonZeroUsize::get);
+    let jobs = std::env::var("CARGO_BUILD_JOBS").unwrap_or_else(|_| "-".to_string());
+    format!("cores={cores} jobs={jobs}")
+}
+
+/// How long the first picture waited on this run: from the host start until
+/// the viewer had it decoded. This records the wait; the promise the test
+/// keeps is the identity below (the first picture is the first frame the host
+/// sent), because on a shared runner this wait also measures the host's load.
+/// Reported also when a frame went missing, since a run without a first
+/// picture is what a timing line must not silently change into.
+fn report_first_picture(who: Viewer, encoder: &str, codec: &str, timing: &FirstPicture) {
+    let label = match who {
+        Viewer::OwnDevice => "legacy-window",
+        Viewer::RoomMember => "room-member-window",
+    };
+    let waited = timing.waited.map_or_else(
+        || "absent".to_string(),
+        |waited| format!("{:.2}", millis(waited)),
+    );
+    eprintln!(
+        "{label}-first-picture encoder={encoder} codec={codec} first_picture_ms={waited} \
+         decoded_ns={:?} sent_ns={:?} {}",
+        timing.decoded_ts,
+        timing.sent_ts,
+        runner_conditions(),
+    );
+}
+
+/// The first picture this viewer got: how long it took from the host start,
+/// its capture timestamp, and the host's first sent capture timestamp.
+#[derive(Default)]
+struct FirstPicture {
+    waited: Option<Duration>,
+    decoded_ts: Option<u64>,
+    sent_ts: Option<u64>,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -217,6 +264,9 @@ async fn stream_a_window(who: Viewer) {
     let mut producer = Some({
         let session = Arc::clone(&session);
         let host_cmd = host_cmd.clone();
+        // What the producer has sent so far, readable from the viewer's loop
+        // while it still runs: a frame that never arrived leaves the wait to
+        // run out, and that must not be a hang.
         std::thread::spawn(move || {
             let started = Instant::now();
             let mut encode_times = Vec::new();
@@ -266,6 +316,10 @@ async fn stream_a_window(who: Viewer) {
     let mut previous_seq: Option<u64> = None;
     let mut early: Vec<(Vec<u8>, u64, u64, Instant)> = Vec::new();
     let mut pending: Vec<(Vec<u8>, u64, u64, Instant)> = Vec::new();
+    // The rest of the stream never arrived: the run ends here and the
+    // delivery asserts below judge it.
+    let mut never_arrived = false;
+    let mut quiet_since = None;
     loop {
         if producer
             .as_ref()
@@ -274,7 +328,7 @@ async fn stream_a_window(who: Viewer) {
             host_report = producer.take().map(|p| p.join().unwrap());
         }
         // Done once every frame the host sent is accounted for; a frame lost
-        // on the way leaves the wait to run out instead.
+        // on the way leaves the viewer answering that it never came.
         let accounted = u32::try_from(latencies.len())
             .unwrap()
             .saturating_add(before_keyframe)
@@ -285,19 +339,26 @@ async fn stream_a_window(who: Viewer) {
         {
             break;
         }
+        let still_sending = host_report.is_none();
         // While the host still sends, look up now and then to see whether it
         // has finished; then wait out only a hang for the rest.
-        let wait = if host_report.is_some() {
-            tilo_test_env::hang_bound()
-        } else {
+        let wait = if still_sending {
             Duration::from_millis(250)
+        } else {
+            Duration::from_millis(50)
         };
         let Ok(Some(event)) = tokio::time::timeout(wait, viewer_events.recv()).await else {
-            if host_report.is_some() {
-                break;
+            if still_sending {
+                continue;
             }
-            continue;
+            let quiet = *quiet_since.get_or_insert_with(Instant::now);
+            if quiet.elapsed() < DELIVERY_WAIT {
+                continue;
+            }
+            never_arrived = true;
+            break;
         };
+        quiet_since = None;
         let NetEvent::Msg { msg, .. } = event else {
             continue;
         };
@@ -398,6 +459,25 @@ async fn stream_a_window(who: Viewer) {
     let (sent, mut encode_times, first_sent_ts, encoded_bytes, streamed_for) = host_report
         .or_else(|| producer.take().map(|p| p.join().unwrap()))
         .expect("the host's producer ran");
+    // The first picture as far as it got, before the delivery asserts judge
+    // the run: a first-picture timing line missing from a failing run is what
+    // leaves a reader guessing.
+    report_first_picture(
+        who,
+        &encoder,
+        &codec,
+        &FirstPicture {
+            waited: first_picture,
+            decoded_ts: first_decoded_ts,
+            sent_ts: first_sent_ts,
+        },
+    );
+    assert!(
+        !never_arrived,
+        "the viewer stopped getting frames: received {received_before} of {sent} sent, \
+         awaiting_keyframe={awaiting_keyframe} before_keyframe={before_keyframe}",
+        received_before = latencies.len()
+    );
     assert_eq!(announced_tab, Some(TAB), "the stream names its tab");
 
     // Input on the viewer goes back to the host as window-local events; a

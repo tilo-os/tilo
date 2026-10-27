@@ -1,4 +1,4 @@
-//! The bar's status chips: "Controls your desktop", "Dev build · by …",
+//! The bar's status chips: "Controls your desktop", "Dev build by …",
 //! "Shared with …" and, on a window someone else shared, "Ana's window".
 //!
 //! A program running in an app (`tilo action` typed in a terminal) works in
@@ -29,7 +29,7 @@ pub(super) struct DesktopControlChip {
     pressed: Option<(u64, Rect)>,
 }
 
-/// The bar's "Dev build · by …" mark: the windows running a developer's own
+/// The bar's "Dev build by …" mark: the windows running a developer's own
 /// build of their app, which the room they are in runs, by who installed
 /// it there. Only a label: what the build is, the room says.
 #[derive(Debug, Default)]
@@ -101,6 +101,20 @@ pub(super) struct SharedChip {
     painted: Option<Rect>,
 }
 
+impl SharedChip {
+    /// The people every share mark shows, by tab in tab order: what its
+    /// faces are drawn from.
+    pub(super) fn people_by_tab(&self) -> Vec<(u64, &crate::permissions::UserId)> {
+        let mut people: Vec<(u64, &crate::permissions::UserId)> = self
+            .marks
+            .iter()
+            .flat_map(|(&tab, mark)| mark.people().iter().map(move |(user, _)| (tab, user)))
+            .collect();
+        people.sort_by(|a, b| a.0.cmp(&b.0));
+        people
+    }
+}
+
 /// How the faces of who can see a shared window stand: a window bar's.
 const SHARED_FACES: crate::presence::FaceStack = crate::presence::FaceStack::WINDOW;
 
@@ -147,13 +161,17 @@ impl TabBar {
         mark: Option<ShareMark>,
         ours: impl Fn(&ShareMark) -> bool,
     ) -> bool {
-        match mark {
+        let changed = match mark {
             Some(mark) => self.shared.marks.insert(id, mark.clone()) != Some(mark),
             None if self.shared.marks.get(&id).is_some_and(ours) => {
                 self.shared.marks.remove(&id).is_some()
             }
             None => false,
+        };
+        if changed {
+            self.touch();
         }
+        changed
     }
 
     /// Where the share mark of the window in front stands, with its label:
@@ -306,13 +324,17 @@ impl TabBar {
     /// Mark `id` as running a developer's build installed by `installer`,
     /// or clear the mark. `true` when that changed what the bar shows.
     pub fn set_dev_build(&mut self, id: u64, installer: Option<String>) -> bool {
-        match installer {
+        let changed = match installer {
             Some(name) => self.dev_build.installers.insert(id, name.clone()) != Some(name),
             None => self.dev_build.installers.remove(&id).is_some(),
+        };
+        if changed {
+            self.touch();
         }
+        changed
     }
 
-    /// Where the "Dev build · by …" mark of the window in front stands,
+    /// Where the "Dev build by …" mark of the window in front stands,
     /// with its label: after the "Controls your desktop" chip when that
     /// shows. `None` when the window in front runs no developer's build, its
     /// app put slots in the row, a tab is being dragged, or the run is too
@@ -354,6 +376,7 @@ impl TabBar {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.touch();
         self.dev_build.painted = None;
         if let Some((rect, label)) = self.dev_build_chip(tr, theme) {
             ChipFace::new(rect, &label)
@@ -377,11 +400,15 @@ impl TabBar {
     /// Mark `id` as a window whose app may control the desktop, or clear
     /// the mark. `true` when that changed what the bar shows.
     pub fn set_desktop_control(&mut self, id: u64, on: bool) -> bool {
-        if on {
+        let changed = if on {
             self.desktop_control.ids.insert(id)
         } else {
             self.desktop_control.ids.remove(&id)
+        };
+        if changed {
+            self.touch();
         }
+        changed
     }
 
     pub fn controls_desktop(&self, id: u64) -> bool {
@@ -436,6 +463,7 @@ impl TabBar {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.touch();
         self.desktop_control.painted = None;
         if let Some((rect, label)) = self.desktop_control_chip(tr, theme) {
             ChipFace::new(rect, &label)
@@ -449,6 +477,7 @@ impl TabBar {
 
     /// A press at `at` on the chip: report it. Whether it was on the chip.
     pub(super) fn press_desktop_control(&mut self, at: Point) -> bool {
+        self.touch();
         let Some(rect) = self
             .desktop_control
             .painted
@@ -466,6 +495,7 @@ impl TabBar {
     /// The chip activated without a pointer: report it from where it
     /// stands. Whether the bar shows it.
     pub fn activate_desktop_control(&mut self) -> bool {
+        self.touch();
         match self.desktop_control.painted {
             Some(rect) => self.press_desktop_control(rect.center()),
             None => false,

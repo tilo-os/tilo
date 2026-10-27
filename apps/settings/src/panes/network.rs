@@ -28,11 +28,11 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use os_actions::network_settings::{
-    EnterpriseIdentity, Ipv6Configuration, Ipv6Method, VpnPlugin, VpnProfilePatch,
-    VpnProfileSettings, WifiLinkDetails,
+    EnterpriseIdentity, Ipv6Configuration, VpnPlugin, VpnProfilePatch, VpnProfileSettings,
+    WifiLinkDetails,
 };
 use os_actions::{
-    ConnectivityState, Dispatcher, EnterpriseWifiConfiguration, HotspotBand, HotspotConfiguration,
+    ConnectivityState, Dispatcher, EnterpriseWifiConfiguration, HotspotConfiguration,
     IpConfiguration, SavedNetworkProfile, WifiNetworkInfo, WiredInfo,
 };
 use settings_store::device_vpn::{
@@ -55,6 +55,7 @@ use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 
 mod asking;
+mod labels;
 pub(crate) mod mobile;
 mod order;
 mod page;
@@ -62,94 +63,15 @@ pub(crate) mod values;
 mod view;
 pub(crate) mod vpn;
 
+pub(crate) use labels::{
+    HOTSPOT_BANDS, IPV6_METHODS, MAC_POLICIES, METERED_POLICIES, PROXY_MODES, band_from_label,
+    band_shown, connectivity_shown, ipv6_from_label, ipv6_id, ipv6_shown, mac_from_label, mac_id,
+    mac_shown, metered_from_label, metered_id, metered_shown, proxy_from_label, proxy_shown,
+    radio_shown,
+};
+
 #[cfg(test)]
 mod tests;
-
-crate::effects::effect_family!(NetworkEffect => answer);
-
-crate::area::pane_area! {
-    NetworkArea;
-    fn poll(&self) {
-        NetworkArea::poll(self);
-    }
-    fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
-        NetworkArea::statuses(self)
-    }
-    fn query(&self, category: Category) -> Option<&dyn crate::area::PaneQuery> {
-        (category == Category::Network
-            && self.cx.pages().top(Category::Network).is_some_and(|page| page.key == PAGE_ALL))
-        .then_some(self as &dyn crate::area::PaneQuery)
-    }
-}
-
-/// The window's [`NetworkArea`].
-pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&NetworkArea> {
-    app.areas().find()
-}
-
-/// The pages the pane drills into, by their key in the window's trail.
-pub(crate) const PAGE_ALL: &str = "all";
-pub(crate) const PAGE_KNOWN: &str = "known";
-pub(crate) const PAGE_HOTSPOT: &str = "hotspot";
-pub(crate) const PAGE_ADVANCED: &str = "advanced";
-/// The modem's page: mobile data and the SIM.
-pub(crate) const PAGE_MOBILE: &str = "mobile";
-/// A network's page: `wifi:<ssid>`.
-const PAGE_WIFI: &str = "wifi:";
-
-fn wifi_page_key(ssid: &str) -> String {
-    format!("{PAGE_WIFI}{ssid}")
-}
-
-// Ask the authenticated host: this app intentionally has an isolated network
-// namespace and cannot inspect the host's nl80211 interface by spawning iw.
-fn host_network_wake(profile: &str, enabled: Option<bool>) -> Result<NetworkWakeStatus, String> {
-    match ui::collaboration::wifi_continuity_command(WifiContinuityCommand::NetworkWake {
-        profile_uuid: profile.into(),
-        enabled,
-    })? {
-        WifiContinuityReply::NetworkWake { status } => Ok(status),
-        WifiContinuityReply::Rejected { reason } => Err(reason),
-        _ => Err("the host returned an invalid network wake reply".into()),
-    }
-}
-
-fn wake_description(status: &NetworkWakeStatus) -> &'static str {
-    if status.problem.is_some() {
-        if status.configured {
-            "net-wake-pending"
-        } else {
-            "net-wake-unavailable"
-        }
-    } else if status.configured && status.applied == Some(true) {
-        "net-wake-unverified"
-    } else if status.interface.is_none() {
-        "net-wake-connect-first"
-    } else if status.supported == Some(false) {
-        "net-wake-unsupported"
-    } else if status.supported.is_none() {
-        "net-wake-unavailable"
-    } else {
-        "net-wake-disabled"
-    }
-}
-
-/// The bands a hotspot can use.
-const HOTSPOT_BANDS: &[&str] = &["Automatic", "2.4 GHz", "5 GHz"];
-/// Whether a connection's data counts against a limit.
-const METERED_POLICIES: &[&str] = &["Automatic", "Metered", "Unmetered"];
-/// Which hardware address a Wi-Fi connection shows.
-const MAC_POLICIES: &[&str] = &[
-    "Device address",
-    "Random for this network",
-    "Random each time",
-];
-/// How a connection gets its IPv6 address.
-const IPV6_METHODS: &[&str] = &["Automatic", "Manual", "Link-local only", "Off"];
-/// Whether a connection goes through a proxy, and how it finds it.
-const PROXY_MODES: &[&str] = &["None", "Automatic", "Manual"];
-/// What a new hotspot is called until the person names it.
-const DEFAULT_HOTSPOT_NAME: &str = "Tilo Hotspot";
 
 /// What Network changes on this device.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -172,6 +94,7 @@ pub enum NetworkEffect {
     SetAirplaneMode { on: bool },
     /// Share this device's connection as a Wi-Fi hotspot, or stop.
     #[effect(job, idempotent, label = "Hotspot")]
+    #[effect(keywords = "tethering, share internet, personal hotspot")]
     SetHotspot { on: bool },
     /// Connect to a Wi-Fi network. Without a password a secure network uses
     /// one the person's devices share, else asks for it with the password
@@ -343,6 +266,7 @@ pub enum NetworkEffect {
     },
     /// Forget a saved network and its password.
     #[effect(job, row, destructive, label = "Forget network")]
+    #[effect(keywords = "remove network, forget wifi, delete network")]
     ForgetNetwork {
         #[param("The saved network's id")]
         profile: String,
@@ -413,6 +337,106 @@ pub enum NetworkEffect {
     },
 }
 
+crate::effects::effect_family!(NetworkEffect => answer);
+
+crate::area::pane_area! {
+    NetworkArea;
+    fn poll(&self) {
+        NetworkArea::poll(self);
+    }
+    fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        NetworkArea::statuses(self)
+    }
+    fn query(&self, category: Category) -> Option<&dyn crate::area::PaneQuery> {
+        (category == Category::Network
+            && self.cx.pages().top(Category::Network).is_some_and(|page| page.key == PAGE_ALL))
+        .then_some(self as &dyn crate::area::PaneQuery)
+    }
+}
+
+/// The window's [`NetworkArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&NetworkArea> {
+    app.areas().find()
+}
+
+/// The pages the pane drills into, by their key in the window's trail.
+pub(crate) const PAGE_ALL: &str = "all";
+pub(crate) const PAGE_KNOWN: &str = "known";
+pub(crate) const PAGE_HOTSPOT: &str = "hotspot";
+pub(crate) const PAGE_ADVANCED: &str = "advanced";
+/// The modem's page: mobile data and the SIM.
+pub(crate) const PAGE_MOBILE: &str = "mobile";
+/// A network's page: `wifi:<ssid>`.
+const PAGE_WIFI: &str = "wifi:";
+
+fn wifi_page_key(ssid: &str) -> String {
+    format!("{PAGE_WIFI}{ssid}")
+}
+
+// Ask the authenticated host: this app intentionally has an isolated network
+// namespace and cannot inspect the host's nl80211 interface by spawning iw.
+fn host_network_wake(profile: &str, enabled: Option<bool>) -> Result<NetworkWakeStatus, String> {
+    match ui::collaboration::wifi_continuity_command(WifiContinuityCommand::NetworkWake {
+        profile_uuid: profile.into(),
+        enabled,
+    })? {
+        WifiContinuityReply::NetworkWake { status } => Ok(status),
+        WifiContinuityReply::Rejected { reason } => Err(reason),
+        _ => Err("the host returned an invalid network wake reply".into()),
+    }
+}
+
+fn wake_description(status: &NetworkWakeStatus) -> &'static str {
+    if status.problem.is_some() {
+        if status.configured {
+            "net-wake-pending"
+        } else {
+            "net-wake-unavailable"
+        }
+    } else if status.configured && status.applied == Some(true) {
+        "net-wake-unverified"
+    } else if status.interface.is_none() {
+        "net-wake-connect-first"
+    } else if status.supported == Some(false) {
+        "net-wake-unsupported"
+    } else if status.supported.is_none() {
+        "net-wake-unavailable"
+    } else {
+        "net-wake-disabled"
+    }
+}
+
+/// What a new hotspot is called until the person names it.
+const DEFAULT_HOTSPOT_NAME: &str = "Tilo Hotspot";
+
+fn profile_label(profile: &SavedNetworkProfile) -> String {
+    let short_uuid: String = profile.uuid.chars().take(8).collect();
+    format!("{} ({})", profile.name, short_uuid)
+}
+
+/// The entries of a list separated by commas or spaces, at most 17.
+fn list_of(value: &str) -> Vec<String> {
+    value
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|v| !v.is_empty())
+        .take(17)
+        .map(str::to_string)
+        .collect()
+}
+
+/// `Some(value)` unless it is blank.
+fn non_blank(value: String) -> Option<String> {
+    (!value.trim().is_empty()).then_some(value)
+}
+
+/// What a secret buffer holds, leaving it zeroed.
+fn take_secret(buffer: &Mutex<String>) -> Zeroizing<String> {
+    buffer.lock().map_or_else(
+        |_| Zeroizing::new(String::new()),
+        |mut value| Zeroizing::new(std::mem::take(&mut *value)),
+    )
+}
+
 /// Answer `effect`: a change starts on a worker and reports when it lands.
 pub(crate) fn answer(
     app: &SettingsApp,
@@ -452,170 +476,6 @@ pub(crate) fn answer_begun(begun: Begun, cx: &mut EffectCx<Settings, SettingsApp
             })
         }
     }
-}
-
-fn connectivity_shown(state: ConnectivityState) -> String {
-    t(match state {
-        ConnectivityState::Unknown => "net-connectivity-unknown",
-        ConnectivityState::Offline => "net-connectivity-offline",
-        ConnectivityState::Portal => "net-connectivity-portal",
-        ConnectivityState::Limited => "net-connectivity-limited",
-        ConnectivityState::Full => "net-connectivity-full",
-    })
-}
-
-fn band_shown(id: &str) -> String {
-    t(match id {
-        "2.4 GHz" => "net-band-24",
-        "5 GHz" => "net-band-5",
-        _ => "net-band-auto",
-    })
-}
-
-fn band_from_label(label: &str) -> HotspotBand {
-    if label == "2.4 GHz" || label == t("net-band-24") {
-        HotspotBand::TwoPointFourGhz
-    } else if label == "5 GHz" || label == t("net-band-5") {
-        HotspotBand::FiveGhz
-    } else {
-        HotspotBand::Automatic
-    }
-}
-
-fn metered_id(policy: os_actions::MeteredPolicy) -> &'static str {
-    match policy {
-        os_actions::MeteredPolicy::Automatic => "Automatic",
-        os_actions::MeteredPolicy::Metered => "Metered",
-        os_actions::MeteredPolicy::Unmetered => "Unmetered",
-    }
-}
-
-fn metered_shown(id: &str) -> String {
-    t(match id {
-        "Metered" => "net-metered-yes",
-        "Unmetered" => "net-metered-no",
-        _ => "net-metered-auto",
-    })
-}
-
-fn metered_from_label(label: &str) -> Option<os_actions::MeteredPolicy> {
-    if label == "Metered" || label == t("net-metered-yes") {
-        Some(os_actions::MeteredPolicy::Metered)
-    } else if label == "Unmetered" || label == t("net-metered-no") {
-        Some(os_actions::MeteredPolicy::Unmetered)
-    } else if label == "Automatic" || label == t("net-metered-auto") {
-        Some(os_actions::MeteredPolicy::Automatic)
-    } else {
-        None
-    }
-}
-
-fn mac_id(policy: os_actions::MacPolicy) -> &'static str {
-    match policy {
-        os_actions::MacPolicy::Permanent => "Device address",
-        os_actions::MacPolicy::Stable => "Random for this network",
-        os_actions::MacPolicy::Random => "Random each time",
-    }
-}
-
-fn mac_shown(id: &str) -> String {
-    t(match id {
-        "Device address" => "net-mac-permanent",
-        "Random each time" => "net-mac-random",
-        _ => "net-mac-stable",
-    })
-}
-
-fn mac_from_label(label: &str) -> Option<os_actions::MacPolicy> {
-    if label == "Random each time" || label == t("net-mac-random") {
-        Some(os_actions::MacPolicy::Random)
-    } else if label == "Device address" || label == t("net-mac-permanent") {
-        Some(os_actions::MacPolicy::Permanent)
-    } else if label == "Random for this network" || label == t("net-mac-stable") {
-        Some(os_actions::MacPolicy::Stable)
-    } else {
-        None
-    }
-}
-
-fn ipv6_id(method: Ipv6Method) -> &'static str {
-    match method {
-        Ipv6Method::Automatic => "Automatic",
-        Ipv6Method::Manual => "Manual",
-        Ipv6Method::LinkLocal => "Link-local only",
-        Ipv6Method::Disabled => "Off",
-    }
-}
-
-fn ipv6_shown(id: &str) -> String {
-    t(match id {
-        "Manual" => "net-ipv6-manual",
-        "Link-local only" => "net-ipv6-link-local",
-        "Off" => "net-ipv6-off",
-        _ => "net-ipv6-auto",
-    })
-}
-
-fn ipv6_from_label(label: &str) -> Option<Ipv6Method> {
-    IPV6_METHODS
-        .iter()
-        .find(|id| **id == label || ipv6_shown(id) == label)
-        .map(|id| match *id {
-            "Manual" => Ipv6Method::Manual,
-            "Link-local only" => Ipv6Method::LinkLocal,
-            "Off" => Ipv6Method::Disabled,
-            _ => Ipv6Method::Automatic,
-        })
-}
-
-fn proxy_shown(id: &str) -> String {
-    t(match id {
-        "Automatic" => "net-proxy-auto",
-        "Manual" => "net-proxy-manual",
-        _ => "net-proxy-none",
-    })
-}
-
-fn proxy_from_label(label: &str) -> Option<&'static str> {
-    PROXY_MODES
-        .iter()
-        .copied()
-        .find(|id| *id == label || proxy_shown(id) == label)
-}
-
-fn radio_shown(radio: Radio) -> String {
-    t(match radio {
-        Radio::Airplane => "net-radio-airplane",
-        Radio::Hotspot => "net-radio-hotspot",
-    })
-}
-
-fn profile_label(profile: &SavedNetworkProfile) -> String {
-    let short_uuid: String = profile.uuid.chars().take(8).collect();
-    format!("{} ({})", profile.name, short_uuid)
-}
-
-/// The entries of a list separated by commas or spaces, at most 17.
-fn list_of(value: &str) -> Vec<String> {
-    value
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|v| !v.is_empty())
-        .take(17)
-        .map(str::to_string)
-        .collect()
-}
-
-/// `Some(value)` unless it is blank.
-fn non_blank(value: String) -> Option<String> {
-    (!value.trim().is_empty()).then_some(value)
-}
-
-/// What a secret buffer holds, leaving it zeroed.
-fn take_secret(buffer: &Mutex<String>) -> Zeroizing<String> {
-    buffer.lock().map_or_else(
-        |_| Zeroizing::new(String::new()),
-        |mut value| Zeroizing::new(std::mem::take(&mut *value)),
-    )
 }
 
 fn load_profile_settings(
@@ -846,6 +706,27 @@ impl NetworkSnapshot {
 /// enough that walking into range shows up while the person looks, rarely
 /// enough that the radio is not kept busy.
 const SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What a snapshot sets of the model, to tell whether adopting one changed
+/// what the pane shows.
+#[derive(PartialEq)]
+struct Adopted {
+    loaded: bool,
+    networks: Vec<WifiNetworkInfo>,
+    wifi_enabled: bool,
+    wired: WiredInfo,
+    radios: os_actions::RadioState,
+    connectivity: ConnectivityState,
+    profiles: Vec<SavedNetworkProfile>,
+    profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
+    wake_settings: HashMap<String, Result<NetworkWakeStatus, String>>,
+    hotspot_clients: Vec<os_actions::HotspotClient>,
+    vpns: Vec<VpnInfo>,
+    link: Option<WifiLinkDetails>,
+    plugins: Vec<VpnPlugin>,
+    device_vpn: Option<DeviceVpnStatus>,
+    read_errors: NetworkReadErrors,
+}
 
 /// The parts of the last snapshot that could not be read, each with the
 /// reason. A part listed here is shown as unreadable, never as a state.
@@ -1102,14 +983,17 @@ struct DeviceNetwork {
 
 impl NetworkService for DeviceNetwork {
     fn networks(&self) -> NetworkSnapshot {
+        crate::device_read::off_ui_thread();
         NetworkSnapshot::networks_only(os_actions::list_wifi_networks())
     }
 
     fn snapshot(&self, initial: bool) -> NetworkSnapshot {
+        crate::device_read::off_ui_thread();
         NetworkSnapshot::read(initial)
     }
 
     fn status(&self) -> NetworkSnapshot {
+        crate::device_read::off_ui_thread();
         NetworkSnapshot {
             profile_list: Some(os_actions::list_saved_network_profiles()),
             ..NetworkSnapshot::status()
@@ -1127,21 +1011,25 @@ impl NetworkService for DeviceNetwork {
     }
 
     fn device_vpn(&self) -> Option<DeviceVpnStatus> {
+        crate::device_read::off_ui_thread();
         DeviceVpnStatus::load()
     }
 
     fn recheck_connectivity(&self) {
+        crate::device_read::off_ui_thread();
         // A refused or failed recheck still leaves the last verdict, which
         // the snapshot that follows reads and reports.
         let _ = os_actions::check_connectivity_now();
     }
 
     fn scan(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::scan_wifi()
     }
 
     fn change(&self, change: &NetworkChange) -> Result<(), String> {
         use os_actions::network_settings as nm;
+        crate::device_read::off_ui_thread();
         let dispatcher = &self.dispatcher;
         match change {
             NetworkChange::Wifi(on) => dispatcher.set_wifi(*on),
@@ -1186,6 +1074,7 @@ impl NetworkService for DeviceNetwork {
 
     fn create_vpn(&self, setup: &VpnSetup) -> Result<String, String> {
         use os_actions::network_settings as nm;
+        crate::device_read::off_ui_thread();
         match setup {
             VpnSetup::Text { kind, name, text } => nm::import_vpn_text(kind, name, text),
             VpnSetup::File { kind, path } => nm::import_path_finding_uuid(kind, path),
@@ -1198,26 +1087,32 @@ impl NetworkService for DeviceNetwork {
     }
 
     fn vpn_settings(&self, uuid: &str) -> Result<VpnProfileSettings, String> {
+        crate::device_read::off_ui_thread();
         os_actions::network_settings::vpn_profile_settings(uuid)
     }
 
     fn export_vpn(&self, uuid: &str) -> Result<Zeroizing<String>, String> {
+        crate::device_read::off_ui_thread();
         os_actions::network_settings::export_vpn(uuid)
     }
 
     fn wifi_password(&self, uuid: &str) -> Result<Zeroizing<String>, String> {
+        crate::device_read::off_ui_thread();
         os_actions::network_settings::wifi_profile_password(uuid)
     }
 
     fn continuity(&self, command: WifiContinuityCommand) -> Result<WifiContinuityReply, String> {
+        crate::device_read::off_ui_thread();
         ui::collaboration::wifi_continuity_command(command)
     }
 
     fn diagnostics(&self) -> Result<os_actions::ConnectionDiagnostics, String> {
+        crate::device_read::off_ui_thread();
         os_actions::connection_diagnostics()
     }
 
     fn sign_in_page(&self) -> Result<String, String> {
+        crate::device_read::off_ui_thread();
         os_actions::captive_portal_uri()
     }
 }
@@ -1680,7 +1575,7 @@ impl NetworkArea {
         let mut unavailable = |effects: &[&'static str], code: &str, reason: &str| {
             statuses.extend(effects.iter().map(|&id| {
                 EffectStatus::unavailable(
-                    ActionRef::<SettingsEffect, ()>::new(id, &[]),
+                    ActionRef::<SettingsEffect, ()>::new(id, &[], SettingsEffect::kind()),
                     code,
                     reason,
                 )
@@ -2231,9 +2126,41 @@ impl NetworkModel {
         self.changed = true;
     }
 
-    /// Adopt a snapshot; what refreshing reports.
+    /// Adopt a snapshot; what refreshing reports. The pane is composed
+    /// again only when the snapshot changed what it shows: a read again of
+    /// a device that did not change (the status read once a pane follows
+    /// the device) rebuilds nothing.
     fn adopt_snapshot(&mut self, snapshot: NetworkSnapshot) -> Result<String, String> {
-        self.changed = true;
+        let before = self.adopted();
+        let outcome = self.take_snapshot(snapshot);
+        if self.adopted() != before {
+            self.changed = true;
+        }
+        outcome
+    }
+
+    /// What [`Self::take_snapshot`] writes that the pane shows.
+    fn adopted(&self) -> Adopted {
+        Adopted {
+            loaded: self.loaded,
+            networks: self.networks.clone(),
+            wifi_enabled: self.wifi_enabled,
+            wired: self.wired.clone(),
+            radios: self.radios.clone(),
+            connectivity: self.connectivity,
+            profiles: self.profiles.clone(),
+            profile_settings: self.profile_settings.clone(),
+            wake_settings: self.wake_settings.clone(),
+            hotspot_clients: self.hotspot_clients.clone(),
+            vpns: self.vpns.clone(),
+            link: self.link.clone(),
+            plugins: self.plugins.clone(),
+            device_vpn: self.vpn.devices.status.clone(),
+            read_errors: self.read_errors.clone(),
+        }
+    }
+
+    fn take_snapshot(&mut self, snapshot: NetworkSnapshot) -> Result<String, String> {
         // A whole snapshot says which Wi-Fi link is in use, also none.
         let whole = snapshot.wifi_enabled.is_some();
         let outcome = match snapshot.networks {
@@ -3740,20 +3667,20 @@ impl PaneModel for NetworkModel {
     }
 
     fn next_wake(&self) -> Option<ui::time::Instant> {
-        let scan = self
-            .scans_networks()
+        self.scans_networks()
             .then(|| self.scanned_at?.checked_add(SCAN_EVERY))
-            .flatten();
-        let mobile = self
-            .mobile
-            .as_ref()
-            .and_then(|mobile| mobile.try_borrow().ok()?.next_wake());
-        scan.into_iter().chain(mobile).min()
+            .flatten()
     }
 
     fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
         let device = self.follow_device();
-        Some(Rc::new((device, self.follow_device_vpn())))
+        // The modem's card and page are this pane's: it follows the modems
+        // too.
+        let mobile = self
+            .mobile
+            .as_ref()
+            .and_then(|mobile| mobile.try_borrow_mut().ok()?.follow());
+        Some(Rc::new((device, self.follow_device_vpn(), mobile)))
     }
 
     // The scan's networks replace "Scanning…" when it lands.
@@ -3856,7 +3783,8 @@ impl NetworkModel {
             match receiver.try_recv() {
                 Ok(snapshot) => {
                     self.snapshot = None;
-                    self.scan_in_flight = false;
+                    // "Scanning…" gives way to the list, whatever it holds.
+                    self.changed |= std::mem::take(&mut self.scan_in_flight);
                     let _ = self.adopt_snapshot(snapshot);
                 }
                 Err(crate::channel::TryRecvError::Disconnected) => {

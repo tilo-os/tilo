@@ -9,9 +9,8 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_relay_session::rooms::{
-    CLAIM_TOPOLOGY_NAMESPACE, MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD,
-    RECORD_EFFECT_RECEIPT, RESOURCE_PERMITS, SAVE_SHORTCUT, SHARE_RESOURCE, UNSHARE_RESOURCE,
-    member_resource,
+    MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, RESOURCE_PERMITS,
+    SAVE_SHORTCUT, SHARE_RESOURCE, UNSHARE_RESOURCE, member_resource,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -96,7 +95,6 @@ async fn a_member_claims_their_namespace_and_records_their_receipt_as_actions() 
     assert_eq!(
         offered(&host, workspace, &caller(&ada)).await,
         [
-            CLAIM_TOPOLOGY_NAMESPACE,
             RECORD_EFFECT_RECEIPT,
             PREPARE_APPLICATION_RECORD,
             SAVE_SHORTCUT,
@@ -107,22 +105,13 @@ async fn a_member_claims_their_namespace_and_records_their_receipt_as_actions() 
         .map(str::to_owned)
     );
 
-    // Ada, an Editor, claims her own namespace; the room signs it.
-    let claim =
-        |salt: u64| member_request(&room, CLAIM_TOPOLOGY_NAMESPACE, json!({ "salt": salt }));
-    let claimed = invoke(&host, workspace, &ada, claim(42)).await.unwrap();
-    assert!(claimed["generation"].as_u64().is_some(), "{claimed}");
-    assert_eq!(
-        invoke(&host, workspace, &ada, claim(42)).await.unwrap(),
-        claimed,
-        "a retry keeps the committed generation"
-    );
-    for salt in [0, 65_536] {
-        assert!(matches!(
-            invoke(&host, workspace, &ada, claim(salt)).await,
-            Err(ActionHostError::InvalidRequest { .. })
-        ));
-    }
+    let permits = || {
+        member_request(
+            &room,
+            RESOURCE_PERMITS,
+            json!({ "node": tilo_action_policy::TreePath::room(&room).to_string() }),
+        )
+    };
 
     // Her own receipt is recorded; one claiming another actor is refused.
     let invocation = uuid::Uuid::new_v4();
@@ -179,16 +168,15 @@ async fn a_member_claims_their_namespace_and_records_their_receipt_as_actions() 
             .is_empty()
     );
     assert_eq!(
-        invoke(&host, workspace, &stranger, claim(7)).await,
+        invoke(&host, workspace, &stranger, permits()).await,
         Err(ActionHostError::UnknownAction)
     );
     let agent = Caller::delegated_agent("writer", ada.user_public_key, ada.device_public_key);
     assert!(offered(&host, workspace, &agent).await.is_empty());
 
     // The member's business is that room's only.
-    let mut elsewhere = claim(8);
-    elsewhere.target.address =
-        ActionAddress::new(member_resource("another"), CLAIM_TOPOLOGY_NAMESPACE);
+    let mut elsewhere = permits();
+    elsewhere.target.address = ActionAddress::new(member_resource("another"), RESOURCE_PERMITS);
     assert_eq!(
         invoke(&host, workspace, &ada, elsewhere).await,
         Err(ActionHostError::UnknownAction)
@@ -578,15 +566,8 @@ async fn only_the_device_a_window_runs_on_shares_it() {
     let (room, workspace, host) = governed(rooms).await;
     let ada = admit(rooms, &room, &owner, 1).await;
     let bo = admit(rooms, &room, &owner, 2).await;
-    let salt: u16 = 0x0A51;
-    invoke(
-        &host,
-        workspace,
-        &ada,
-        member_request(&room, CLAIM_TOPOLOGY_NAMESPACE, json!({ "salt": salt })),
-    )
-    .await
-    .unwrap();
+    // Ada's device mints its windows under the salt its key derives.
+    let salt = tilo_desktop_model::ids::device_salt_of_key(&ada.device_public_key);
     let notes = (u64::from(salt) << 48) | 4;
     let share = |tab: u64, id: &str| {
         member_request(
@@ -610,7 +591,20 @@ async fn only_the_device_a_window_runs_on_shares_it() {
         refused(invoke(&host, workspace, &ada, share(notes, "m1")).await),
         "a window is shared under its own share id"
     );
-    let elsewhere = (0x0B52_u64 << 48) | 4;
+    let held_salts = {
+        let state = rooms.room(&room).await.unwrap();
+        let held = state.lock().await;
+        tilo_desktop_model::window_share::device_salts(held.peer().admitted_room().unwrap())
+    };
+    assert_eq!(
+        held_salts.get(&salt),
+        Some(&hex::encode(ada.device_public_key)),
+        "the room knows which device mints under Ada's salt"
+    );
+    let unheld = (1..u16::MAX)
+        .find(|salt| !held_salts.contains_key(salt))
+        .expect("a salt none of the room's devices mints under");
+    let elsewhere = (u64::from(unheld) << 48) | 4;
     assert!(
         refused(
             invoke(
@@ -630,7 +624,7 @@ async fn only_the_device_a_window_runs_on_shares_it() {
         let doc = held.peer().admitted_room().unwrap();
         window_shares(
             &tilo_desktop_model::projection::room_policy_of(doc, held_room),
-            &tilo_desktop_model::projection::contents_owners_of(doc),
+            &tilo_desktop_model::window_share::device_salts(doc),
             tilo_clock::unix_now_ms(),
         )
     };
@@ -682,15 +676,8 @@ async fn what_a_shared_window_shows_is_shared_by_its_device_and_ends_with_it() {
     let (room, workspace, host) = governed(rooms).await;
     let ada = admit(rooms, &room, &owner, 1).await;
     let bo = admit(rooms, &room, &owner, 2).await;
-    let salt: u16 = 0x0A51;
-    invoke(
-        &host,
-        workspace,
-        &ada,
-        member_request(&room, CLAIM_TOPOLOGY_NAMESPACE, json!({ "salt": salt })),
-    )
-    .await
-    .unwrap();
+    // Ada's device mints its windows under the salt its key derives.
+    let salt = tilo_desktop_model::ids::device_salt_of_key(&ada.device_public_key);
     let notes = (u64::from(salt) << 48) | 4;
     let note = WindowShows {
         record: String::new(),
@@ -750,7 +737,7 @@ async fn what_a_shared_window_shows_is_shared_by_its_device_and_ends_with_it() {
         let doc = held.peer().admitted_room().unwrap();
         window_shares(
             &tilo_desktop_model::projection::room_policy_of(doc, held_room),
-            &tilo_desktop_model::projection::contents_owners_of(doc),
+            &tilo_desktop_model::window_share::device_salts(doc),
             tilo_clock::unix_now_ms(),
         )
     };

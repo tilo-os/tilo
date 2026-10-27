@@ -1,7 +1,7 @@
 //! Offscreen render guard for [`Scrollable`]'s visual scrollbar: drives
-//! the full `build_layout` → measure → `apply_layout` → draw pipeline with a
-//! tall child and asserts the scrollbar actually paints along the right
-//! edge. A differential render with the scrollbar disabled proves the
+//! the full `build_layout` → measure → `apply_layout` → scroll → draw
+//! pipeline with a tall child and asserts the scrollbar actually paints
+//! along the right edge. A differential render with the scrollbar disabled proves the
 //! painted pixels come from the bar, not from the content.
 //!
 //! Skips gracefully when no wgpu adapter is available, matching the other
@@ -70,6 +70,9 @@ fn render(scrollable: &mut Scrollable, renderer: &mut OffscreenRenderer) -> Vec<
         )
         .expect("taffy compute_layout");
     scrollable.apply_layout(&taffy, root, Point::ORIGIN);
+    // An overlay bar shows once the person scrolls, not because the
+    // content overflows.
+    scrollable.scroll_by(0.0, 40.0);
 
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();

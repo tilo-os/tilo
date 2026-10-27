@@ -214,7 +214,7 @@ fn bundle_runtime(
         "wasm":wasm_stamp(wasm, release)?,
         "profile":profile,
         "optimizer":optimizer.map(Optimizer::input),
-        "split":split,
+        "split":split.map(splitter_input).transpose()?,
     }))?;
     let pkg = bundle.join("pkg");
     let output = pkg.join("tilo_browser_runtime_bg.wasm");
@@ -276,6 +276,29 @@ fn bundle_runtime(
         std::fs::write(&stamp, input).context("recording the bundled module")?;
     }
     Ok(())
+}
+
+/// What the splitter `script` is: its path and the digests of the script and
+/// of the tool beside it (`Cargo.toml`, `Cargo.lock`, `src/`), so a changed
+/// splitter splits the module again.
+fn splitter_input(script: &Path) -> Result<serde_json::Value> {
+    let tool = script.parent().context("the splitter has no directory")?;
+    let mut files = vec![
+        script.to_path_buf(),
+        tool.join("Cargo.toml"),
+        tool.join("Cargo.lock"),
+    ];
+    let src = tool.join("src");
+    for entry in std::fs::read_dir(&src).with_context(|| format!("reading {}", src.display()))? {
+        files.push(entry?.path());
+    }
+    let mut digests = std::collections::BTreeMap::new();
+    for file in files {
+        let bytes = std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+        let name = file.strip_prefix(tool).unwrap_or(&file);
+        digests.insert(name.display().to_string(), hex_digest(&bytes));
+    }
+    Ok(serde_json::json!({"path": script, "sources": digests}))
 }
 
 fn compute_memory(wasm: &[u8], release: bool) -> Result<serde_json::Value> {
@@ -927,17 +950,26 @@ fn split_profile(profile: &str) -> String {
 
 /// `wasm-release` when the workspace defines it (small, for shipping),
 /// `wasm-assert` for a bundle that keeps assertions, otherwise `release`;
-/// `dev` for iteration.
+/// for iteration `wasm-dev` when the workspace defines it, otherwise `dev`.
+///
+/// `wasm-dev` is lightly optimised: unoptimised, the desktop module, every
+/// web-capable app in one, has more than the 1,000,000 functions wasm-bindgen
+/// and browsers accept in a module.
 fn web_profile(project: &Project, request: &TargetRequest) -> Result<String> {
-    if !request.release {
-        return Ok("dev".into());
-    }
     let root = read_toml(&project.workspace_root.join("Cargo.toml"))?;
     let defined = |name: &str| {
         root.get("profile")
             .and_then(|profiles| profiles.get(name))
             .is_some()
     };
+    if !request.release {
+        return Ok(if defined("wasm-dev") {
+            "wasm-dev"
+        } else {
+            "dev"
+        }
+        .into());
+    }
     if request.assertions {
         if !defined(assert_profile()) {
             bail!(
@@ -1838,6 +1870,53 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn runtime_bundle_splits_again_when_the_splitter_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let tool = root.join("wasm-split");
+        std::fs::create_dir_all(tool.join("src")).unwrap();
+        for name in ["Cargo.toml", "Cargo.lock", "src/main.rs", "src/split.rs"] {
+            std::fs::write(tool.join(name), "first").unwrap();
+        }
+        let wasm = root.join("input.wasm");
+        std::fs::write(&wasm, b"module").unwrap();
+        let bundle = root.join("bundle");
+        std::fs::create_dir_all(bundle.join("pkg")).unwrap();
+        let bindgen = root.join("bindgen");
+        executable(
+            &bindgen,
+            r#"#!/bin/sh
+set -eu
+input=$1
+while [ "$1" != --out-dir ]; do shift; done
+cp "$input" "$2/tilo_browser_runtime_bg.wasm"
+"#,
+        );
+        let split = tool.join("split.sh");
+        executable(
+            &split,
+            r#"#!/bin/sh
+printf 'split\n' >> "$2/../calls"
+"#,
+        );
+        let linked = Linked::new(&wasm, "wasm-split", false);
+        let calls = bundle.join("calls");
+        bundle_runtime(&linked, &bindgen, &bundle, None, Some(&split)).unwrap();
+        bundle_runtime(&linked, &bindgen, &bundle, None, Some(&split)).unwrap();
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), "split\n");
+        std::fs::write(tool.join("src/split.rs"), "second").unwrap();
+        bundle_runtime(&linked, &bindgen, &bundle, None, Some(&split)).unwrap();
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), "split\nsplit\n");
+        std::fs::write(tool.join("src/data.rs"), "new module").unwrap();
+        bundle_runtime(&linked, &bindgen, &bundle, None, Some(&split)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&calls).unwrap(),
+            "split\nsplit\nsplit\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn runtime_bundle_invalidates_optimizer_changes_and_preserves_no_op_builds() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -2040,6 +2119,17 @@ printf 'optimizer\n' >> "$(dirname "$output")/../calls"
         assert_eq!(split_profile(assert_profile()), "wasm-assert-split");
         assert_eq!(split_profile("wasm-release"), "wasm-split");
         assert_eq!(split_profile("dev"), "dev");
+    }
+
+    #[test]
+    fn a_development_build_takes_the_light_wasm_profile_where_defined() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = profiled_project(dir.path(), &["wasm-release", "wasm-dev"]);
+        assert_eq!(
+            web_profile(&project, &TargetRequest::new(Target::Web)).unwrap(),
+            "wasm-dev"
+        );
+        assert_eq!(split_profile("wasm-dev"), "wasm-dev");
     }
 
     #[test]

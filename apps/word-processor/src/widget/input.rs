@@ -6,7 +6,7 @@ use crate::effects::WordProcessorEffect;
 use crate::num;
 use crate::text_offsets::{byte_to_char, char_to_byte};
 use crate::word_processor::Caret;
-use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN, STEP as ZOOM_STEP};
+use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN};
 use automerge::AutoCommit;
 use automerge::transaction::Transactable;
 use tilo_doc::model::Region;
@@ -74,12 +74,17 @@ impl WordProcessorWidget {
             return;
         }
         if ctrl {
-            // Ctrl + wheel zooms (a step per notch of scroll), the standard
-            // editor gesture. Scroll-up (positive dy) zooms in.
-            let step = if dy > 0.0 { ZOOM_STEP } else { -ZOOM_STEP };
-            if self.zoom_by(step) {
-                *handled = true;
-            }
+            // Ctrl + wheel zooms the page (a step per notch of scroll), the
+            // standard editor gesture. Scroll-up (positive dy) zooms in. A
+            // hosted window offers this gesture through `ContentZoom` before
+            // the widget sees it; a bare one lands here, on the same steps.
+            let step = if dy > 0.0 {
+                ui::content_zoom::ZoomStep::In
+            } else {
+                ui::content_zoom::ZoomStep::Out
+            };
+            self.zoom_page(step);
+            *handled = true;
             return;
         }
         let new = (self.scroll_y - dy).clamp(self.scroll_floor(), self.max_scroll);
@@ -883,6 +888,12 @@ impl WordProcessorWidget {
                 self.extend_or_clear(shift);
                 self.inner.move_end(state);
             }
+            // One page down is the same place on the next sheet: the one app
+            // that paginates moves by pages, as every reader does.
+            NamedKey::PageUp | NamedKey::PageDown => {
+                self.extend_or_clear(shift);
+                self.move_page(matches!(key, NamedKey::PageDown), shift);
+            }
             _ => return false,
         }
         true
@@ -1114,19 +1125,23 @@ impl WordProcessorWidget {
         // Zoom: Ctrl+= / Ctrl++ (in), Ctrl+- (out), Ctrl+0 (reset
         // to 100%). These are view-only — they never mutate the doc,
         // so they return before the editing path below.
+        // The page's own zoom, the same steps the window's zoom gestures take
+        // ([`ui::content_zoom::ContentZoom`]): a hosted window offers the
+        // chord to that first, so this is the bare widget's way to the one
+        // rule rather than a second, private meaning for the chord.
         match s {
             "=" | "+" => {
-                self.zoom_by(ZOOM_STEP);
+                self.zoom_page(ui::content_zoom::ZoomStep::In);
                 *handled = true;
                 return;
             }
             "-" | "_" => {
-                self.zoom_by(-ZOOM_STEP);
+                self.zoom_page(ui::content_zoom::ZoomStep::Out);
                 *handled = true;
                 return;
             }
             "0" => {
-                self.set_zoom(1.0);
+                self.zoom_page(ui::content_zoom::ZoomStep::Reset);
                 *handled = true;
                 return;
             }

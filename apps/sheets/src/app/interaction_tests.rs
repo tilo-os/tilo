@@ -393,21 +393,22 @@ fn a_cell_right_click_opens_the_edit_menu_and_inserts_the_range_as_one_verb() {
         .sheets
         .values()
         .next()
-        .map(|sheet| sheet.cells.rows().len())
-        .unwrap_or(0);
+        .map_or(0, |sheet| sheet.cells.rows().len());
     let mut edits = Edits::lend(&mut doc);
     app.run_cell_menu_row(&mut edits, CellMenuRow::InsertRowsAbove);
-    drop(edits);
     let after = doc_workbook(&doc)
         .sheets
         .values()
         .next()
-        .map(|sheet| sheet.cells.rows().len())
-        .unwrap_or(0);
+        .map_or(0, |sheet| sheet.cells.rows().len());
     assert_eq!(
         after,
         before + 2,
         "both selected rows are inserted by one verb"
+    );
+    assert!(
+        app.grid.is_animating(),
+        "the rows arrive as a band that opens, not by teleporting"
     );
 }
 
@@ -435,5 +436,68 @@ fn find_navigates_to_a_match_on_another_sheet() {
         app.status.starts_with("Match "),
         "the status names the match and where it went: {}",
         app.status
+    );
+}
+
+/// While the window bar's search options cover the top of the grid, a match
+/// revealed stands below them; once they close, the same match goes back to
+/// the top of the body.
+#[test]
+fn a_revealed_match_stands_clear_of_the_window_searchs_options() {
+    use crate::grid::GridCmd;
+    use ui::widget::{FindOptions, Findable};
+    let (mut app, mut doc, _tr, _theme) = painted();
+    // A cell of the sheet's first row, and one far below it.
+    let first = (1, 0);
+    let needle = (1, 40);
+    app.apply_cmds(
+        &mut Edits::lend(&mut doc),
+        vec![
+            GridCmd::SetCell {
+                addr: first,
+                raw: "first".into(),
+            },
+            GridCmd::SetCell {
+                addr: needle,
+                raw: "needle".into(),
+            },
+            GridCmd::Commit,
+        ],
+    );
+    app.sync(&doc, &automerge::ROOT);
+    let found = app.find("needle", FindOptions::default());
+    assert_eq!(found.len(), 1, "one cell says it");
+
+    let body = app.grid.body_rect();
+    let cover = Rect::new(body.x0, app.grid_rect.y0, body.x1, body.y0 + 120.0);
+    // Scroll well past the match, so revealing it would put it at the
+    // body's top.
+    app.grid.select_only((1, 120));
+    app.set_find_cover(Some(cover));
+    app.reveal(0);
+    let cell = app.grid.cell_screen_rect(needle.0, needle.1);
+    assert!(
+        (cell.y0 - cover.y1).abs() < 0.5,
+        "the match stands just below what the search covers: {cell:?} under {cover:?}"
+    );
+
+    // A cell of the first row comes down under the options rather than
+    // staying hidden behind them.
+    app.grid.select_only(first);
+    app.grid.ensure_active_visible();
+    let cell = app.grid.cell_screen_rect(first.0, first.1);
+    assert!(
+        (cell.y0 - cover.y1).abs() < 0.5,
+        "the first row scrolls up behind the options: {cell:?} under {cover:?}"
+    );
+
+    // The options close: the same match goes back to the top of the body.
+    app.set_find_cover(None);
+    app.grid.select_only((1, 120));
+    app.reveal(0);
+    let cell = app.grid.cell_screen_rect(needle.0, needle.1);
+    assert!(
+        (cell.y0 - body.y0).abs() < 0.5,
+        "with nothing covering it, the match stands at the body's top: {cell:?}"
     );
 }

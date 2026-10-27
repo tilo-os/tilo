@@ -1852,6 +1852,12 @@ installer-media-capacity-estimate = Allow at least { $required } for the install
 
 installer-media-capacity-required = Estimated space needed: { $required }. This drive has { $available }. Choose a drive with enough space.
 
+installer-media-drive-too-small = { $contents }. Needs { $required }: choose a drive with more room.
+
+installer-media-ejected = { $drive } was ejected. You can take it out now.
+
+installer-media-eject-failed = The drive was written, but it could not be ejected: { $reason } Close everything using it and try again, or shut down before you remove it.
+
 installer-media-source-checking = Checking your selected files before writing the drive.
 
 installer-media-source-failed = Your selected files could not be verified. The drive has not been written. Try again or return to your preparation.
@@ -2173,3 +2179,12 @@ installer-accounts-nextcloud-linux-files = Your existing Linux sync folders stay
 installer-accounts-nextcloud-linux-local-changes = Account discovery does not check pending uploads, folder mappings, exclusions or conflicts. Local-only changes may not be on the server. Before erasing Linux, let the Nextcloud client finish syncing and resolve conflicts, or copy local-only changes somewhere safe.
 installer-accounts-nextcloud-linux-dual-boot = Keeping Linux? Edits and deletions that sync to the Nextcloud server affect the files you access from both systems. Choose separately which local folders to copy or share with Tilo.
 installer-accounts-nextcloud-linux-calendar = Connecting Nextcloud files does not configure Calendar. After setup, use Connect calendars for this account in Settings to choose calendars.
+installer-hardware-reason-starts-here = This computer starts Tilo built for { $architecture }.
+installer-hardware-reason-starts-board = It was built for the { $board } board.
+installer-hardware-reason-starts-devicetree = It starts from its own device tree, { $devicetree }.
+installer-hardware-reason-other-architecture = Tilo here is built for { $architecture }, but this computer is { $running }.
+installer-hardware-reason-board-without-devicetree = The { $board } board starts { $architecture } from a device tree, and this image carries none for it.
+installer-hardware-evidence-architecture = architecture { $architecture }
+installer-hardware-evidence-virtualization = virtualization { $names }
+installer-hardware-evidence-board = board { $board }
+installer-hardware-evidence-devicetree = device tree { $devicetree }

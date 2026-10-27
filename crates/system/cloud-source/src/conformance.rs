@@ -686,7 +686,10 @@ pub fn change_notification(fixture: &dyn Fixture) {
     assert_eq!(outcome, crate::Wait::Changed);
 }
 
-/// An unreachable server is [`Error::Offline`], and the source recovers.
+/// A server that stops answering is reported as an outage, and the source
+/// recovers. Which way it stopped is the provider's to say: a connection that
+/// was refused is [`Error::Offline`], and one that opened and then broke is a
+/// transport failure — both name their cause rather than collapsing.
 pub fn offline_is_reported(fixture: &dyn Fixture) {
     put_remote(fixture, "here.txt", b"x");
     let source = fixture.source();
@@ -695,8 +698,15 @@ pub fn offline_is_reported(fixture: &dyn Fixture) {
     }
     let result = source.list(&source.root());
     fixture.set_offline(false);
-    assert!(matches!(result, Err(Error::Offline)), "{result:?}");
-    assert!(result.unwrap_err().is_transient());
+    let error = result.expect_err("an outage fails");
+    assert!(
+        matches!(&error, Error::Offline | Error::InvalidResponse("transport")),
+        "an outage keeps its cause: {error:?}"
+    );
+    assert!(
+        error.is_transient(),
+        "an outage is worth retrying: {error:?}"
+    );
     assert!(lookup(source, "here.txt").is_some());
 }
 

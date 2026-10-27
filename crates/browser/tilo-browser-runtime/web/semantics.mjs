@@ -147,6 +147,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
       Math.min(anchorOffset,focusOffset),Math.max(anchorOffset,focusOffset),
       anchor===focus?'none':anchor<focus?'forward':'backward',
     );
+    element.tiloState.domSelection=[element.selectionStart,element.selectionEnd];
   }
   function dispatchSelection(element){
     if(!authorized(element)||!currentComposition(element)){restoreCanonical(element);return false;}
@@ -390,7 +391,15 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
       if(node.live)element.setAttribute('aria-live',node.live.toLowerCase());else element.removeAttribute('aria-live');
       }
       const value=node.state?.protected?'':node.value??'';
-      if(editable){
+      // A node a patch left alone over a field that still shows it (its
+      // value, and the selection last set) needs nothing done: recounting
+      // the selection and setting it again on every field each status
+      // forced a layout per field and fired selection events on fields
+      // nobody is in, all while the person types into one.
+      const shown=state=>!state.canonicalSelection||state.domSelection?.[0]===element.selectionStart&&state.domSelection?.[1]===element.selectionEnd;
+      if(editable&&!changed&&!element.tiloState.composing&&element.value===value&&shown(element.tiloState)){
+        // Already shown.
+      }else if(editable){
         const state=element.tiloState;
         state.canonicalValue=value;
         state.canonicalSelection=node.text_selection?[

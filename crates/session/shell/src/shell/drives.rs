@@ -232,34 +232,14 @@ pub(crate) fn pump_reveals(chrome: &Chrome) -> bool {
 
 /// Give Files the drive for this session and open it there.
 fn reveal(chrome: &Chrome, path: &Path) -> Result<(), String> {
-    use crate::shell::search::providers::applications::{
-        SYSTEM_FILE_MANAGER, grant_file_manager_path,
-    };
+    use crate::shell::doc_open::OpenError;
+    use crate::shell::launcher::LaunchError;
 
-    let app = crate::shell::launcher::installed_apps()
-        .ok()
-        .and_then(|apps| {
-            apps.into_iter()
-                .find(|app| app.package_id == SYSTEM_FILE_MANAGER)
-        })
-        .ok_or_else(|| t("drives-no-files"))?;
-    let workspace = {
-        let state = chrome.borrow();
-        let mut tree = state.tree_mut();
-        let active = tree
-            .desktop
-            .active_workspace()
-            .map(|workspace| workspace.id)
-            .ok_or_else(|| t("drives-no-workspace"))?;
-        grant_file_manager_path(&mut tree, active, path.to_path_buf());
-        let workspace = tree.desktop.active_workspace().cloned();
-        tree.queue_save();
-        workspace
-    };
-    let workspace = workspace.ok_or_else(|| t("drives-no-workspace"))?;
-    chrome.borrow_mut().bump();
-    crate::shell::launcher::queue_document_in_workspace(app, &workspace, path.to_path_buf(), || {})
-        .map_err(|error| error.user_message())
+    crate::shell::doc_open::show_in_files(path, chrome).map_err(|error| match error {
+        OpenError::Launch(LaunchError::NotInstalled { .. }) => t("drives-no-files"),
+        OpenError::NoWorkspace => t("drives-no-workspace"),
+        error => error.user_message(),
+    })
 }
 
 /// Whether udev knows a block device holding NTFS.

@@ -290,7 +290,7 @@ panfrost, panthor, msm, v3d, asahi) takes the Vulkan build, also without ROCm.
 inputs change. Everything is pinned: llama.cpp's source by commit and hash,
 the bases by digest (mirrored in `tools/ci/publish/mirrored-images.tsv`), the
 CPU and Vulkan images' packages by Fedora 44's frozen release repository, the
-CUDA build's tools by Ubuntu's snapshot archive at a fixed time, and vLLM by
+CUDA build's CMake by Kitware's release and its hash, and vLLM by
 its upstream image digest, converted to OCI with its layers unchanged.
 
 Each build writes `<id>.oci.tar`, whose index names the image so `podman load`
@@ -304,12 +304,33 @@ answering a chat completion through the model gateway.
 
 ### Shipping
 
-The receipts in `catalog-source.json` are those of the builds the catalog
-checks take. `t dispatch review-model-catalog --ref stable` signs the source
-for review; its `catalog.json` is checked in as the image's catalog. `t
+A catalog signs the runtimes its tree builds: `review` and `dev` take each
+build's `runtime.json` as the source's `runtimes`, so no receipt is copied by
+hand. Models that a runtime serves name the runtime kinds they allow; a model
+a person adds from Hugging Face or a file allows every kind, and the signed
+runtime that serves its format on this machine's architecture and hardware
+runs it.
+
+Releases: `t dispatch review-model-catalog --ref stable` signs the source with
+those runtimes for review; its `source.json` and `catalog.json` are checked in
+as `dist/local-models/catalog-source.json` and the image's catalog. `t
 dispatch publish-model-catalog --ref stable` then signs it again (it must
 reproduce the checked-in bytes) and uploads the runtime archives and the
-catalog to their immutable package URLs.
+catalog to their immutable package URLs. A release image carries that
+catalog.
+
+Dev images get the runtimes from main without a release.
+`model-catalog-dev-<arch>` signs the same source with the runtimes its tree
+builds for that architecture and a throwaway key, and `os-dev-image-<arch>`
+puts that catalog and its key in place of the release's: the development key
+that signs the dev image vouches for both, as it does for the dev image's
+env-runtime. Before main publishes a dev image,
+`publish-model-runtimes-<arch>` uploads the runtime archives its catalog names
+to their immutable package URLs with the dev package token, so a dev device
+downloads them as it would a release's. The builds are reproducible to the
+byte (archives are written in name order without times or owners, and the
+roots keep no package database), so a dev image built from a branch names the
+same archives as main's and they download once main has published them.
 
 ## Owned runtime observations
 

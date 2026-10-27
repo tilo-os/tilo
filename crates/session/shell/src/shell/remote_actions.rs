@@ -391,6 +391,8 @@ mod tests {
             resource_kind: "files.entry".into(),
             resource_label: "report".into(),
             action_label: name.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             operation_kind: tilo_actions::OperationKind::Effect,
             params: Vec::new(),
@@ -666,6 +668,8 @@ mod tests {
                     ("workspace", "update"),
                     ("workspace", "delete"),
                     ("workspace", "list"),
+                    ("workspace", "stop"),
+                    ("workspace", "stop-all"),
                 ],
                 "a remote device is not offered launching apps on this desktop"
             );

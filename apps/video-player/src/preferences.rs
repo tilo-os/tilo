@@ -14,6 +14,7 @@ pub const RECENT_HISTORY_LIMIT: usize = 32;
 /// What this device plays at when nothing else is chosen.
 pub const DEFAULT_VOLUME: f32 = 0.8;
 /// Normal speed.
+// ratchet-allow(pixel_const): a playback rate, not pixels
 pub const DEFAULT_RATE: f32 = 1.0;
 
 /// The playback speeds the settings menu offers. A stored speed is always one
@@ -267,6 +268,10 @@ mod tests {
         serde_json::from_str(json).unwrap_or_default()
     }
 
+    #[allow(
+        clippy::float_cmp,
+        reason = "a fallback or clamp yields exactly the named constant, so equality is the assertion"
+    )]
     #[test]
     fn settings_round_trip_and_fall_back_per_key() {
         let entry = RecentMedia {
@@ -299,17 +304,23 @@ mod tests {
         // wrong-typed key never takes its neighbours with it.
         let levels =
             read(r#"{"volume":"loud","rate":"fast","autoplay":false,"loop_enabled":true}"#);
-        assert_eq!(levels.volume, DEFAULT_VOLUME);
-        assert_eq!(levels.rate, DEFAULT_RATE);
+        assert!((levels.volume - DEFAULT_VOLUME).abs() < f32::EPSILON);
+        assert!((levels.rate - DEFAULT_RATE).abs() < f32::EPSILON);
         assert!(!levels.autoplay, "the neighbours are untouched");
         assert!(levels.loop_enabled);
         let out_of_range = read(r#"{"volume":7.5,"rate":-3.0}"#);
-        assert_eq!(out_of_range.volume, 1.0, "a volume is a fraction");
-        assert_eq!(out_of_range.rate, 0.25, "a speed is one the menu offers");
-        assert_eq!(
-            read(r#"{"volume":0.4,"rate":1.1}"#).rate,
-            1.0,
-            "a foreign speed restores to the nearest offered one"
+        assert!(
+            (out_of_range.volume - 1.0).abs() < f32::EPSILON,
+            "a volume is a fraction"
+        );
+        assert!(
+            (out_of_range.rate - 0.25).abs() < f32::EPSILON,
+            "a speed is one the menu offers"
+        );
+        let foreign = read(r#"{"volume":0.4,"rate":1.1}"#).rate;
+        assert!(
+            (foreign - 1.0).abs() < f32::EPSILON,
+            "a foreign speed restores to the nearest offered one: {foreign}"
         );
         assert!(
             read(r#"{"recent_history":[{"id":"","title":"bad"}]}"#)

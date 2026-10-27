@@ -163,6 +163,10 @@ fn press_bar(app: &mut PhotosApp, name: &str) -> bool {
     true
 }
 
+#[allow(
+    clippy::float_cmp,
+    reason = "the surface must show exactly the factor the gesture answered, and a reset is exactly 1.0"
+)]
 #[test]
 fn the_open_photograph_can_be_presented_slid_and_zoomed() {
     eprintln!("phase presenting_is_the_window_and_the_slide_show_advances_the_set");
@@ -252,16 +256,16 @@ fn the_open_photograph_can_be_presented_slid_and_zoomed() {
             .zoom_content(ZoomStep::In)
             .expect("the photograph takes the gesture");
         assert!(factor > before, "the picture grew");
-        assert_eq!(
-            app.viewer.as_ref().expect("a viewer").zoom(),
-            factor,
-            "the surface shows the factor it answered"
+        let shown = app.viewer.as_ref().expect("a viewer").zoom();
+        assert!(
+            (shown - factor).abs() < 1e-6,
+            "the surface shows the factor it answered: {shown} against {factor}"
         );
         let reset = app
             .zoom_content(ZoomStep::Reset)
             .expect("reset is the picture's own size");
         assert!((reset - 1.0).abs() < 1e-6);
-        assert_eq!(app.viewer.as_ref().expect("a viewer").zoom(), 1.0);
+        assert!((app.viewer.as_ref().expect("a viewer").zoom() - 1.0).abs() < 1e-6);
 
         // In the library the gesture belongs to the window, not the grid.
         app.show_library();
@@ -1643,7 +1647,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
                     &ui::presence::PresenceCtx::empty(),
                 );
             }
-            let body = app.metadata_editor_body;
+            let body = app.editor_scroll_viewport;
             let captured = app.metadata_longitude_input.get_rect();
             assert!(
                 captured.y0 >= body.y0 - 0.01 && captured.y1 <= body.y1 + 0.01,
@@ -1664,11 +1668,142 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
             );
             if (scale - 1.0).abs() < f32::EPSILON {
                 assert!(
-                    app.metadata_editor_scroll.abs() < f64::EPSILON,
+                    app.editor_scroll.offset().y.abs() < f64::EPSILON,
                     "1× holds the whole sheet without scrolling"
                 );
             }
         }
+    }
+
+    eprintln!("phase compact_sheet_field_list_reaches_the_footer");
+    {
+        // A short window is where the sheet's field list used to stop above
+        // its footer and cut the last field through its middle, with empty
+        // sheet below: the list must fill the sheet down to the footer, and
+        // every field must be reachable by scrolling it.
+        let _settled = ui::motion::testing::settled();
+        let (w, h) = (420.0_f32, 800.0_f32);
+        let mut app = test_app();
+        let mut doc = crate::test_doc::new_doc();
+        app.show_library();
+        stage(&mut app, &mut doc, "metadata-edit");
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
+        let mut frame = |app: &mut PhotosApp| {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            sync(app, &mut doc);
+            let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy
+                .new_with_children(
+                    Style {
+                        size: Size::from_lengths(w, h),
+                        ..Default::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+            let measure_map = node_map.clone();
+            let trr = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(w),
+                        height: taffy::AvailableSpace::Definite(h),
+                    },
+                    |known, available, id, _, _| {
+                        measure_map.get(&id).map_or(Size::ZERO, |&p| unsafe {
+                            (*p).measure(known, available, trr)
+                        })
+                    },
+                )
+                .unwrap();
+            app.apply_layout(&taffy, child, Point::ORIGIN);
+            let mut scene = Scene::new();
+            app.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &ui::presence::PresenceCtx::empty(),
+            );
+        };
+        frame(&mut app);
+        assert!(
+            app.metadata_editor,
+            "the metadata-edit scenario opens the sheet"
+        );
+        app.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
+        frame(&mut app);
+
+        // The list's viewport runs from the section tabs to the footer, so
+        // no empty sheet is left below the fields it shows.
+        let body = app.editor_scroll_viewport;
+        let footer_top = app
+            .metadata_editor_buttons
+            .iter()
+            .find(|(hit, _)| *hit == MetadataEditorHit::Cancel)
+            .map(|(_, button)| button.get_rect().y0)
+            .expect("the footer has a Cancel button");
+        assert!(
+            body.y1 >= footer_top - 0.01,
+            "the field list stops {:.1}px above the footer: {body:?} vs {footer_top}",
+            footer_top - body.y1
+        );
+        assert!(
+            body.height() > 0.0,
+            "the field list has no room in a short sheet: {body:?}"
+        );
+        // At rest the list's lower edge falls between fields: no field is
+        // cut through its middle with empty sheet left below it.
+        let edge = app.editor_scroll.offset().y + body.height();
+        assert!(
+            !app.editor_field_bands
+                .iter()
+                .any(|band| band.y0 < edge - 0.5 && band.y1 > edge + 0.5),
+            "the list rests cutting a field at {edge}: {:?}",
+            app.editor_field_bands
+        );
+        // The list scrolls, so a field its edge cuts at rest is still
+        // reachable: the wheel brings the last one fully into view.
+        let content_bottom = app
+            .editor_field_bands
+            .last()
+            .map(|band| band.y1)
+            .expect("the field list has fields");
+        assert!(
+            content_bottom > body.height(),
+            "a short sheet holds the whole field list, so nothing scrolls: {content_bottom} in {}",
+            body.height()
+        );
+        app.pointer = body.center();
+        let mut reached = false;
+        for _ in 0..8 {
+            ui::testing::dispatch(
+                &mut app,
+                &winit::event::WindowEvent::MouseWheel {
+                    device_id: winit::event::DeviceId::dummy(),
+                    delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
+                    phase: winit::event::TouchPhase::Moved,
+                },
+            );
+            frame(&mut app);
+            let body = app.editor_scroll_viewport;
+            // The coordinates are the row the Time and place list ends on.
+            let last = app.metadata_longitude_input.get_rect();
+            if last.y1 <= body.y1 + 0.01 && last.y0 >= body.y0 - 0.01 && last.height() > 0.0 {
+                reached = true;
+                break;
+            }
+        }
+        assert!(
+            reached,
+            "the last field never comes fully into view: {:?} in {:?}",
+            app.metadata_longitude_input.get_rect(),
+            app.editor_scroll_viewport
+        );
     }
 
     eprintln!(

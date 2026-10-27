@@ -272,7 +272,11 @@ fn native_checkpoint_public_capture_inspect_find_and_name_movement() {
     let first = driver
         .invoke(
             "capture",
-            serde_json::json!({"name":"first", "routes":routes}),
+            serde_json::json!({
+                "name":"first",
+                "description":"before the rewrite",
+                "routes":routes
+            }),
             capture,
         )
         .unwrap();
@@ -314,11 +318,29 @@ fn assert_original_capture_retry(
         driver
             .invoke(
                 "capture",
-                serde_json::json!({"name":"first", "routes":routes}),
+                serde_json::json!({
+                    "name":"first",
+                    "description":"before the rewrite",
+                    "routes":routes
+                }),
                 capture
             )
             .unwrap(),
         *first
+    );
+    assert!(
+        driver
+            .invoke(
+                "capture",
+                serde_json::json!({
+                    "name":"first",
+                    "description":"after the rewrite",
+                    "routes":routes
+                }),
+                tilo_actions::InvocationId::new()
+            )
+            .is_err(),
+        "a retained id keeps the words it was captured with"
     );
     assert!(
         driver
@@ -340,6 +362,18 @@ fn assert_checkpoint_movement(
 ) {
     assert_eq!(manifest["entries"].as_array().unwrap().len(), 1);
     assert!(manifest.get("documents").is_none());
+    assert_eq!(manifest["description"], "before the rewrite");
+    assert_eq!(
+        manifest["completeness"],
+        serde_json::json!({
+            "complete": true,
+            "native_app_records_only": true,
+            "file_topology": false,
+            "referenced_content": false,
+            "governance": false
+        }),
+        "a native manifest states what it does not hold instead of leaving it unsaid"
+    );
     assert_eq!(
         manifest["author"],
         serde_json::json!(fixture.certificate.user_public_key)
@@ -355,7 +389,7 @@ fn assert_checkpoint_movement(
     let second = driver
         .invoke(
             "capture",
-            serde_json::json!({"name":"second", "routes":routes}),
+            serde_json::json!({"name":"second", "description":"", "routes":routes}),
             second_id,
         )
         .unwrap();
@@ -798,6 +832,7 @@ fn native_checkpoint_service_rechecks_current_source_rights_for_reads_and_origin
         caller: member.clone(),
         command: CheckpointCommand::Capture {
             name: "member".into(),
+            description: String::new(),
             routes: serde_json::from_value(routes).unwrap(),
         },
     };
@@ -1104,6 +1139,7 @@ fn native_checkpoint_service_refuses_bad_sources_and_missing_custody() {
         caller: fixture.certificate.clone(),
         command: CheckpointCommand::Capture {
             name: "bounded".into(),
+            description: String::new(),
             routes: Vec::new(),
         },
     };
@@ -1115,6 +1151,7 @@ fn native_checkpoint_service_refuses_bad_sources_and_missing_custody() {
     let mut oversized = request.clone();
     oversized.command = CheckpointCommand::Capture {
         name: "too-many".into(),
+        description: String::new(),
         routes: (0..33)
             .map(
                 |index| tilo_peer_state::workspace_checkpoint::CheckpointRoute {
@@ -1128,6 +1165,7 @@ fn native_checkpoint_service_refuses_bad_sources_and_missing_custody() {
     let mut missing = request;
     missing.command = CheckpointCommand::Capture {
         name: "missing".into(),
+        description: String::new(),
         routes: vec![tilo_peer_state::workspace_checkpoint::CheckpointRoute {
             app: "so.tilo.chat".into(),
             record: "absent".into(),

@@ -276,6 +276,23 @@ pub fn adopt_toplevel_at(
 /// Returns whether the tab was found; `false` means it's gone since the launch started, and the
 /// caller places the window the ordinary way. Searches the whole tree, not the active workspace — the tab arrived from a peer, whose target workspace the launch didn't know.
 fn bind_into_tab(tree: &mut WorkspaceTree, target: TabId, app_id: &str, surface_id: u64) -> bool {
+    // A personal app's window is never bound into a tab on a shared strip;
+    // it is placed the ordinary way, in the personal workspace.
+    let held_in = tree.desktop.workspaces.iter().find_map(|ws| {
+        ws.strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .any(|tab| tab.id == target)
+            .then_some(ws.id)
+    });
+    if held_in.is_some_and(|ws| !tree.may_hold_app(ws, app_id)) {
+        return false;
+    }
+    let focused_workspace = tree.desktop.active;
+    let focused_strip = tree.desktop.active_strip.get(&focused_workspace).copied();
+    let focused_group =
+        focused_strip.and_then(|strip| tree.desktop.active_group.get(&strip).copied());
     for ws in &mut tree.desktop.workspaces {
         for strip in &mut ws.strips {
             let strip_id = strip.id;
@@ -290,6 +307,14 @@ fn bind_into_tab(tree: &mut WorkspaceTree, target: TabId, app_id: &str, surface_
                 crate::shell::foreign::store().bind_opening_tab(target, surface_id);
                 // Front the tab, but move focus no further: stealing the strip because somebody else opened something is exactly what the room model rules out.
                 group.activate_tab(target);
+                if focused_workspace != ws.id
+                    || focused_strip != Some(strip_id)
+                    || focused_group != Some(group.id)
+                {
+                    // It came to the front somewhere the person is not
+                    // looking. Say so on its pill rather than moving them.
+                    crate::shell::attention::ask_tab(target);
+                }
                 let _ = strip_id;
                 return true;
             }
@@ -557,13 +582,33 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     let salt = tree.local_salt();
 
     // Resolve the focused strip + group *before* taking the mutable workspace borrow: both live on the tree, not on the workspace.
-    let Some(ws_id) = tree.desktop.active_workspace().map(|w| w.id) else {
+    let Some(shown) = tree.desktop.active_workspace().map(|w| w.id) else {
         return tab_id;
+    };
+    // A personal app's window opens in the personal workspace whichever is
+    // shown, and the view follows it there.
+    let ws_id = match tilo_desktop_model::apps::canonical_app_id(&new_tab.tile) {
+        Some(app) if crate::shell::state::is_personal_app(&app) => tree.home_for_app(&app, shown),
+        _ => shown,
+    };
+    let placement = match placement {
+        _ if ws_id == shown => placement,
+        // What the placement named is on the shown workspace's strips. A
+        // view opened for someone else still leaves the person where they
+        // are: `Beside` a group that is not there opens a group without
+        // taking focus.
+        Placement::Beside(group) | Placement::BackgroundTabAt(group, _) => Placement::Beside(group),
+        _ => Placement::NewGroup,
     };
     let active_strip = tree.desktop.active_strip.get(&ws_id).copied();
     let active_group = active_strip.and_then(|s| tree.desktop.active_group_for(s));
 
-    let Some(ws) = tree.desktop.active_workspace_mut() else {
+    let Some(ws) = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|candidate| candidate.id == ws_id)
+    else {
         return tab_id;
     };
 
@@ -752,7 +797,31 @@ pub fn rebind_toplevel_for_app_id(
         }
         return relocate_foreign_toplevel(tree, surface_id, placement, &title);
     }
+    // Adopted before it named itself, a personal app's window may sit on a
+    // shared strip: it goes to the personal workspace now.
+    let misplaced = identity_changed
+        && crate::shell::state::is_personal_app(new_app_id)
+        && workspace_of_surface(tree, surface_id)
+            .is_some_and(|ws| !tree.may_hold_app(ws, new_app_id));
+    if misplaced {
+        if !rename_tab_for_app_id_with_title(tree, surface_id, new_app_id, Some(&title)) {
+            return false;
+        }
+        return relocate_foreign_toplevel(tree, surface_id, Placement::NewGroup, &title);
+    }
     rename_tab_for_app_id_with_title(tree, surface_id, new_app_id, Some(&title))
+}
+
+/// The workspace whose strips hold `surface_id`'s window.
+fn workspace_of_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<WorkspaceId> {
+    tree.desktop.workspaces.iter().find_map(|ws| {
+        ws.strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .any(|tab| matches!(&tab.tile, TileContent::Foreign { surface_id: id, .. } if *id == surface_id))
+            .then_some(ws.id)
+    })
 }
 
 /// Re-home an already mapped foreign surface after its compositor-minted
@@ -1123,6 +1192,10 @@ pub fn close_tab_for_destroyed_surface(
 ) -> bool {
     foreign_tab_for_surface(tree, destroyed_surface_id)
         .is_some_and(|tab_id| remove_tab(tree, tab_id))
+}
+
+pub(crate) fn tab_for_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<TabId> {
+    foreign_tab_for_surface(tree, surface_id)
 }
 
 fn foreign_tab_for_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<TabId> {

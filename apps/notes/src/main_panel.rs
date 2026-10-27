@@ -378,6 +378,9 @@ pub struct MainPanel {
     page_id: Option<PageId>,
     date_index: crate::metadata::NoteDateIndex,
     dates: crate::metadata::NoteDates,
+    /// The wall clock the dates are read against, when a test holds it: the
+    /// thread driving the app is not the thread that draws it.
+    clock: Option<ui::time::SystemTime>,
     /// Parent hierarchy for the open note. The editable leaf title is not
     /// repeated here.
     parent_path: String,
@@ -467,6 +470,10 @@ pub struct MainPanel {
     /// as boxed Elements — wrapping in Scrollable would require
     /// significant ownership churn for what amounts to "clip + shift".
     scroll_y: f64,
+    /// Where each note was left off. Switching notes puts the one opened
+    /// back at the place it was read, clamped to its own extent on the next
+    /// layout; a note not seen before opens at its top.
+    scroll_by_page: HashMap<PageId, f64>,
     /// The glide a lifted touchpad or touchscreen gesture leaves the body
     /// in, as every Tilo scroll surface has; a wheel's notches move it at
     /// once and never glide.
@@ -529,6 +536,7 @@ impl MainPanel {
             page_id: None,
             date_index: crate::metadata::NoteDateIndex::default(),
             dates: crate::metadata::NoteDates::default(),
+            clock: None,
             parent_path: String::new(),
             tooltips_suppressed: false,
             title_label: EditableLabel::new("")
@@ -564,6 +572,7 @@ impl MainPanel {
             title_overhang: None,
             drawn_title_overhang: None,
             scroll_y: 0.0,
+            scroll_by_page: HashMap::new(),
             glide: ui::ScrollMomentum::new(),
             scroll_to: ui::motion::ScrollTo::new(),
             device_scale: 1.0,
@@ -636,6 +645,9 @@ impl MainPanel {
     /// grammar that `BlockEditor::from_markdown` does not handle.
     pub fn load_page(&mut self, id: PageId, title: &str, body: impl AsRef<str>) {
         let body = body.as_ref();
+        if let Some(old) = self.page_id {
+            self.scroll_by_page.insert(old, self.scroll_y);
+        }
         self.content_generation = self.content_generation.wrapping_add(1);
         self.page_id = Some(id);
         self.dates = self.date_index.get(id);
@@ -659,9 +671,9 @@ impl MainPanel {
             .editor_mut()
             .focus_block(0, ui::widget::CursorPlacement::Start);
         self.take_body_snapshot();
-        // Brand-new page → reset scroll to top (the previous page's
-        // scroll position is meaningless for the new content).
-        self.scroll_y = 0.0;
+        // A note opens where it was left off, or at its top the first time.
+        self.scroll_y = self.scroll_by_page.get(&id).copied().unwrap_or(0.0);
+        self.scroll_layout_dirty = self.scroll_y.abs() > f64::EPSILON;
         self.glide.stop();
         self.dirty = true;
     }
@@ -679,6 +691,11 @@ impl MainPanel {
         title: &str,
     ) -> Result<(), String> {
         let body = crate::notebook::body_object(doc, page).ok_or("the page has no body")?;
+        if let Some(old) = self.page_id
+            && old != page
+        {
+            self.scroll_by_page.insert(old, self.scroll_y);
+        }
         // Binding the page already open again (its record re-read, a reveal)
         // keeps the caret where the person left it: a rebind that put it back
         // at the start would make the next keystroke land before the last.
@@ -719,13 +736,15 @@ impl MainPanel {
         self.empty_action_focused = false;
         self.set_title_value(title);
         self.body.clear();
-        // Another page starts at its top; the same page, bound again after an
-        // edit (a paste, an import), stays where the person is reading, and
-        // layout clamps the offset to the new extent.
+        // The same page, bound again after an edit (a paste, an import),
+        // stays where the person is reading. Another page returns to where
+        // it was left, or its top the first time; layout clamps either to
+        // the new extent.
         if same_page {
             self.scroll_layout_dirty = true;
         } else {
-            self.scroll_y = 0.0;
+            self.scroll_y = self.scroll_by_page.get(&page).copied().unwrap_or(0.0);
+            self.scroll_layout_dirty = self.scroll_y.abs() > f64::EPSILON;
             self.glide.stop();
         }
         self.dirty = true;
@@ -911,8 +930,53 @@ impl MainPanel {
         if !self.parent_path.is_empty() {
             lines.push(self.parent_path_label());
         }
-        lines.extend(self.dates.labels());
+        let now = self.clock.map_or_else(ui::clock::local_now, |at| {
+            chrono::DateTime::<chrono::Local>::from(ui::time::to_std(at))
+        });
+        lines.extend(self.dates.labels_at(now));
         lines
+    }
+
+    /// Read the note's dates against `at` instead of the wall clock of the
+    /// thread that draws them. The app leaves the clock alone; a test whose
+    /// pinned time this thread cannot read holds it here.
+    pub fn set_clock(&mut self, at: ui::time::SystemTime) {
+        self.clock = Some(at);
+        self.refresh_captions();
+    }
+
+    /// Read the note's dates against the wall clock of the thread that draws
+    /// them again, after [`Self::set_clock`] named another.
+    pub fn clear_clock(&mut self) {
+        self.clock = None;
+        self.refresh_captions();
+    }
+
+    /// [`Self::set_clock`] on the first panel in `widget`'s tree (`false`
+    /// when it has none, as before the window shows a note).
+    pub fn hold_clock_at(widget: &mut dyn Widget, at: ui::time::SystemTime) -> bool {
+        Self::first_panel(widget).is_some_and(|panel| {
+            panel.set_clock(at);
+            true
+        })
+    }
+
+    /// [`Self::clear_clock`] on the first panel in `widget`'s tree.
+    pub fn release_clock_in(widget: &mut dyn Widget) -> bool {
+        Self::first_panel(widget).is_some_and(|panel| {
+            panel.clear_clock();
+            true
+        })
+    }
+
+    fn first_panel(widget: &mut dyn Widget) -> Option<&mut Self> {
+        if widget.as_any_mut().is_some_and(|any| any.is::<Self>()) {
+            return widget.as_any_mut()?.downcast_mut::<Self>();
+        }
+        widget
+            .children_mut()
+            .into_iter()
+            .find_map(Self::first_panel)
     }
 
     pub fn set_transclusion_previews(
@@ -1251,10 +1315,18 @@ impl MainPanel {
 
     /// Carry a glide on to `now`. It moves only the body, which the frame
     /// lays out and draws (a copy of what stays on screen, in whole device
-    /// pixels): no change of the model, so nothing is reported. It stops at
-    /// either end of the note.
+    /// pixels): no change of the model, so nothing is reported but the move
+    /// ([`ui::widget::note_layout_moved`]). It stops at either end of the
+    /// note.
     pub fn advance_glide(&mut self) {
-        let now = ui::motion::frame_now();
+        let before = self.scroll_y;
+        self.glide_to(ui::motion::frame_now());
+        if self.scroll_y.to_bits() != before.to_bits() {
+            ui::widget::note_layout_moved();
+        }
+    }
+
+    fn glide_to(&mut self, now: ui::time::Instant) {
         if let Some(at) = self
             .scroll_to
             .offset_in_device_pixels(now, self.device_scale)
@@ -1275,13 +1347,14 @@ impl MainPanel {
     }
 
     /// Scroll the page while a dragged block's pointer rests near the edge
-    /// of what is visible, so a target below the fold can be reached.
-    /// Returns whether the page moved.
-    pub fn autoscroll_block_drag(&mut self) -> bool {
+    /// of what is visible, so a target below the fold can be reached. Like
+    /// a glide it moves only the body: no change of the model, only the
+    /// move ([`ui::widget::note_layout_moved`]).
+    pub fn autoscroll_block_drag(&mut self) {
         let now = ui::time::now();
         if !self.editor.editor().block_drag_active() {
             self.drag_scroll_tick = None;
-            return false;
+            return;
         }
         let elapsed = self
             .drag_scroll_tick
@@ -1292,11 +1365,13 @@ impl MainPanel {
         let viewport = self.scroll_viewport();
         let delta = self.editor.editor_mut().tick_block_drag(viewport, elapsed);
         if delta == 0.0 {
-            return false;
+            return;
         }
         let before = self.scroll_y;
         self.set_scroll_offset(before + delta);
-        (self.scroll_y - before).abs() > f64::EPSILON
+        if self.scroll_y.to_bits() != before.to_bits() {
+            ui::widget::note_layout_moved();
+        }
     }
 
     fn scroll_viewport(&self) -> Rect {
@@ -1597,6 +1672,9 @@ impl Default for MainPanel {
 }
 
 impl Widget for MainPanel {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
         Some(ui::widget::PrimaryScrollRegion {
             key: "primary",

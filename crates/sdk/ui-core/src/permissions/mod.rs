@@ -490,6 +490,14 @@ impl PermissionContext {
         self
     }
 
+    /// Whether this context's answers follow something outside it, sampled
+    /// at each decision (the host's live view of an app's action authority,
+    /// a policy clock), and so may change without a new context being put in
+    /// force ([`SharedPermissions::set`]).
+    pub(crate) fn samples_outside(&self) -> bool {
+        self.policy_time.is_some() || self.action_authority.is_some()
+    }
+
     /// Compare the current policy meaning, not callback allocation or elapsed
     /// seconds. Sampling is fallible; no cached/empty witness replaces failure.
     pub(crate) fn directory_witness(&self) -> Result<DirectoryPermissionWitness, String> {
@@ -959,6 +967,114 @@ fn keep_permitted(
     (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
 }
 
+/// The permissions a host shares with what it hosts (an app, its components,
+/// a worker) and changes while they run: a role changed by the record's
+/// owner, a grant revoked, a room's participation. Every change goes through
+/// [`Self::set`], which moves [`shared_revision`] on, so whatever derives
+/// something from shared permissions (which controls may run) derives it
+/// again only after a change, not on every frame.
+#[derive(Clone)]
+pub struct SharedPermissions(std::rc::Rc<std::cell::RefCell<PermissionContext>>);
+
+thread_local! {
+    static SHARED_REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Moves on with every change of any [`SharedPermissions`] on this thread.
+#[must_use]
+pub fn shared_revision() -> u64 {
+    SHARED_REVISION.get()
+}
+
+impl SharedPermissions {
+    /// Share `context`.
+    #[must_use]
+    pub fn new(context: PermissionContext) -> Self {
+        Self(std::rc::Rc::new(std::cell::RefCell::new(context)))
+    }
+
+    /// The permissions in force now, to read.
+    ///
+    /// # Panics
+    /// While a [`Self::set`] of the same permissions runs.
+    pub fn borrow(&self) -> std::cell::Ref<'_, PermissionContext> {
+        self.0.borrow()
+    }
+
+    /// [`Self::borrow`], or an error while a change of them runs.
+    ///
+    /// # Errors
+    /// While a [`Self::set`] or [`Self::update`] of the same permissions runs.
+    pub fn try_borrow(
+        &self,
+    ) -> Result<std::cell::Ref<'_, PermissionContext>, std::cell::BorrowError> {
+        self.0.try_borrow()
+    }
+
+    /// Change the permissions in force in place (a one-use grant spent).
+    pub fn update<R>(&self, change: impl FnOnce(&mut PermissionContext) -> R) -> R {
+        let result = change(&mut self.0.borrow_mut());
+        SHARED_REVISION.set(SHARED_REVISION.get().wrapping_add(1));
+        result
+    }
+
+    /// The permissions in force now.
+    #[must_use]
+    pub fn get(&self) -> PermissionContext {
+        self.0.borrow().clone()
+    }
+
+    /// Put `context` in force for everyone sharing these permissions.
+    pub fn set(&self, context: PermissionContext) {
+        *self.0.borrow_mut() = context;
+        SHARED_REVISION.set(SHARED_REVISION.get().wrapping_add(1));
+    }
+
+    /// Whether `self` and `other` are the same shared permissions.
+    #[must_use]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// A handle that does not keep the permissions shared.
+    #[must_use]
+    pub fn downgrade(&self) -> WeakPermissions {
+        WeakPermissions(std::rc::Rc::downgrade(&self.0))
+    }
+}
+
+impl From<PermissionContext> for SharedPermissions {
+    fn from(context: PermissionContext) -> Self {
+        Self::new(context)
+    }
+}
+
+impl std::fmt::Debug for SharedPermissions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SharedPermissions")
+            .field(&*self.0.borrow())
+            .finish()
+    }
+}
+
+/// [`SharedPermissions`] held without keeping them shared.
+#[derive(Clone)]
+pub struct WeakPermissions(std::rc::Weak<std::cell::RefCell<PermissionContext>>);
+
+impl WeakPermissions {
+    /// The permissions, while anyone still shares them.
+    #[must_use]
+    pub fn upgrade(&self) -> Option<SharedPermissions> {
+        self.0.upgrade().map(SharedPermissions)
+    }
+
+    /// Whether anyone still shares the permissions.
+    #[must_use]
+    pub fn is_shared(&self) -> bool {
+        self.0.strong_count() > 0
+    }
+}
+
 /// A participant's permissions as they stand *now*, following every change the
 /// host makes while the app runs: a role changed by the record's owner, a grant
 /// revoked, a capability granted. Read-only: only the host changes them.
@@ -967,18 +1083,18 @@ fn keep_permitted(
 /// what a participant may do goes stale the moment their role changes. Hold
 /// one of these instead and ask again when it matters (every frame is cheap).
 #[derive(Clone)]
-pub struct LivePermissions(std::rc::Rc<std::cell::RefCell<PermissionContext>>);
+pub struct LivePermissions(SharedPermissions);
 
 impl LivePermissions {
     /// Follow the context the host shares with its components.
-    pub(crate) fn shared(context: std::rc::Rc<std::cell::RefCell<PermissionContext>>) -> Self {
+    pub(crate) fn shared(context: SharedPermissions) -> Self {
         Self(context)
     }
 
     /// Permissions that never change: a preview of a past version, a capture,
     /// a test fixture.
     pub fn fixed(context: PermissionContext) -> Self {
-        Self(std::rc::Rc::new(std::cell::RefCell::new(context)))
+        Self(SharedPermissions::new(context))
     }
 
     /// May the participant do this, as of now?
@@ -1001,7 +1117,7 @@ impl LivePermissions {
 
     /// The permissions in force now.
     pub fn current(&self) -> PermissionContext {
-        self.0.borrow().clone()
+        self.0.get()
     }
 }
 

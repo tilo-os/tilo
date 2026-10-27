@@ -3,17 +3,17 @@
 //! and this device shares its own connection with theirs by a switch, with a
 //! Stop for each device using it.
 //!
-//! Settings only writes the person's choices (`settings_store::device_vpn`)
-//! and shows what the session publishes it is doing, read off the UI thread
-//! whenever the session's status file changes.
+//! Settings changes the person's choices only through their section's
+//! actions ([`DeviceVpnPrefs`]) and shows what the session publishes it is
+//! doing, read off the UI thread whenever the session's status file changes.
 
 use std::any::Any;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use settings_store::device_vpn::{
-    self, ClientState, ClientStatus, DeviceVpnRow, DeviceVpnStatus, EXIT, ExitUser, OfferedExit,
-    Problem, Refusal, STOP, StopRequest, THROUGH, Through,
+    self, ClientState, ClientStatus, DeviceVpnRow, DeviceVpnStatus, ExitUser, OfferedExit, Problem,
+    Refusal, THROUGH, Through,
 };
 use ui::LocalState;
 use ui::framework::LiveRow;
@@ -25,6 +25,7 @@ use super::super::{Begun, Landed, NetworkModel};
 use super::VpnEffect;
 use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
+use crate::prefs::DeviceVpnPrefs;
 use crate::watch::Watched;
 use crate::widgets::{El, SettingsSection, block, card, rows, setting_row_described};
 
@@ -293,22 +294,6 @@ impl NetworkModel {
         Some(card(&t("net-device-vpn-exit"), rows(content)))
     }
 
-    /// Merge `value` into the choice `name` of this device's VPN section.
-    pub(super) fn write_device_vpn(
-        &self,
-        name: &str,
-        value: Result<serde_json::Value, serde_json::Error>,
-    ) -> Result<(), String> {
-        let value = value.map_err(|error| error.to_string())?;
-        let mut values = serde_json::Map::new();
-        values.insert(name.to_owned(), value);
-        self.cx
-            .storage()
-            .settings_document()
-            .update_section(device_vpn::SECTION, values)
-            .map_err(|error| error.to_string())
-    }
-
     /// Route through `device`, keeping the options chosen before, or stop
     /// routing through it.
     pub(super) fn route_through_device(&mut self, device: &str, on: bool) -> Result<Begun, String> {
@@ -335,7 +320,8 @@ impl NetworkModel {
             previous.clone().filter(|through| through.device != device)
         };
         if next != previous {
-            self.write_device_vpn(THROUGH.name(), serde_json::to_value(&next))?;
+            self.cx
+                .invoke_section(DeviceVpnPrefs::ROUTE_THROUGH.with((device.to_owned(), on)))?;
         }
         // A route through a device carries everything, so the VPNs that do
         // too turn off.
@@ -400,11 +386,10 @@ impl NetworkModel {
         let through = THROUGH
             .from_section(&document.section(device_vpn::SECTION))
             .ok_or_else(|| t("net-device-vpn-no-route"))?;
-        let next = Through {
-            kill_switch: on,
-            ..through
-        };
-        self.write_device_vpn(THROUGH.name(), serde_json::to_value(Some(&next)))?;
+        if through.kill_switch != on {
+            self.cx
+                .invoke_section(DeviceVpnPrefs::SET_KILL_SWITCH.with(on))?;
+        }
         if let Some(client) = self
             .vpn
             .devices
@@ -447,7 +432,8 @@ impl NetworkModel {
         {
             return Err(t("net-device-vpn-cannot-share"));
         }
-        self.write_device_vpn(EXIT.name(), serde_json::to_value(on))?;
+        self.cx
+            .invoke_section(DeviceVpnPrefs::paths().exit.set(on))?;
         if let Some(status) = &mut self.vpn.devices.status {
             status.exit_on = on;
         }
@@ -465,10 +451,8 @@ impl NetworkModel {
             .and_then(|status| status.exit_users.iter().find(|user| user.device == device))
             .cloned()
             .ok_or_else(|| t("net-device-vpn-unknown"))?;
-        let document = self.cx.storage().settings_document();
-        let previous = STOP.from_section(&document.section(device_vpn::SECTION));
-        let request = StopRequest::after(previous.as_ref(), device);
-        self.write_device_vpn(STOP.name(), serde_json::to_value(Some(request)))?;
+        self.cx
+            .invoke_section(DeviceVpnPrefs::STOP_DEVICE.with(device.to_owned()))?;
         if let Some(status) = &mut self.vpn.devices.status {
             status.exit_users.retain(|using| using.device != device);
         }

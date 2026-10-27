@@ -8,7 +8,7 @@
 use ui::tilo_resource::{Id, Replica};
 
 use crate::model::{
-    Imported, ImportedMessage, MessageKind, Question, RunOutcome, RunPhase, Status, Tracker,
+    Imported, ImportedMessage, MessageKind, Question, Run, RunOutcome, RunPhase, Status, Tracker,
     agent_assignee, tracker,
 };
 
@@ -314,6 +314,52 @@ fn a_budget_is_set_only_between_runs_and_within_its_ceilings() {
 }
 
 #[test]
+fn a_task_is_a_shared_thread_two_people_take_part_in() {
+    let mut ada = ada().as_invoker("ada");
+    ada.apply(Tracker::CREATE.with(create("Plan the offsite", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&ada, "Plan the offsite");
+    let mut bob = ada.fork().as_invoker("bob");
+    // The task has no run yet, so a message joins the thread instead of
+    // failing for want of an agent to read it.
+    ada.apply(Tracker::SEND_MESSAGE.with(tracker::SendMessage {
+        issue: issue.clone(),
+        text: "Book the room".into(),
+    }))
+    .unwrap();
+    bob.sync_with(&mut ada).unwrap();
+    bob.apply(Tracker::SEND_MESSAGE.with(tracker::SendMessage {
+        issue: issue.clone(),
+        text: "I will write the agenda".into(),
+    }))
+    .unwrap();
+    ada.sync_with(&mut bob).unwrap();
+    for replica in [&ada, &bob] {
+        let state = replica.state().unwrap();
+        let said: Vec<(String, String)> = state.issues[&issue]
+            .comments
+            .values()
+            .map(|message| (message.author.clone(), message.text.clone()))
+            .collect();
+        assert_eq!(
+            said,
+            vec![
+                ("ada".to_owned(), "Book the room".to_owned()),
+                ("bob".to_owned(), "I will write the agenda".to_owned()),
+            ],
+            "both people read both messages, each attributed to its author"
+        );
+        assert!(
+            state.issues[&issue]
+                .comments
+                .values()
+                .all(|message| message.kind == MessageKind::Comment),
+            "a message no run is going reads as a comment"
+        );
+    }
+}
+
+#[test]
 fn imported_tasks_are_one_issue_whoever_imports_them_and_never_come_back() {
     let task = Imported {
         task: "t1".into(),
@@ -370,6 +416,7 @@ fn asking_an_agent_makes_an_issue_whose_run_the_asking_approved() {
                     model: "fast".into(),
                 }),
                 subject: None,
+                quick: false,
             },
         })
     };
@@ -394,5 +441,871 @@ fn asking_an_agent_makes_an_issue_whose_run_the_asking_approved() {
                 model: None
             }))
             .is_err()
+    );
+}
+
+#[test]
+fn an_issue_reads_its_goal_its_urgency_and_its_cost_and_its_agent_records_what_it_used() {
+    use crate::model::Area;
+
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE.with(create("Quarterly numbers", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&person, "Quarterly numbers");
+    let goal = Area {
+        resource: "notes/finance/q3".into(),
+        app: "so.tilo.notes".into(),
+        kind: "notes.note".into(),
+        label: "Q3 financials".into(),
+    };
+    person
+        .apply(Tracker::PLAN.with(tracker::Plan {
+            issue: issue.clone(),
+            area: Some(goal.clone()),
+            priority: Some(2),
+            cost_budget: Some(5_000),
+            due_ms: Some(1_800_000_000_000),
+        }))
+        .unwrap();
+    let planned = person.state().unwrap();
+    let read = planned.issues.get(&issue).unwrap();
+    assert_eq!(read.area.as_ref(), Some(&goal));
+    assert_eq!(read.priority, Some(2));
+    assert_eq!(read.cost_budget, Some(5_000));
+    assert_eq!(read.due_ms, Some(1_800_000_000_000));
+
+    // Planning is a person's: an agent does not set its own budget.
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    assert!(
+        agent
+            .apply(Tracker::PLAN.with(tracker::Plan {
+                issue: issue.clone(),
+                area: None,
+                priority: Some(1),
+                cost_budget: Some(1_000_000),
+                due_ms: None,
+            }))
+            .is_err(),
+        "only a person plans"
+    );
+    // Nor is an urgency outside 1 to 4, or a goal that names no resource.
+    for wrong in [
+        tracker::Plan {
+            issue: issue.clone(),
+            area: None,
+            priority: Some(5),
+            cost_budget: None,
+            due_ms: None,
+        },
+        tracker::Plan {
+            issue: issue.clone(),
+            area: None,
+            priority: None,
+            cost_budget: Some(0),
+            due_ms: None,
+        },
+        tracker::Plan {
+            issue: issue.clone(),
+            area: Some(Area::default()),
+            priority: None,
+            cost_budget: None,
+            due_ms: None,
+        },
+    ] {
+        assert!(person.apply(Tracker::PLAN.with(wrong)).is_err());
+    }
+
+    // The run's agent says where it runs and what it used; nobody else does.
+    person
+        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    let mut other = agent.fork().as_agent_for("agent:other", "ada");
+    let on_steam_deck = || {
+        Tracker::RUN_ON_DEVICE.with(tracker::RunOnDevice {
+            issue: issue.clone(),
+            device: "Ada's laptop".into(),
+        })
+    };
+    assert!(other.apply(on_steam_deck()).is_err());
+    agent.apply(on_steam_deck()).unwrap();
+    agent
+        .apply(Tracker::RECORD_SPEND.with(tracker::RecordSpend {
+            issue: issue.clone(),
+            spent: 1_200,
+        }))
+        .unwrap();
+    person.sync_with(&mut agent).unwrap();
+    let started = person.state().unwrap();
+    let run = started.issues.get(&issue).unwrap();
+    assert_eq!(
+        run.run.as_ref().unwrap().device.as_deref(),
+        Some("Ada's laptop")
+    );
+    assert_eq!(run.spend, Some(1_200));
+    assert_eq!(run.cost_budget, Some(5_000));
+}
+
+/// Every field of a task lives in the tracker's own document, so it syncs to
+/// the person's other devices, survives a restart, and merges between two
+/// devices working on it as any other collaborative edit.
+#[test]
+fn a_task_syncs_to_another_device_survives_a_restart_and_merges_its_edits() {
+    use crate::model::Area;
+
+    let mut on_laptop = ada();
+    on_laptop
+        .apply(Tracker::CREATE.with(create("Prepare Q3", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&on_laptop, "Prepare Q3");
+    on_laptop
+        .apply(Tracker::PLAN.with(tracker::Plan {
+            issue: issue.clone(),
+            area: Some(Area {
+                resource: "notes/finance/q3".into(),
+                app: "so.tilo.notes".into(),
+                kind: "notes.note".into(),
+                label: "Q3 financials".into(),
+            }),
+            priority: Some(2),
+            cost_budget: Some(5_000),
+            due_ms: Some(1_800_000_000_000),
+        }))
+        .unwrap();
+    // The person's other device joins with the tracker it holds and takes in
+    // the rest: every field of the task is there, from the record alone. Each
+    // device writes its own changes for the person at it, as a host does.
+    let mut on_laptop = on_laptop.as_invoker("ada");
+    let mut on_desktop = on_laptop.fork().as_invoker("ada");
+    on_desktop.sync_with(&mut on_laptop).unwrap();
+    let synced = on_desktop.state().unwrap();
+    let read = synced.issues.get(&issue).unwrap();
+    assert_eq!(read.title, "Prepare Q3");
+    assert_eq!(read.assigned_agent(), Some(AGENT));
+    assert_eq!(read.priority, Some(2));
+    assert_eq!(read.cost_budget, Some(5_000));
+    assert_eq!(
+        read.area.as_ref().map(|area| area.label.as_str()),
+        Some("Q3 financials")
+    );
+
+    // Both work on it at once, off the net: the desktop nests a subtask, the
+    // laptop approves the run and its agent records what it used. Both edits
+    // are ordinary collaborative changes and both survive the merge.
+    on_desktop
+        .apply(Tracker::CREATE.with(create("Gather the ledgers", Some(issue.clone()), None)))
+        .unwrap();
+    on_laptop
+        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    let mut agent = on_laptop.fork().as_agent_for(AGENT, "ada");
+    agent
+        .apply(Tracker::RECORD_SPEND.with(tracker::RecordSpend {
+            issue: issue.clone(),
+            spent: 1_200,
+        }))
+        .unwrap();
+    on_laptop.sync_with(&mut agent).unwrap();
+    on_desktop.sync_with(&mut on_laptop).unwrap();
+    for merged in [on_laptop.state().unwrap(), on_desktop.state().unwrap()] {
+        let task = merged.issues.get(&issue).unwrap();
+        assert_eq!(task.spend, Some(1_200), "the run's spend is on both");
+        assert!(
+            merged
+                .issues
+                .iter()
+                .any(|(_, other)| other.title == "Gather the ledgers"),
+            "the subtask made on the other device is on both"
+        );
+    }
+
+    // Restart: the tracker is rebuilt from its own bytes, and every field the
+    // person could read before is still there.
+    let before = on_desktop.state().unwrap();
+    let reopened = Replica::<Tracker>::load(&on_desktop.save()).unwrap();
+    let after = reopened.state().unwrap();
+    assert_eq!(after.issues.len(), before.issues.len());
+    let reopened_issue = after.issues.get(&issue).unwrap();
+    assert_eq!(reopened_issue, before.issues.get(&issue).unwrap());
+    assert_eq!(reopened_issue.spend, Some(1_200));
+    assert_eq!(reopened_issue.priority, Some(2));
+}
+
+/// The task is a published resource of the action registry, and each change
+/// says, typed, which task made it and which person it acted under.
+#[test]
+fn the_task_is_published_with_its_verbs_and_its_changes_carry_the_task() {
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE.with(create("Release the notes", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&person, "Release the notes");
+
+    // Published through the registry, with the verbs a surface or an agent
+    // runs, rather than an app-private store.
+    let tree = person.published().unwrap();
+    assert_eq!(tree.kind, crate::model::KIND);
+    let verbs: Vec<&str> = tree
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    for verb in ["create", "comment", "send-message", "approve-run", "plan"] {
+        assert!(verbs.contains(&verb), "{verb} is published; got {verbs:?}");
+    }
+
+    // Every change says what it did and for whom, in fields the person reads:
+    // the agent, the kind of actor, and the person it acted under.
+    person
+        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    agent
+        .apply(Tracker::RECORD_SPEND.with(tracker::RecordSpend {
+            issue,
+            spent: 1_200,
+        }))
+        .unwrap();
+    let versions = agent.versions();
+    let spent = versions
+        .iter()
+        .rev()
+        .find_map(|version| {
+            let context = version.context.as_ref()?;
+            context.what.as_ref()?;
+            Some(context)
+        })
+        .expect("the run's spend is a version with what it did");
+    let invoker = spent.invoker.as_ref().expect("the change names its actor");
+    assert_eq!(invoker.actor, AGENT);
+    assert_eq!(invoker.kind, ui::tilo_actions::ActorKind::Agent);
+    assert_eq!(invoker.on_behalf_of.as_deref(), Some("ada"));
+}
+
+/// The run of `issue`, as a replica of `replica` reads it.
+fn run_of(replica: &Replica<Tracker>, issue: &Id) -> Run {
+    replica
+        .state()
+        .unwrap()
+        .issues
+        .get(issue)
+        .and_then(|issue| issue.run.clone())
+        .expect("the issue has a run")
+}
+
+#[test]
+fn a_paused_run_takes_no_step_until_a_person_lets_it_go_on_from_its_boundary() {
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE.with(create("Tidy the docs", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&person, "Tidy the docs");
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    person
+        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    agent.sync_with(&mut person).unwrap();
+    let report = |text: &str| {
+        Tracker::REPORT_RUN.with(tracker::ReportRun {
+            issue: issue.clone(),
+            phase: RunPhase::Executing,
+            text: Some(text.into()),
+        })
+    };
+    let pause = || {
+        Tracker::PAUSE_RUN.with(tracker::PauseRun {
+            issue: issue.clone(),
+        })
+    };
+    let resume = || {
+        Tracker::RESUME_RUN.with(tracker::ResumeRun {
+            issue: issue.clone(),
+        })
+    };
+    agent.apply(report("Tidying")).unwrap();
+    // The person sees the step its agent reported before pausing it, so the
+    // pause records where the run goes on from.
+    person.sync_with(&mut agent).unwrap();
+    assert_eq!(run_of(&person, &issue).phase, RunPhase::Executing);
+
+    assert!(
+        agent.apply(pause()).is_err(),
+        "an agent does not pause its own run"
+    );
+    assert!(person.apply(resume()).is_err(), "no run is paused yet");
+    // A message sent before the pause is part of the run: it exists at the
+    // boundary the pause records.
+    person
+        .apply(Tracker::SEND_MESSAGE.with(tracker::SendMessage {
+            issue: issue.clone(),
+            text: "Keep the headings".into(),
+        }))
+        .unwrap();
+    person.apply(pause()).unwrap();
+    assert!(
+        person.apply(pause()).is_err(),
+        "a paused run is not paused again"
+    );
+
+    person.sync_with(&mut agent).unwrap();
+    let run = run_of(&agent, &issue);
+    assert_eq!(
+        run.phase,
+        RunPhase::Executing,
+        "a paused run keeps its step"
+    );
+    assert!(run.phase.active(), "a paused run is still going");
+    let paused = run.paused.expect("the boundary is recorded");
+    assert_eq!(
+        paused.phase(),
+        Some(RunPhase::Executing),
+        "it goes on in the step a person paused"
+    );
+    assert_eq!(paused.through, 1);
+    assert!(
+        agent.apply(report("Carrying on")).is_err(),
+        "a paused run takes no new step"
+    );
+    assert!(
+        agent
+            .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
+                issue: issue.clone(),
+                outcome: RunOutcome::Done,
+                summary: None,
+            }))
+            .is_err(),
+        "a paused run does not end itself"
+    );
+
+    // It goes on in the step it stopped in.
+    person.apply(resume()).unwrap();
+    person.sync_with(&mut agent).unwrap();
+    let run = run_of(&agent, &issue);
+    assert_eq!(run.phase, RunPhase::Executing);
+    assert!(
+        run.paused.is_none(),
+        "it goes on where it stopped, and is no longer paused"
+    );
+    agent.apply(report("Carrying on")).unwrap();
+}
+
+#[test]
+fn a_run_that_stopped_showing_a_step_is_ended_as_idle_and_leaves_what_it_did() {
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE.with(create("Tidy the docs", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&person, "Tidy the docs");
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    person
+        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    agent.sync_with(&mut person).unwrap();
+    agent
+        .apply(Tracker::REPORT_RUN.with(tracker::ReportRun {
+            issue: issue.clone(),
+            phase: RunPhase::Executing,
+            text: Some("Tidying".into()),
+        }))
+        .unwrap();
+    person.sync_with(&mut agent).unwrap();
+    agent
+        .apply(Tracker::RECORD_SPEND.with(tracker::RecordSpend {
+            issue: issue.clone(),
+            spent: 900,
+        }))
+        .unwrap();
+    person.sync_with(&mut agent).unwrap();
+
+    let idle = |after_ms: i64| {
+        Tracker::END_IDLE_RUN.with(tracker::EndIdleRun {
+            issue: issue.clone(),
+            after_ms,
+        })
+    };
+    assert!(
+        person.apply(idle(0)).is_err(),
+        "an idle run waits at least a moment"
+    );
+    assert!(
+        person.apply(idle(600_000)).is_err(),
+        "a run that just showed a step is not idle"
+    );
+    assert_eq!(run_of(&person, &issue).phase, RunPhase::Executing);
+
+    // Once it has been quiet for longer than its person allows, it stops.
+    person.set_now_ms(run_of(&person, &issue).updated_ms + 600_000);
+    person.apply(idle(600_000)).unwrap();
+    let state = person.state().unwrap();
+    let ended = state.issues.get(&issue).unwrap();
+    assert_eq!(
+        ended.status,
+        Status::Todo,
+        "it is left to be picked up again"
+    );
+    assert_eq!(
+        ended.spend,
+        Some(900),
+        "what it did before it went quiet stays"
+    );
+    let run = ended.run.as_ref().expect("the run is kept to read");
+    assert_eq!(run.phase, RunPhase::Stopped);
+}
+
+#[test]
+fn stopping_a_paused_run_ends_it_and_leaves_what_it_did() {
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE.with(create("Tidy the docs", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&person, "Tidy the docs");
+    person
+        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    person
+        .apply(Tracker::PAUSE_RUN.with(tracker::PauseRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    person
+        .apply(Tracker::STOP_RUN.with(tracker::StopRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    let state = person.state().unwrap();
+    let stopped = state.issues.get(&issue).unwrap();
+    assert_eq!(stopped.status, Status::Todo);
+    let run = stopped.run.as_ref().unwrap();
+    assert_eq!(run.phase, RunPhase::Stopped);
+    assert!(run.paused.is_none(), "a stopped run is not still paused");
+}
+
+#[test]
+fn a_quick_question_is_a_task_that_ends_when_its_agent_answers_it() {
+    let mut person = ada();
+    let id = Id::from_raw("quick");
+    person
+        .apply(Tracker::ASK_AGENT.with(tracker::AskAgent {
+            ask: crate::model::AgentRequest {
+                id: id.clone(),
+                title: "Which venue seats 120?".into(),
+                body: None,
+                agent: "claude".into(),
+                model: None,
+                subject: None,
+                quick: true,
+            },
+        }))
+        .unwrap();
+    assert!(
+        person.state().unwrap().issues.get(&id).unwrap().quick,
+        "the task it made is a question"
+    );
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    agent
+        .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
+            issue: id.clone(),
+            outcome: RunOutcome::Done,
+            summary: Some("The old depot on Mill Street seats 120.".into()),
+        }))
+        .unwrap();
+    let state = agent.state().unwrap();
+    let issue = state.issues.get(&id).unwrap();
+    assert_eq!(
+        issue.status,
+        Status::Done,
+        "an answered question ends rather than waiting for a review"
+    );
+    // What was asked and what came back stay in the task, findable later.
+    assert_eq!(issue.comments.len(), 1);
+    assert_eq!(issue.title, "Which venue seats 120?");
+}
+
+#[test]
+fn work_asked_of_an_agent_waits_for_a_person_to_review_what_came_back() {
+    let mut person = ada();
+    let id = Id::from_raw("work");
+    person
+        .apply(Tracker::ASK_AGENT.with(tracker::AskAgent {
+            ask: crate::model::AgentRequest {
+                id: id.clone(),
+                title: "Write the launch notes".into(),
+                body: None,
+                agent: "claude".into(),
+                model: None,
+                subject: None,
+                quick: false,
+            },
+        }))
+        .unwrap();
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    agent
+        .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
+            issue: id.clone(),
+            outcome: RunOutcome::Done,
+            summary: None,
+        }))
+        .unwrap();
+    assert_eq!(
+        agent.state().unwrap().issues.get(&id).unwrap().status,
+        Status::InReview,
+        "work done by an agent is reviewed, not closed"
+    );
+}
+
+/// The project is an ordinary resource above the tasks: it names itself and
+/// its kind, the tasks that work towards it are the ones it holds, and those
+/// same tasks are what their person's own list and board show.
+#[test]
+fn a_project_holds_the_tasks_that_work_towards_it_and_the_people_involved() {
+    use crate::model::{Kind, area_goal};
+
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+            name: "Launch".into(),
+            kind: Some(Kind::Project),
+        }))
+        .unwrap();
+    let project = person
+        .state()
+        .unwrap()
+        .areas
+        .iter()
+        .next()
+        .map(|(id, _)| id.clone())
+        .expect("the project is there");
+    let read = person.state().unwrap();
+    let made = read.area(&project).expect("the project");
+    assert_eq!(made.name, "Launch");
+    assert_eq!(made.kind, Kind::Project);
+    assert!(
+        person
+            .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+                name: "  ".into(),
+                kind: None,
+            }))
+            .is_err(),
+        "a project with no name is refused"
+    );
+
+    // Two tasks work towards it, one of them as a sub-task of the other, and
+    // a third works towards nothing: the project holds the two, at any depth
+    // through their sub-tasks.
+    for title in ["Write the notes", "Draw the slides", "Book a holiday"] {
+        person
+            .apply(Tracker::CREATE.with(create(title, None, None)))
+            .unwrap();
+    }
+    let notes = id_of(&person, "Write the notes");
+    person
+        .apply(Tracker::CREATE.with(create("Read them back", Some(notes.clone()), None)))
+        .unwrap();
+    let read_back = id_of(&person, "Read them back");
+    for issue in [&notes, &read_back] {
+        person
+            .apply(Tracker::PLAN.with(tracker::Plan {
+                issue: issue.clone(),
+                area: Some(area_goal(&project, "Launch")),
+                priority: None,
+                cost_budget: None,
+                due_ms: None,
+            }))
+            .unwrap();
+    }
+    let held: Vec<String> = person
+        .state()
+        .unwrap()
+        .in_area(&project)
+        .map(|(_, issue)| issue.title.clone())
+        .collect();
+    assert_eq!(held, ["Write the notes", "Read them back"]);
+
+    // The task reads in the project and in the tracker's list alike: the
+    // same issue, named as working towards the project.
+    let listed = person.state().unwrap().issues.get(&notes).cloned();
+    let listed = listed.expect("the task is in the tracker's list");
+    let listed = listed.area.as_ref().map(|area| area.label.as_str());
+    assert_eq!(listed, Some("Launch"));
+}
+
+/// Who is involved in a project is the project's own to keep, and a document
+/// it holds is a link one of its tasks carries.
+#[test]
+fn a_projects_people_carry_their_role_and_its_documents_are_its_tasks_links() {
+    use crate::model::area_goal;
+
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+            name: "Launch".into(),
+            kind: None,
+        }))
+        .unwrap();
+    let project = person
+        .state()
+        .unwrap()
+        .areas
+        .iter()
+        .map(|(id, _)| id.clone())
+        .next()
+        .expect("the project");
+    person
+        .apply(Tracker::CREATE.with(create("Write the notes", None, None)))
+        .unwrap();
+    let notes = id_of(&person, "Write the notes");
+    person
+        .apply(Tracker::PLAN.with(tracker::Plan {
+            issue: notes.clone(),
+            area: Some(area_goal(&project, "Launch")),
+            priority: None,
+            cost_budget: None,
+            due_ms: None,
+        }))
+        .unwrap();
+
+    // A document it holds is a link the task carries, so it is read on the
+    // project's page without being stored a second time.
+    person
+        .apply(Tracker::LINK.with(tracker::Link {
+            issue: notes,
+            app: "so.tilo.notes".into(),
+            kind: "notes.note".into(),
+            resource: "notes/launch".into(),
+            label: "The launch plan".into(),
+            record: None,
+        }))
+        .unwrap();
+
+    // Who is involved is the project's own to keep, with the role each has.
+    for (name, role) in [("ada", "writes the notes"), ("grace", "draws")] {
+        person
+            .apply(Tracker::INVOLVE.with(tracker::Involve {
+                area: project.clone(),
+                name: name.into(),
+                role: Some(role.into()),
+            }))
+            .unwrap();
+    }
+    let read = person.state().unwrap();
+    let people: Vec<(String, String)> = read
+        .area(&project)
+        .expect("the project")
+        .people
+        .values()
+        .map(|person| (person.name.clone(), person.role.clone()))
+        .collect();
+    assert_eq!(
+        people,
+        [
+            ("ada".to_owned(), "writes the notes".to_owned()),
+            ("grace".to_owned(), "draws".to_owned())
+        ]
+    );
+
+    // Taking someone out of the project leaves the project's other people.
+    let grace = read
+        .area(&project)
+        .expect("the project")
+        .people
+        .iter()
+        .find(|(_, person)| person.name == "grace")
+        .map(|(id, _)| id.clone())
+        .expect("grace is involved");
+    person
+        .apply(Tracker::REMOVE_PERSON.with(tracker::RemovePerson {
+            area: project.clone(),
+            person: grace,
+        }))
+        .unwrap();
+    assert_eq!(
+        person.state().unwrap().area(&project).unwrap().people.len(),
+        1
+    );
+    assert!(
+        person
+            .apply(Tracker::REMOVE_PERSON.with(tracker::RemovePerson {
+                area: Id::from_raw("gone"),
+                person: Id::from_raw("gone"),
+            }))
+            .is_err(),
+        "a project that is gone takes nobody out"
+    );
+}
+
+/// A project and an area differ only in what they say about themselves: the
+/// kind is what a person reads, and a project is one by default.
+#[test]
+fn an_area_is_a_project_that_goes_on() {
+    use crate::model::Kind;
+
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+            name: "Support".into(),
+            kind: Some(Kind::Area),
+        }))
+        .unwrap();
+    person
+        .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+            name: "Launch".into(),
+            kind: None,
+        }))
+        .unwrap();
+    let read = person.state().unwrap();
+    let kinds: Vec<Kind> = read.areas.values().map(|area| area.kind).collect();
+    assert_eq!(kinds, [Kind::Area, Kind::Project]);
+
+    let support = read
+        .areas
+        .iter()
+        .find(|(_, area)| area.name == "Support")
+        .map(|(id, _)| id.clone())
+        .expect("the area");
+    person
+        .apply(Tracker::RENAME_AREA.with(tracker::RenameArea {
+            area: support.clone(),
+            name: "Customer support".into(),
+        }))
+        .unwrap();
+    let read = person.state().unwrap();
+    assert_eq!(read.area(&support).unwrap().name, "Customer support");
+    assert_eq!(
+        read.area(&support).unwrap().kind,
+        Kind::Area,
+        "the kind stays"
+    );
+    assert!(
+        person
+            .apply(Tracker::RENAME_AREA.with(tracker::RenameArea {
+                area: support,
+                name: " ".into(),
+            }))
+            .is_err(),
+        "a project keeps a name"
+    );
+}
+
+/// The project and who is involved in it are the tracker's document, as the
+/// tasks are: they reach the person's other device and survive a restart.
+#[test]
+fn a_projects_tasks_and_people_reach_the_other_device_and_a_restart() {
+    use crate::model::{Kind, area_goal};
+
+    let mut on_laptop = ada();
+    on_laptop
+        .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+            name: "Launch".into(),
+            kind: Some(Kind::Project),
+        }))
+        .unwrap();
+    let project = on_laptop
+        .state()
+        .unwrap()
+        .areas
+        .iter()
+        .map(|(id, _)| id.clone())
+        .next()
+        .expect("the project");
+    on_laptop
+        .apply(Tracker::INVOLVE.with(tracker::Involve {
+            area: project.clone(),
+            name: "ada".into(),
+            role: Some("writes".into()),
+        }))
+        .unwrap();
+    on_laptop
+        .apply(Tracker::CREATE.with(create("Write the notes", None, None)))
+        .unwrap();
+    let notes = id_of(&on_laptop, "Write the notes");
+    on_laptop
+        .apply(Tracker::PLAN.with(tracker::Plan {
+            issue: notes,
+            area: Some(area_goal(&project, "Launch")),
+            priority: None,
+            cost_budget: None,
+            due_ms: None,
+        }))
+        .unwrap();
+
+    let mut on_laptop = on_laptop.as_invoker("ada");
+    let mut on_desktop = on_laptop.fork().as_invoker("ada");
+    on_desktop.sync_with(&mut on_laptop).unwrap();
+    for merged in [on_laptop.state().unwrap(), on_desktop.state().unwrap()] {
+        let area = merged.area(&project).expect("the project on both");
+        assert_eq!(area.name, "Launch");
+        assert_eq!(area.people.len(), 1);
+        assert_eq!(merged.in_area(&project).count(), 1);
+    }
+
+    let reopened = Replica::<Tracker>::load(&on_desktop.save()).unwrap();
+    let after = reopened.state().unwrap();
+    let area = after.area(&project).expect("the project after a restart");
+    assert_eq!(area.name, "Launch");
+    assert_eq!(area.kind, Kind::Project);
+    assert_eq!(
+        area.people
+            .values()
+            .next()
+            .map(|person| person.name.as_str()),
+        Some("ada")
+    );
+    assert_eq!(after.in_area(&project).count(), 1);
+}
+
+/// The project and the people in it are published as anything of the record
+/// is: the tracker offers a place to make one, and each project is a resource
+/// of its own with the actions a person takes on it.
+#[test]
+fn the_project_is_published_with_its_verbs_and_a_resource_of_its_own() {
+    use crate::model::{Kind, area_resource};
+
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+            name: "Launch".into(),
+            kind: Some(Kind::Project),
+        }))
+        .unwrap();
+    let project = person
+        .state()
+        .unwrap()
+        .areas
+        .iter()
+        .map(|(id, _)| id.clone())
+        .next()
+        .expect("the project");
+
+    let tree = person.published().unwrap();
+    let verbs: Vec<&str> = tree
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    for verb in ["create-area", "rename-area", "involve", "remove-person"] {
+        assert!(verbs.contains(&verb), "{verb} is published; got {verbs:?}");
+    }
+    let children: Vec<&str> = tree
+        .children
+        .iter()
+        .map(|child| child.id.as_str())
+        .collect();
+    let address = area_resource(&project);
+    assert!(
+        children.contains(&address.as_str()),
+        "the project is a resource of its own: {children:?}"
     );
 }

@@ -79,6 +79,7 @@ impl ShellOverlayHost {
             self.open_palette_with_scope(SearchScope::ActiveApp);
         }
         let query = request.query.clone().unwrap_or_default();
+        self.palette_asked = request.asked();
         if let Some(scope) = resource_scope {
             let label = scope.label.clone();
             {
@@ -92,6 +93,13 @@ impl ShellOverlayHost {
             ));
             self.last_search_query = "\0resource-scope-enter\0".into();
         }
+        // A search on a resource of the app's opens with the text that finds
+        // its row, and that row under the cursor.
+        self.palette_anchor = request.anchored().cloned();
+        let query = self
+            .palette_anchor
+            .as_ref()
+            .map_or(query, |anchor| anchor.query.clone());
         self.palette.set_query(&query);
         self.palette_visible = true;
     }
@@ -153,6 +161,8 @@ impl ShellOverlayHost {
         use crate::shell::chrome_state::SearchScope;
         // An app's prepared action belongs to the search it opened.
         self.palette_offer = None;
+        self.palette_asked = None;
+        self.palette_anchor = None;
         let effective = if matches!(scope, SearchScope::ActiveApp)
             && self
                 .chrome
@@ -522,10 +532,12 @@ impl ShellOverlayHost {
         let mut results: Vec<crate::shell::search::SearchResult> = Vec::new();
         let mut entries: Vec<CommandEntry> = Vec::new();
         self.more_rows.clear();
+        let searched_app = self.searched_app_name();
         for group in groups {
             let label = group.kind.localized_label();
             for r in &group.results {
                 let idx = results.len();
+                let r = &without_the_searched_app(r, searched_app.as_deref());
                 let e = self
                     .annotated_entry(r, format!("result:{idx}"), query)
                     .group(label.clone())
@@ -548,6 +560,17 @@ impl ShellOverlayHost {
         (results, entries)
     }
 
+    /// The name of the app a search is scoped to, as its rows would name it.
+    fn searched_app_name(&self) -> Option<String> {
+        let chrome = self.chrome.as_ref()?;
+        let state = chrome.borrow();
+        if state.search_scope != crate::shell::chrome_state::SearchScope::ActiveApp {
+            return None;
+        }
+        let app = state.active_app_id()?;
+        crate::shell::launcher::display_name_for_app_id_without_waiting(&app)
+    }
+
     /// `groups` cut to the rows the card has room for, noting which kinds
     /// there are to filter by. The launcher is kept whole: each of its
     /// sections holds only its few rows, and its sections are not kinds.
@@ -561,7 +584,7 @@ impl ShellOverlayHost {
             return groups;
         }
         self.note_present_kinds(&groups);
-        ui::search::system::trim_groups(
+        self.search_registry.trim_groups(
             groups,
             self.palette.entry_row_capacity(),
             &self.expanded_kinds,
@@ -569,6 +592,7 @@ impl ShellOverlayHost {
     }
 
     pub(super) fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
+        let anchor = self.palette_anchor.clone();
         self.poll_pending_action_admissions();
         // A step collecting an argument owns the list until it ends.
         if self.param_flow.is_some() || self.secondary_flow.is_some() {
@@ -594,6 +618,9 @@ impl ShellOverlayHost {
             let active_provider = active_tab_provider_id(&st, &self.search_registry);
             (scope, active_provider)
         };
+        // The window answers its own search for this refresh, from what it
+        // publishes now.
+        let _window = self.lend_focused_window(doc, scope);
         let (groups, launcher) = {
             let st = chrome.borrow();
             self.search_chrome_revision = st.revision;
@@ -622,6 +649,9 @@ impl ShellOverlayHost {
                 crate::shell::search::launcher::wanted(&args),
             )
         };
+        if self.start_asked_action(&groups) {
+            return;
+        }
         let groups = self.fit_to_card(groups, launcher);
 
         // Provider revisions may insert/re-rank rows without a query edit.
@@ -675,10 +705,90 @@ impl ShellOverlayHost {
             self.palette.selected_id().map(str::to_owned)
         };
         self.search_results = results;
+        self.select_anchored_row(anchor.as_ref());
         self.sync_filter_band();
         // New entry count needs a new palette node height on the next
         // rebuild, or the palette stays pinned at its first-paint size.
         self.palette_layout_dirty = true;
+    }
+
+    /// Lend the focused window to the search run before the guard drops:
+    /// what it publishes, read now. Nothing when the search is not the
+    /// focused app's, or no window of it is shown here.
+    pub(super) fn lend_focused_window(
+        &self,
+        doc: &automerge::AutoCommit,
+        scope: crate::shell::chrome_state::SearchScope,
+    ) -> crate::shell::search::providers::focused_window::Lent {
+        use crate::shell::search::providers::focused_window::WindowReading;
+        let reading = (scope == crate::shell::chrome_state::SearchScope::ActiveApp)
+            .then(|| {
+                let (tab, app) = {
+                    let state = self.chrome.as_ref()?.borrow();
+                    (
+                        state.active_tab_id()?,
+                        state.active_app_id().unwrap_or_default(),
+                    )
+                };
+                let host = self.active_app_host()?;
+                Some(WindowReading::of(host, doc, tab, app))
+            })
+            .flatten();
+        self.focused_window.lend(reading)
+    }
+
+    /// Hand the rows chosen in the focused window's search to the window's
+    /// app, which runs each as its own control would.
+    pub(crate) fn run_window_controls(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let queued = std::mem::take(&mut chrome.borrow_mut().window_controls);
+        for control in queued {
+            let refused = match self.desktop_surface_mut() {
+                Some(surface) => surface
+                    .queue_window_control(control.tab, control.invocation)
+                    .err(),
+                None => Some(control.invocation),
+            };
+            if let Some(invocation) = refused {
+                tracing::warn!(
+                    tab = control.tab,
+                    address = ?invocation.address,
+                    "the window a search row was chosen in takes no controls"
+                );
+            }
+        }
+    }
+
+    /// A search opened on a resource of the app's
+    /// ([`ui::search::SearchRequest::on`]) starts on the row that opens it,
+    /// whatever the ranking put first, so one Enter opens it. Until the
+    /// person moves the cursor, the row is kept as the automatic selection
+    /// and follows what the providers answer.
+    fn select_anchored_row(&mut self, anchor: Option<&ui::search::Anchor>) {
+        let Some(anchor) = anchor else {
+            return;
+        };
+        let Some(index) = self.search_results.iter().position(|result| {
+            let resource = crate::shell::search::row_resource(result);
+            resource == anchor.resource
+                || resource
+                    .strip_suffix("#open")
+                    .is_some_and(|base| base == anchor.resource)
+        }) else {
+            return;
+        };
+        let Some(cursor) = self
+            .palette
+            .visible_entries()
+            .iter()
+            .position(|entry| entry.id == format!("result:{index}"))
+        else {
+            return;
+        };
+        self.palette.set_cursor(cursor);
+        self.auto_selected_row = self.palette.selected_id().map(str::to_owned);
     }
 
     /// Keep an open palette's rows true to what they show: rebuild them when
@@ -693,6 +803,7 @@ impl ShellOverlayHost {
         let revision = self.chrome.as_ref().map(|chrome| chrome.borrow().revision);
         if self.palette.query() != self.last_search_query
             || revision.is_some_and(|revision| revision != self.search_chrome_revision)
+            || self.focused_window.answer_arrived()
         {
             self.refresh_search_results(doc, root);
         }
@@ -901,8 +1012,13 @@ impl ShellOverlayHost {
                 t("palette-open-new-window"),
             );
         }
-        // Choosing an app for an app opens nothing, anywhere.
-        if r.params.is_empty() && palette_flow::opens_a_window(&r.kind) && !self.choosing_app() {
+        // Choosing an app for an app opens nothing, anywhere; a row of a
+        // window's own search runs in that window.
+        if r.params.is_empty()
+            && palette_flow::opens_a_window(&r.kind)
+            && !self.choosing_app()
+            && r.provider_id != crate::shell::search::providers::focused_window::PROVIDER_ID
+        {
             use ui::widget::command_palette::ActivationModifier;
             e = e
                 .alternate(
@@ -977,6 +1093,25 @@ impl ShellOverlayHost {
 /// named group.
 /// The launcher's way to every app, under the apps it lists: the last
 /// section's last row. `None` when the launcher lists no apps.
+/// `row` as it reads in the search of the app named `app`: every row there
+/// is that app's, so a fact or a secondary line that only names it says
+/// nothing, and is left out.
+fn without_the_searched_app(
+    row: &crate::shell::search::SearchResult,
+    app: Option<&str>,
+) -> crate::shell::search::SearchResult {
+    let mut row = row.clone();
+    let Some(app) = app else {
+        return row;
+    };
+    let names_the_app = |text: &str| text.trim().eq_ignore_ascii_case(app.trim());
+    row.facts.retain(|fact| !names_the_app(fact));
+    if row.subtitle.as_deref().is_some_and(names_the_app) {
+        row.subtitle = None;
+    }
+    row
+}
+
 pub(super) fn all_apps_entry(entries: &[CommandEntry]) -> Option<CommandEntry> {
     let apps = crate::shell::search::launcher::LauncherSection::Apps.label();
     let last = entries.last()?;

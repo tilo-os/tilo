@@ -455,7 +455,7 @@ fn owned_navigation_rejects_unrelated_completion_and_preserves_redirect_output()
     .contract;
     assert!(matches!(
         contract.execution,
-        ui::tilo_actions::ExecutionMode::Background { cancellable: false }
+        ui::tilo_actions::ExecutionMode::Background { cancellable: true }
     ));
     assert!(contract.validate_declaration().is_empty());
     contract.result.validate(&output).unwrap();

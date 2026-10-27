@@ -120,7 +120,9 @@ fi
 # on the cycle-6 rootless builder, without creating a useful cache boundary.
 enable_runs="$(sed -n \
   '/^# Keep service activation in one transaction\./,/^# Boot-time prune\./p' \
-  "$containerfile" | grep -c '^RUN systemctl' || true)"
+  "$containerfile" | grep -c '^RUN ' || true)"
+# The one RUN may bind-mount the files it installs beside the activations
+# (RUN --mount=... install ... && systemctl enable ...), so count RUNs.
 if [ "$enable_runs" -eq 1 ] \
    && exactly_once "$containerfile" '    systemctl enable cups.socket && \' \
    && grep -Fq 'systemctl enable tilo-boot-entries.timer tilo-boot-health.service' "$containerfile" \

@@ -16,7 +16,7 @@ use taffy::{
 use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
@@ -35,6 +35,10 @@ use edges::RowEdgeDrag;
 #[path = "group_row_hint_places.rs"]
 mod hint_places;
 pub use hint_places::HintPlaces;
+#[path = "group_row_scroll.rs"]
+mod scroll;
+pub use scroll::{JUMP_PX_PER_DETENT, WheelJumpAccum, wheel_jump_detents};
+use scroll::{SnapTiming, snap_motion, strip_motion};
 
 /// Idle time before the strip snaps to the nearest group's left edge.
 const SNAP_IDLE_MS: u32 = 200;
@@ -107,84 +111,6 @@ const STRIP_OVERSCROLL_REACH_FRAC: f64 = 0.28;
 /// Not a Theme spacing token: it must match the compositor shadow draw,
 /// not layout padding a theme can resize.
 const GROUP_SPRITE_REACH_PX: f64 = crate::tokens::motion::GROUP_SPRITE_REACH;
-
-/// Touchpad px per wheel detent for the discrete jump gestures; also the
-/// scale for hi-res wheel notches reported as pixel deltas.
-pub const JUMP_PX_PER_DETENT: f64 = crate::tokens::Layout::BASE.jump_px_per_detent as f64;
-
-/// Turns fractional-detent scroll deltas into whole steps. No quiet-time
-/// decay: it would stop slow scrolling from ever accumulating a whole
-/// detent, and a stale sub-detent balance is harmless since it clears the
-/// next time the user reverses direction.
-#[derive(Default)]
-pub struct WheelJumpAccum {
-    accum: f64,
-}
-
-impl WheelJumpAccum {
-    pub fn push(&mut self, detents: f64, _now: Instant) -> i32 {
-        if detents == 0.0 {
-            return 0;
-        }
-        if self.accum != 0.0 && self.accum.signum() != detents.signum() {
-            self.accum = 0.0;
-        }
-        self.accum += detents;
-        let whole = self.accum.trunc();
-        self.accum -= whole;
-        // Real scroll deltas never approach i32 range; clamping first
-        // makes the narrowing cast below a lossless, saturating no-op.
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "clamped into i32 range on the line above, so this cast cannot truncate"
-        )]
-        {
-            whole.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-        }
-    }
-}
-
-/// Scroll delta → fractional jump detents. Winit's y is flipped (positive
-/// = up), so wheel-DOWN yields a positive detent = jump right/next,
-/// matching Niri's `Mod+Shift+WheelScrollDown → focus-column-right`.
-pub fn wheel_jump_detents(delta: &MouseScrollDelta) -> f64 {
-    match delta {
-        MouseScrollDelta::LineDelta(x, y) => f64::from(-x - y),
-        MouseScrollDelta::PixelDelta(pp) => (-pp.x - pp.y) / JUMP_PX_PER_DETENT,
-    }
-}
-
-/// A pan or a group's drawn offset at rest at `at`, arriving within a
-/// quarter pixel once sent somewhere.
-fn strip_motion(at: f64) -> crate::motion::MotionValue<f64> {
-    crate::motion::MotionValue::new(at).with_tolerance(MOVE_SETTLED_PX)
-}
-
-/// The pan at rest at `from`, to snap to `to` on a [`crate::motion::Snap`]
-/// timing: it arrives within a thousandth of its travel (a quarter pixel at
-/// least), as a token spring run once does, so a snap is over within its
-/// token however far it goes.
-fn snap_motion(from: f64, to: f64) -> crate::motion::MotionValue<f64> {
-    crate::motion::MotionValue::new(from)
-        .with_tolerance(MOVE_SETTLED_PX.max((to - from).abs() * 1e-3))
-}
-
-/// How the pan settles on a group's edge, on [`crate::motion::Snap`]: its
-/// spring, and how long a run from rest takes (zero when it lands).
-#[derive(Clone, Copy, Debug)]
-struct SnapTiming {
-    timing: crate::motion::Timing,
-    settles: Duration,
-}
-
-impl SnapTiming {
-    fn of(motion: crate::tokens::EffectiveMotion, source: MotionSource) -> Self {
-        let (spec, enter) = (crate::motion::Snap::SPEC, crate::motion::Direction::Enter);
-        let timing = spec.timing(enter, motion, source);
-        let settles = spec.settle_time(enter, motion, source);
-        Self { timing, settles }
-    }
-}
 
 /// Press displacement (px) before a tab-bar-background press becomes a
 /// whole-group reorder drag instead of a focus click.
@@ -4708,9 +4634,9 @@ impl Widget for GroupRow {
     fn update(&mut self, state: &AppModel, root: &ModelPath) -> bool {
         // A pan in motion (a throw, a settle, a reveal, fingers resampled at
         // the frame clock) advances here, once per host frame. Moving marks
-        // the row `scroll_dirty`, a layout pass that re-applies the windows'
-        // positions; it never rebuilds or re-measures the strip, which a
-        // structural invalidation per animation frame used to do.
+        // the row `scroll_dirty` and asks for a layout pass that re-applies
+        // the windows' positions; it never rebuilds or re-measures the strip,
+        // which a structural invalidation per animation frame used to do.
         if !self.hidden {
             // A close that has played out ends on the frame, not on the
             // next input event. One prune per layout keeps the slots in
@@ -4722,6 +4648,9 @@ impl Widget for GroupRow {
             self.tick_snap_at(now);
             self.advance_drag_reach(now);
             self.advance_edge_autoscroll(now);
+            if self.scroll_dirty {
+                crate::widget::note_layout_moved();
+            }
         }
         let mut any = false;
         for g in &mut self.groups {
@@ -4922,6 +4851,11 @@ impl Widget for GroupRow {
         // Done AFTER the clamp so a structural mutation that snapped
         // scroll_x to max doesn't get re-eased.
         self.tick_snap_at(now);
+        // A pan in motion moves on in the next frame's layout, whether or
+        // not the host runs this row's update first.
+        if self.snap_in_flight() {
+            crate::widget::note_layout_moved();
+        }
         // A maximized or fullscreen-promoted group drops the leading gutter
         // and any prior pan, pinning it flush at its viewport's left edge.
         let collapsed: Vec<bool> = (0..runs)
@@ -6585,6 +6519,7 @@ mod tests {
     use crate::widget::{
         EdgeGrab, TabDescriptor, TileContent, WindowEdge, WindowWidth, min_group_px,
     };
+    use winit::event::MouseScrollDelta;
 
     /// `t` minus `ms` milliseconds, saturating rather than panicking in
     /// the astronomically unlikely case the subtraction would underflow
@@ -7755,25 +7690,6 @@ mod tests {
             f64::midpoint(last.x1, bar.x1),
             f64::midpoint(bar.y0, bar.y1),
         )
-    }
-
-    // The move hint points where a drag takes the window, not at the bar's
-    // middle, which its tabs and controls may fill.
-    #[test]
-    fn hint_places_point_at_where_a_bar_takes_its_window() {
-        let mut row = make_row_with_groups(&[&[1], &[2]]);
-        row.groups[0].focused = true;
-        let grab = group_grab_point(&row, 0);
-        let stretch = row.hint_places().focused_bar.expect("a stretch to take");
-        let y = stretch.center().y;
-        assert!(row.groups[0].bar_grab_hit(Point::new(stretch.x0, y)));
-        assert!(row.groups[0].bar_grab_hit(Point::new(stretch.x1, y)));
-        assert!(
-            stretch.x0 <= grab.x && grab.x <= stretch.x1,
-            "{stretch:?} {grab:?}"
-        );
-        let pill = row.groups[0].tab_rects()[0].center();
-        assert!(pill.x < stretch.x0, "a tab is not where it is taken");
     }
 
     // A press on a window's search control opens the platform search, which
@@ -10226,7 +10142,7 @@ mod tests {
     /// A strip of three 400 px windows (a third of the 1200 px display
     /// each) on a 2000 px viewport, with window `focused` the one in use.
     /// `middle`, when given, stands in for the middle window.
-    fn edge_strip(
+    pub(super) fn edge_strip(
         focused: Option<usize>,
         middle: Option<WindowGroup>,
     ) -> (GroupRow, TaffyTree<()>, NodeId) {
@@ -10273,7 +10189,7 @@ mod tests {
         (group, anchor)
     }
 
-    fn edge_event(
+    pub(super) fn edge_event(
         row: &mut GroupRow,
         taffy: &TaffyTree<()>,
         root: NodeId,
@@ -10292,7 +10208,7 @@ mod tests {
             .handled
     }
 
-    fn move_to(p: Point) -> WindowEvent {
+    pub(super) fn move_to(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
@@ -10307,7 +10223,7 @@ mod tests {
         }
     }
 
-    fn rects(row: &GroupRow) -> Vec<Rect> {
+    pub(super) fn rects(row: &GroupRow) -> Vec<Rect> {
         row.groups.iter().map(WindowGroup::get_rect).collect()
     }
 
@@ -10315,7 +10231,7 @@ mod tests {
     /// `from`), laying the strip out after every move as the frame loop
     /// does, and return the row (still pressed) and the rects after each
     /// step, the press's own frame first.
-    fn drag_edge(
+    pub(super) fn drag_edge(
         row: GroupRow,
         taffy: &TaffyTree<()>,
         root: NodeId,
@@ -10341,7 +10257,7 @@ mod tests {
         (row, taffy, root, frames)
     }
 
-    fn widths(frame: &[Rect]) -> Vec<f64> {
+    pub(super) fn widths(frame: &[Rect]) -> Vec<f64> {
         frame.iter().map(|r| r.width()).collect()
     }
 
@@ -11555,6 +11471,9 @@ mod tests {
         assert_eq!(row.groups[0].active_tab_id(), 1);
     }
 }
+#[cfg(test)]
+#[path = "group_row_edge_tests.rs"]
+mod edge_tests;
 #[cfg(test)]
 #[path = "group_row_keyboard_tests.rs"]
 mod keyboard_tests;

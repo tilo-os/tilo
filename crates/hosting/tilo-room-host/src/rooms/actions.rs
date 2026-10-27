@@ -674,6 +674,8 @@ impl Verb {
                 resource_kind: publisher.kind.into(),
                 resource_label: label.into(),
                 action_label: self.label.into(),
+                keywords: Vec::new(),
+                icon: None,
                 description: None,
                 locus: ExecutionLocus::ServerPreferred,
                 kind: OperationKind::Effect,
@@ -1522,6 +1524,7 @@ fn membership_command(
 }
 
 /// One governance invocation, as its room method takes it.
+#[derive(Clone, Copy)]
 struct GovernanceCall<'a> {
     room: &'a str,
     device: &'a DeviceCert,

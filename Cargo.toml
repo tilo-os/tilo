@@ -215,6 +215,7 @@ members = [
     "crates/dev/headless-schema",
     "crates/dev/test-env",
     "crates/dev/test-app-registry",
+    "crates/dev/ai-bench",
     "crates/dev/test-http",
     "crates/dev/tilo-app-cli",
     "crates/dev/tilo-app-template-smoke",
@@ -300,6 +301,8 @@ members = [
     "crates/platform/tilo-clock",
     "crates/platform/tilo-lock",
     "crates/platform/tilo-sort",
+    "crates/platform/tilo-selector",
+    "crates/platform/tilo-face",
     "crates/platform/tilo-mime",
     "crates/platform/tilo-wake",
     "crates/platform/tilo-agent-models",
@@ -335,6 +338,7 @@ members = [
     "crates/platform/tilo-subject",
     "crates/platform/tilo-sandbox",
     "crates/platform/tilo-typst-fonts",
+    "crates/platform/tilo-unicode-emoji",
     "crates/platform/tilo-wallpapers",
     "crates/platform/zone-globe",
 
@@ -634,7 +638,7 @@ futures-util = "0.3"
 # clients through `tilo_net::http`, which installs the ring provider this
 # configuration requires.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
-zstd = "0.13"
+zstd = "0.14.3"
 crc32fast = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.14"

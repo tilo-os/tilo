@@ -28,7 +28,11 @@ pub struct Checklist {
     pub tasks: Collection<Task>,
 }
 
-#[resource(kind = "test.add-item-work", label = "Checklist")]
+#[resource(
+    kind = "test.add-item-work",
+    label = "Checklist",
+    app = "so.tilo.test-add-item-work"
+)]
 impl Checklist {
     /// Add `count` tasks at the end.
     #[action]

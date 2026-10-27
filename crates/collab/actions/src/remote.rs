@@ -47,6 +47,7 @@ mod nodes;
 pub mod own_device;
 mod pending;
 mod wait;
+mod within;
 pub mod workspace_activity;
 
 pub use catalogue::{
@@ -162,6 +163,9 @@ pub struct Caller {
     acting_for: Option<String>,
     // The Shortcut whose run this person's invocation is a step of.
     shortcut: Option<String>,
+    // How far the invocation this caller's requests continue was admitted
+    // to reach, set by the host that matched them to it.
+    within: within::Within,
 }
 
 impl Caller {
@@ -178,6 +182,7 @@ impl Caller {
             execution: None,
             acting_for: None,
             shortcut: None,
+            within: within::Within::NONE,
         }
     }
 
@@ -194,6 +199,7 @@ impl Caller {
             execution: None,
             acting_for: None,
             shortcut: None,
+            within: within::Within::NONE,
         }
     }
 
@@ -209,6 +215,7 @@ impl Caller {
             execution: None,
             acting_for: None,
             shortcut: None,
+            within: within::Within::NONE,
         }
     }
 
@@ -226,6 +233,7 @@ impl Caller {
             execution: None,
             acting_for: None,
             shortcut: None,
+            within: within::Within::NONE,
         }
     }
 
@@ -248,6 +256,7 @@ impl Caller {
             execution: None,
             acting_for: None,
             shortcut: None,
+            within: within::Within::NONE,
         }
     }
 
@@ -269,6 +278,7 @@ impl Caller {
             execution: None,
             acting_for: Some(hex::encode(user_public_key)),
             shortcut: None,
+            within: within::Within::NONE,
         }
     }
 
@@ -2211,6 +2221,8 @@ mod tests {
             resource_kind: "notes.note".into(),
             resource_label: "Groceries".into(),
             action_label: "Archive".into(),
+            keywords: Vec::new(),
+            icon: None,
             description: Some("Move the note to the archive".into()),
             locus: ExecutionLocus::ClientLocal,
             kind: OperationKind::Document,

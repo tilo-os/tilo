@@ -5,6 +5,7 @@
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 
 use super::MapsApp;
+use crate::failure;
 use crate::resource::MapsEffect;
 use crate::workspace::Workspace;
 
@@ -40,7 +41,7 @@ impl MapsApp {
             MapsEffect::OpenPoi { poi } | MapsEffect::PoiDirections { poi }
                 if !self.pois.iter().any(|known| known.id == poi) =>
             {
-                return Err("Map point of interest is no longer in this viewport".into());
+                return Err(failure::t("maps-poi-unavailable"));
             }
             MapsEffect::OpenPoi { poi } => self.select_poi(&poi),
             MapsEffect::PoiDirections { poi } => {
@@ -54,16 +55,16 @@ impl MapsApp {
     }
 
     /// Why the location can't be asked for now, as a code and a reason.
-    fn locate_unavailable(&self) -> Option<(&'static str, &'static str)> {
+    fn locate_unavailable(&self) -> Option<(&'static str, String)> {
         if !self.online {
             Some((
                 "location_service_offline",
-                "The location service is unavailable in this session",
+                failure::t("maps-location-service-offline"),
             ))
         } else if self.location_rx.is_some() || self.location_reply.is_some() {
             Some((
                 "request_in_progress",
-                "A location request is already in progress",
+                failure::t("maps-location-request-in-progress"),
             ))
         } else {
             None
@@ -79,7 +80,7 @@ impl MapsApp {
         if self.map_controls.traffic_enabled() {
             statuses.push(EffectStatus::labelled(
                 MapsEffect::TOGGLE_TRAFFIC,
-                "Hide traffic",
+                failure::t("maps-hide-traffic"),
             ));
         }
         statuses

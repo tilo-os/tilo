@@ -42,7 +42,7 @@ test('foreign routes, absent calls and unmute without activation fail closed', a
   await assert.rejects(f.controls.execute({...f.request({op: 'status'}), room: 'other'}), /route/);
   const refused = await f.controls.execute(f.request({op: 'join', channel_id: 'absent'}));
   assert.equal(refused.state, 'ended');
-  assert.equal(refused.issue, 'unavailable');
+  assert.equal(refused.issue, 'transport_failed');
   const controls = createVoiceControls({voice: f.voice, room: 'room-1', gesture: () => false});
   await assert.rejects(controls.execute(f.request({op: 'set_muted', muted: false})), /gesture/);
   assert.equal(f.state.muted, true);
@@ -53,9 +53,9 @@ test('a call the host cannot open, or never grants, ends with why; joining again
   f.voice.open = async () => { throw new Error('exact admitted Chat is encrypted'); };
   const refused = await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
   assert.equal(refused.state, 'ended');
-  assert.equal(refused.issue, 'unavailable');
+  assert.equal(refused.issue, 'transport_failed');
   assert.equal(refused.capture_active, false);
-  assert.equal((await f.controls.execute(f.request({op: 'status'}))).issue, 'unavailable', 'the reason stays until the person acts');
+  assert.equal((await f.controls.execute(f.request({op: 'status'}))).issue, 'transport_failed', 'the reason stays until the person acts');
   f.voice.open = async () => { throw new Error('not a member of the room'); };
   assert.equal((await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}))).issue, 'denied');
   f.voice.open = async () => ({call: CALL, epoch: 1, active: true});
@@ -63,13 +63,16 @@ test('a call the host cannot open, or never grants, ends with why; joining again
   assert.equal(joining.state, 'joining');
   assert.equal(joining.issue, null);
   Object.assign(f.state, {phase: 'ended', admitted: false, reason: 'no grant arrived in time'});
-  assert.equal((await f.controls.execute(f.request({op: 'status'}))).issue, 'unavailable');
+  assert.equal((await f.controls.execute(f.request({op: 'status'}))).issue, 'transport_failed');
   assert.equal((await f.controls.execute(f.request({op: 'leave'}))).state, 'idle');
 });
 test('an ended call says whether it was refused or just ended', () => {
   assert.equal(endedIssue({admitted: true, reason: 'the call has ended'}), 'session_ended');
   assert.equal(endedIssue({admitted: false, reason: 'not a member of the room'}), 'denied');
-  assert.equal(endedIssue({admitted: false, reason: 'this relay serves no voice carrier'}), 'unavailable');
+  // No host answer says the room lacks voice: every workspace has calls.
+  assert.equal(endedIssue({admitted: false, reason: 'calls require a subscription to the room'}), 'transport_failed');
+  // Only this device failing to start the call's audio is `unavailable`.
+  assert.equal(endedIssue({admitted: false, audioFailed: true, reason: 'no audio output'}), 'unavailable');
 });
 
 test('an active call polls the retained controls even when the canvas stops redrawing, and close removes the timer', async () => {

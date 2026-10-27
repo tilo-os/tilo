@@ -232,7 +232,7 @@ impl ShellOverlayHost {
     }
 
     /// Frame each strip's focused group again on the next layout.
-    fn reframe_desktop(&mut self) {
+    pub(super) fn reframe_desktop(&mut self) {
         if let Some(surface) = self.desktop_surface_mut() {
             surface.reframe_all();
         }

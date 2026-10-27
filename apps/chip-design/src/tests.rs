@@ -1191,3 +1191,13 @@ fn an_agent_designs_operators_one_call_each_and_history_reads_it() {
         ]
     );
 }
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(|| {
+        ui::framework::testing::TestApp::<ChipDesignShell>::drive("operator-graph")
+    })
+    .unwrap_or_else(|error| panic!("{error}"));
+}

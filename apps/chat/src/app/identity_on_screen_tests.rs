@@ -157,12 +157,12 @@ fn people_on_screen_are_named_honestly_and_you_by_your_name() {
     // Phase: your_own_name_is_known_before_the_room_has_heard_of_you.
     {
         let mut app = ChatApp::new_ephemeral();
-        app.me.name = "ada".to_string();
+        app.me.name = "Ada".to_string();
         app.users.clear();
         app.room_names.clear();
         assert_eq!(
             app.display_name(&app.me.id.clone()),
-            "ada",
+            "Ada",
             "the name this process worked out for itself must be reachable",
         );
     }
@@ -266,6 +266,7 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
     let listed = ui::person_chat::Contact {
         public_key: "ada-root".into(),
         display_name: "Swift Lynx".into(),
+        conversation: false,
     };
     let mut presence = PresenceCtx::default();
     presence.set_display_name(UserId("ada-device".into()), "Ada");

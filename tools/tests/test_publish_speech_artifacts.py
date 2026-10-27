@@ -116,6 +116,11 @@ class PublicationCredentialContract(unittest.TestCase):
         # Only the signing checks hold the catalog seed; the publisher holds only the package token.
         for name in ("sign-model-catalog", "review-model-catalog"):
             self.assertNotIn("REGISTRY_TOKEN", checks[name]["secrets"])
+        # Dev images' catalog is signed with a throwaway key; main publishes its runtimes with
+        # the dev package token, never a release secret.
+        for arch in ("x86_64", "aarch64"):
+            self.assertFalse(checks[f"model-catalog-dev-{arch}"].get("secrets"))
+            self.assertEqual(checks[f"publish-model-runtimes-{arch}"]["secrets"], ["TILO_PACKAGES_TOKEN"])
         script = (root / "tools/release/local-model-catalog.sh").read_text()
         step = script.split("\n  publish)\n", 1)[1].split("\n    ;;", 1)[0]
         self.assertIn('PACKAGE_TOKEN=$REGISTRY_TOKEN python3 -I tools/release/publish_speech_artifacts.py', step)

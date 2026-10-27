@@ -282,7 +282,7 @@ impl ResourceSurface<Library, TubeEffect> for TubeApp {
             );
         }
         self.wake_with(cx.waker());
-        self.attach_framework(cx.dispatcher(), history);
+        self.attach_framework(cx.dispatcher(), cx.actions(), history);
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -311,6 +311,11 @@ impl ResourceSurface<Library, TubeEffect> for TubeApp {
     /// what has loaded, so the results offer to search `YouTube` for it.
     fn search_query(&mut self, query: &ui::search::SearchQuery) {
         self.follow_palette_query(query.text());
+    }
+
+    /// `YouTube` is still answering what the platform search asked.
+    fn search_pending(&self) -> bool {
+        self.suggestions_pending()
     }
 
     /// The videos, creators, playlists and watch history shown here, and a

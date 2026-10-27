@@ -193,7 +193,9 @@ fn the_usage_log_keeps_cached_input_and_reasoning() {
 
 /// An endpoint answering `answers` in order, one connection each, and
 /// reporting every request's head and body.
-fn endpoint(answers: Vec<String>) -> (String, std::sync::mpsc::Receiver<(String, String)>) {
+pub(crate) fn endpoint(
+    answers: Vec<String>,
+) -> (String, std::sync::mpsc::Receiver<(String, String)>) {
     use std::io::{BufRead as _, BufReader, Read as _, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -230,7 +232,7 @@ fn http(status: &str, body: &str) -> String {
     )
 }
 
-fn open_notes() -> Catalogue {
+pub(crate) fn open_notes() -> Catalogue {
     let (catalogue, _) = catalogue(&PlanContext {
         apps: vec!["so.tilo.notes".into()],
         ..PlanContext::default()
@@ -298,7 +300,7 @@ fn a_metered_turn_is_retried_under_one_key_and_plans() {
 }
 
 /// A chat-completions answer calling `plan` with one step, `operation`.
-fn plan_answer(id: &str, operation: &str) -> String {
+pub(crate) fn plan_answer(id: &str, operation: &str) -> String {
     let answer = serde_json::json!({"choices": [{"message": {"role": "assistant", "content": null,
             "tool_calls": [{"id": id, "type": "function", "function": {"name": "plan",
                 "arguments": serde_json::json!({"steps": [{"operation": operation, "arguments": {}}],
@@ -2105,10 +2107,10 @@ impl PlanModel for ScriptModel {
     }
 }
 
-type Sent = std::sync::Arc<std::sync::Mutex<Vec<ModelRequest>>>;
+pub(crate) type Sent = std::sync::Arc<std::sync::Mutex<Vec<ModelRequest>>>;
 
 /// A planner over `answers`, and the requests it sends.
-fn scripted(answers: Vec<ModelResponse>, sees: bool) -> (ModelPlanner, Sent) {
+pub(crate) fn scripted(answers: Vec<ModelResponse>, sees: bool) -> (ModelPlanner, Sent) {
     let sent = Sent::default();
     let model = ScriptModel {
         turns: Script {
@@ -2121,7 +2123,7 @@ fn scripted(answers: Vec<ModelResponse>, sees: bool) -> (ModelPlanner, Sent) {
 }
 
 /// A turn calling `name` with `input`.
-fn called(id: &str, name: &str, input: &serde_json::Value) -> ModelResponse {
+pub(crate) fn called(id: &str, name: &str, input: &serde_json::Value) -> ModelResponse {
     ModelResponse {
         message: Message {
             role: Role::Assistant,
@@ -2147,7 +2149,7 @@ fn said(text: &str, stop: StopReason) -> ModelResponse {
 }
 
 /// The tool results of the last tool message of `request`, in order.
-fn results(request: &ModelRequest) -> Vec<String> {
+pub(crate) fn results(request: &ModelRequest) -> Vec<String> {
     request
         .messages
         .iter()
@@ -2167,7 +2169,7 @@ fn results(request: &ModelRequest) -> Vec<String> {
 }
 
 /// The text of `message`.
-fn text_of(message: &Message) -> String {
+pub(crate) fn text_of(message: &Message) -> String {
     message
         .content
         .iter()
@@ -2179,7 +2181,7 @@ fn text_of(message: &Message) -> String {
 }
 
 /// How many pictures `message` carries.
-fn pictures(message: &Message) -> usize {
+pub(crate) fn pictures(message: &Message) -> usize {
     message
         .content
         .iter()
@@ -2508,7 +2510,7 @@ fn look_content_refuses_unshown_addresses_and_room_pictures_unless_allowed() {
         "{unnamed}"
     );
     let room = &results(&requests[2])[0];
-    assert!(room.contains("may not show the room's pictures"), "{room}");
+    assert!(room.contains("not shown the room's pictures"), "{room}");
     let document = &results(&requests[3])[0];
     assert!(
         document.contains("is a PDF") && document.contains("look-page"),

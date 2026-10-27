@@ -51,19 +51,21 @@ pub(super) async fn handle_live_join(
     Ok(None)
 }
 
-/// The room authority `peer` takes part in calls of `workspace_id` through:
-/// none unless they subscribed to it and this relay governs its room, and
-/// none for a spectator, who takes no part in the room's calls.
+/// Where `peer`'s calls in `workspace_id` are held: by this relay's room
+/// authority when it governs the room, else by the rooms whose voice
+/// carrier it serves, as a room it carries (a person's own workspace,
+/// synced across their devices through it). None unless they subscribed to
+/// it, and none for a spectator, who takes no part in the room's calls.
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the registry guard only lives for the lookup and the workspace guard for the answer read from it"
 )]
-async fn call_authority(
+async fn call_host(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[u64],
     workspace_id: u64,
-) -> Option<crate::rooms::RoomAuthority> {
+) -> Option<(crate::rooms::Rooms, String)> {
     if !subscribed.contains(&workspace_id) {
         return None;
     }
@@ -73,14 +75,25 @@ async fn call_authority(
         .await
         .get(&workspace_id)
         .cloned()?;
-    let runtime = ws.lock().await;
-    (!room_access::watches_only(&runtime, peer))
-        .then(|| runtime.room_authority.clone())
-        .flatten()
+    let authority = {
+        let runtime = ws.lock().await;
+        if room_access::watches_only(&runtime, peer) {
+            return None;
+        }
+        runtime.room_authority.clone()
+    };
+    match authority {
+        Some(authority) => Some((authority.rooms()?, authority.room().to_owned())),
+        None => Some((
+            session.live_bridge?.calls()?,
+            crate::rooms::carried_call_room(workspace_id),
+        )),
+    }
 }
 
-/// Handle a call envelope for a subscribed workspace whose room this relay
-/// governs; see [`crate::rooms`].
+/// Handle a call envelope for a subscribed workspace: its calls are held
+/// by this relay's room authority, or as a room it carries; see
+/// [`crate::rooms`].
 pub(super) async fn handle_voice(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -95,11 +108,8 @@ pub(super) async fn handle_voice(
         | Envelope::VoiceCalls { workspace_id } => *workspace_id,
         _ => return Ok(None),
     };
-    let authority = call_authority(peer, session, subscribed, workspace_id).await;
-    let rooms = authority
-        .as_ref()
-        .and_then(|authority| Some((authority.rooms()?, authority.room().to_owned())));
-    let refusal = "calls require a subscription to a room this host governs";
+    let rooms = call_host(peer, session, subscribed, workspace_id).await;
+    let refusal = "calls require a subscription to the room";
     Ok(match env {
         Envelope::VoiceCall {
             request, operation, ..

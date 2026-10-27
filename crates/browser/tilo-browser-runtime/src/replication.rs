@@ -72,7 +72,7 @@ pub(crate) struct Attachment {
     /// What the mount's apps may offer their person: set to the role the
     /// room answers they hold, so an app does not offer what the room
     /// would refuse.
-    pub permissions: Rc<RefCell<ui::permissions::PermissionContext>>,
+    pub permissions: ui::permissions::SharedPermissions,
 }
 
 struct Replica {
@@ -381,6 +381,29 @@ pub(crate) enum Kept {
 
 fn room(id: u32) -> Option<Rc<RefCell<Room>>> {
     ROOMS.with_borrow(|rooms| rooms.get(&id).cloned())
+}
+
+/// The room peer `id` replicates, by its uuid.
+pub(crate) fn room_uuid(id: u32) -> Option<String> {
+    Some(room(id)?.borrow().uuid.clone())
+}
+
+/// Wire record `record` of `app` in peer `id`'s room `workspace`, saved as
+/// the room committed it: without edits still being typed.
+pub(crate) fn committed_record(
+    id: u32,
+    workspace: &str,
+    app: &str,
+    record: &str,
+) -> Option<Vec<u8>> {
+    if room_uuid(id)? != workspace {
+        return None;
+    }
+    let mut doc = record_document(id, app, record)?;
+    if doc.pending_ops() > 0 {
+        doc.rollback();
+    }
+    Some(doc.save())
 }
 
 /// Ask peer `id`'s room `request` through the host's rooms door; `done`
@@ -692,13 +715,14 @@ impl Room {
         self.followed = self.standing.code();
         for mounted in self.mounts.values() {
             let attachment = &mounted.attachment;
-            *attachment.permissions.borrow_mut() =
-                self.permitted.iter().filter(|(_, (_, may))| *may).fold(
+            attachment
+                .permissions
+                .set(self.permitted.iter().filter(|(_, (_, may))| *may).fold(
                     ui::permissions::PermissionContext::member(attachment.author.clone(), role),
                     |context, (node, _)| {
                         context.permitted_at(node, ui::permissions::KindSet::UNDOABLE)
                     },
-                );
+                ));
             // Its windows sync again, so what they offer (a bar's "View
             // only", an editor that takes typing) follows at once rather
             // than at the next change of their record.
@@ -776,12 +800,17 @@ impl Room {
     /// its whole tail at once. Each merge into an open record copies the
     /// document, so the mutations of one route are coalesced first (see
     /// [`tilo_browser_peer::coalesce`]) and merged once per run instead of once per change.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per peer event: the receiver is a table, read top to bottom"
+    )]
     fn receive(&mut self) -> Vec<Arc<dyn Fn() + Send + Sync>> {
         let mut woken: HashSet<u64> = HashSet::new();
         let mut batches: Vec<(DocumentRoute, Vec<DocumentMutation>)> = Vec::new();
         let mut compactions: Vec<(DocumentRoute, [u8; 16])> = Vec::new();
         let mut refusals: Vec<(DocumentRoute, Vec<[u8; 32]>, String)> = Vec::new();
         let mut answered: Vec<DocumentRoute> = Vec::new();
+        let mut opened: Vec<DocumentRoute> = Vec::new();
         let mut content_arrived = false;
         for event in self.events.drain() {
             match event {
@@ -839,6 +868,11 @@ impl Room {
                 PeerEvent::Committed { route, .. } if route.cluster_id == self.uuid => {
                     answered.push(route);
                 }
+                PeerEvent::RecordOpened {
+                    workspace_id,
+                    route,
+                    frames: 0,
+                } if workspace_id == self.workspace => opened.push(route),
                 _ => {}
             }
         }
@@ -861,8 +895,7 @@ impl Room {
                 warn(&format!("{}/{}: {error}", route.app_id, route.record));
             }
         }
-        // Every document delivered before a request is applied by now.
-        self.compact(compactions);
+        self.after_merging(compactions, opened, &mut woken);
         let mut notify: Vec<Arc<dyn Fn() + Send + Sync>> = woken
             .into_iter()
             .filter_map(|mount| self.mounts.get(&mount))
@@ -1013,6 +1046,46 @@ impl Room {
                         "{}/{}: a refused change stays: {error}",
                         route.app_id, route.record
                     )),
+                }
+            }
+        }
+    }
+
+    /// What waits for the documents delivered before it to be merged: the
+    /// host's compaction requests, and the on-demand records it retains
+    /// nothing of ([`PeerEvent::RecordOpened`] with no frames). A record it
+    /// sent frames of arrives as they are applied, which keys a sealed
+    /// record waits for can delay past this.
+    fn after_merging(
+        &mut self,
+        compactions: Vec<(DocumentRoute, [u8; 16])>,
+        opened: Vec<DocumentRoute>,
+        woken: &mut HashSet<u64>,
+    ) {
+        self.compact(compactions);
+        for route in opened {
+            if route.cluster_id == self.uuid {
+                self.room_answered(&route, woken);
+            }
+        }
+    }
+
+    /// The host retains nothing of `route`, an on-demand record this page
+    /// opened: each store holding it tells what reads it
+    /// ([`ui::record::RecordStore::note_room_answered`]).
+    fn room_answered(&self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
+        for (&id, mounted) in &self.mounts {
+            for store in mounted.attachment.stores.borrow().iter() {
+                if store.package_and_home().0 != route.app_id {
+                    continue;
+                }
+                if let Some(checkout) = store
+                    .open_records()
+                    .into_iter()
+                    .find(|checkout| wire_record(&checkout.id) == route.record)
+                {
+                    store.note_room_answered(checkout.id);
+                    woken.insert(id);
                 }
             }
         }

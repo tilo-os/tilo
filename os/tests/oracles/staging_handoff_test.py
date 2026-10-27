@@ -354,7 +354,7 @@ class InternalModeGuardTests(unittest.TestCase):
 
     def test_device_label_strict_utf8_bound_and_legacy_omission(self):
         document = handoff_document()
-        document['profile']['device_label'] = 'ada’s computer'
+        document['profile']['device_label'] = 'Ada’s computer'
         self.fixture.set_handoff(document)
         result = self.fixture.check()
         self.assertEqual(result.returncode, 0, result.stderr)

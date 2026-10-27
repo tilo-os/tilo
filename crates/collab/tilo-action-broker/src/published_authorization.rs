@@ -72,6 +72,8 @@ mod tests {
             resource_kind: "word-processor.document".into(),
             resource_label: "Document".into(),
             action_label: action.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             operation_kind: tilo_actions::OperationKind::Document,
             params: vec![],

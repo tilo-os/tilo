@@ -62,6 +62,8 @@ pub(crate) fn open_row(room: &str, app: &str) -> CatalogueRow {
             resource_kind: "applications.app".into(),
             resource_label: app.to_owned(),
             action_label: format!("Open {app}"),
+            keywords: Vec::new(),
+            icon: None,
             description: Some(format!("Open {app} on a new record in this room.")),
             locus: tilo_actions::ExecutionLocus::ServerPreferred,
             kind: tilo_actions::OperationKind::Effect,

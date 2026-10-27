@@ -22,10 +22,16 @@ ARG RPMS_REF
 # The browser engine's native host (apps/browser/chromium) builds with the same
 # C++ toolchain and cmake against the pinned CEF distribution; it links nothing
 # from this list beyond the C++ runtime.
+#
+# clang without clang-devel: bindgen (pipewire-sys, libspa-sys) loads clang-libs'
+# libclang.so.N at run time and takes the builtin headers from clang. clang-devel
+# pulls llvm-devel and through it llvm-static, LLVM a second time as 370 MB of
+# static archives, plus the LLVM tools and clang-tools-extra; nothing here links
+# or runs them, and the dev image installs this list (os/scripts/builder-packages.txt).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         rust cargo sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
-        clang clang-devel pkgconf-pkg-config \
+        clang pkgconf-pkg-config \
         bash-devel readline-devel \
         libxkbcommon-devel wayland-devel \
         libseat-devel libinput-devel systemd-devel libdrm-devel \

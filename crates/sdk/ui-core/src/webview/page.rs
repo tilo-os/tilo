@@ -18,6 +18,12 @@ use super::KeyModifiers;
 pub const MAX_OUTLINE_BYTES: usize = 256 * 1024;
 /// Upper bound on structured reply data (`PageReply::data`), serialised.
 pub const MAX_DATA_BYTES: usize = 256 * 1024;
+/// The widest picture a capture paints; a wider request is scaled down to
+/// it, so a picture is never larger than a person could look at.
+pub const MAX_CAPTURE_WIDTH: u16 = 1600;
+/// Upper bound on the pixels one capture may carry, as a PNG. What the engine
+/// paints is bounded the same way before it ever reaches this boundary.
+pub const MAX_CAPTURE_BYTES: usize = 8 << 20;
 /// Bounds of a settle wait, milliseconds.
 pub const MIN_SETTLE_QUIET_MS: u32 = 50;
 pub const MAX_SETTLE_MS: u32 = 20_000;
@@ -41,6 +47,10 @@ pub const MAX_FILE_PATH_BYTES: usize = 4096;
 pub const MAX_POINTER_STEPS: usize = 256;
 /// Upper bound on the button names a gesture may name.
 const POINTER_BUTTONS: &[&str] = &["left", "right"];
+/// How far one scroll may ask to travel in one go, CSS pixels: a wheel notch
+/// moves about 100, and a bounded distance keeps one request a bounded amount
+/// of work for the page.
+pub const MAX_SCROLL_BY: u32 = 10_000;
 const MAX_REF_BYTES: usize = 40;
 /// A frame id is a dotted path of small decimal numbers, such as `1` or `1.2`.
 const MAX_FRAME_BYTES: usize = 16;
@@ -152,6 +162,16 @@ pub enum PageRequest {
     /// Show the document's article alone in a reading layout (`enabled`), or
     /// put the page back as it was. A page without an article is refused.
     Reader { enabled: bool },
+    /// A picture of the page as it is shown: the box of `element` when one is
+    /// named, the viewport otherwise, at most `max_width` pixels wide. A page
+    /// can say things no outline reaches, and this is how they are seen.
+    /// Captured by the engine itself, so the page cannot see or answer it.
+    /// What the picture shows is page content: never trusted as instructions.
+    Capture {
+        element: Option<String>,
+        max_width: Option<u32>,
+        frame: Option<FrameId>,
+    },
     /// Move the pointer over the page as a hand does: `steps` in order, a
     /// press and release of `button` where the page asks for one. A step
     /// naming `element` is placed in that element's box, every other step is
@@ -162,6 +182,44 @@ pub enum PageRequest {
         steps: Vec<PointerStep>,
         button: PointerButton,
     },
+    /// Turn the page's wheel as a hand does: `by` CSS pixels down (or up,
+    /// when negative) at the element's visible centre, or at the viewport's
+    /// when no element is named. `to` names an end of the page instead, and
+    /// `into_view` an element to bring into view. The wheel is real input,
+    /// so the page's scroll listeners, lazy loading and intersection
+    /// observers run as they do for a person, and the reply reports what
+    /// changed.
+    Scroll {
+        element: Option<String>,
+        to: Option<ScrollTarget>,
+        by: Option<i32>,
+        into_view: Option<String>,
+        frame: Option<FrameId>,
+    },
+}
+
+/// Where a [`PageRequest::Scroll`] goes instead of a distance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollTarget {
+    Top,
+    Bottom,
+}
+
+impl ScrollTarget {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "top" => Some(Self::Top),
+            "bottom" => Some(Self::Bottom),
+            _ => None,
+        }
+    }
 }
 
 /// One step of a [`PageRequest::Pointer`] gesture.
@@ -252,7 +310,9 @@ impl PageRequest {
             Self::Console { .. } => "console",
             Self::Network { .. } => "network",
             Self::Reader { .. } => "reader",
+            Self::Capture { .. } => "capture",
             Self::Pointer { .. } => "pointer",
+            Self::Scroll { .. } => "scroll",
         }
     }
 
@@ -296,9 +356,20 @@ impl PageRequest {
             } => format!("Waited for the page to settle ({quiet_ms} ms, up to {timeout_ms} ms)"),
             Self::Console { .. } => "Read the console".to_string(),
             Self::Network { .. } => "Read the network".to_string(),
+            Self::Capture { element, .. } => match element {
+                Some(element) => format!("Pictured element {element}"),
+                None => "Pictured the page".to_string(),
+            },
             Self::Reader { enabled: true } => "Showed the article alone".to_string(),
             Self::Reader { enabled: false } => "Put the page back as it was".to_string(),
             Self::Pointer { steps, .. } => format!("Moved the pointer ({} steps)", steps.len()),
+            Self::Scroll { to: Some(to), .. } => format!("Scrolled to the {}", to.as_str()),
+            Self::Scroll {
+                into_view: Some(element),
+                ..
+            } => format!("Scrolled element {element} into view"),
+            Self::Scroll { by: Some(by), .. } => format!("Scrolled by {by} pixels"),
+            Self::Scroll { .. } => "Scrolled the page".to_string(),
         }
     }
 
@@ -313,6 +384,12 @@ impl PageRequest {
             | Self::Network { .. }
             | Self::Reader { .. }
             | Self::Pointer { .. }
+            | Self::Scroll {
+                element: None,
+                into_view: None,
+                ..
+            }
+            | Self::Capture { element: None, .. }
             | Self::Hover { element: None, .. }
             | Self::Drag {
                 from: None,
@@ -345,6 +422,18 @@ impl PageRequest {
             | Self::Path {
                 element: Some(element),
                 ..
+            }
+            | Self::Scroll {
+                element: Some(element),
+                ..
+            }
+            | Self::Scroll {
+                into_view: Some(element),
+                ..
+            }
+            | Self::Capture {
+                element: Some(element),
+                ..
             } => Some(element),
         }
     }
@@ -361,7 +450,9 @@ impl PageRequest {
             | Self::Submit { frame, .. }
             | Self::Changes { frame }
             | Self::At { frame, .. }
-            | Self::Settle { frame, .. } => frame.as_ref(),
+            | Self::Settle { frame, .. }
+            | Self::Scroll { frame, .. }
+            | Self::Capture { frame, .. } => frame.as_ref(),
             Self::Console { .. }
             | Self::Network { .. }
             | Self::Reader { .. }
@@ -420,6 +511,19 @@ impl PageRequest {
             },
             Self::Changes { .. } => Self::Changes { frame: None },
             Self::At { x, y, .. } => Self::At { x, y, frame: None },
+            Self::Scroll {
+                element,
+                to,
+                by,
+                into_view,
+                ..
+            } => Self::Scroll {
+                element,
+                to,
+                by,
+                into_view,
+                frame: None,
+            },
             Self::Settle {
                 quiet_ms,
                 timeout_ms,
@@ -538,6 +642,9 @@ impl PageRequest {
                             })
                     })
             }
+            Self::Capture { max_width, .. } => {
+                max_width.is_none_or(|width| (1..=u32::from(MAX_CAPTURE_WIDTH)).contains(&width))
+            }
             Self::Outline { .. }
             | Self::Click { .. }
             | Self::Submit { .. }
@@ -545,6 +652,29 @@ impl PageRequest {
             | Self::Console { .. }
             | Self::Network { .. }
             | Self::Reader { .. } => true,
+            Self::Scroll {
+                element,
+                to,
+                by,
+                into_view,
+                ..
+            } => {
+                // The wheel turns over the viewport's centre unless the
+                // caller names what it turns over.
+                // Bringing an element into view is the place itself, and may
+                // name the box the wheel turns over; otherwise the wheel goes
+                // to an end of the page or by a distance, never both.
+                let aimed = usize::from(to.is_some()) + usize::from(by.is_some());
+                (to.is_some() || by.is_some() || into_view.is_some())
+                    && if into_view.is_some() {
+                        aimed == 0
+                    } else {
+                        aimed == 1
+                    }
+                    && by.is_none_or(|by| by.unsigned_abs() <= MAX_SCROLL_BY)
+                    && into_view.as_ref().is_none_or(|r| r.len() <= MAX_REF_BYTES)
+                    && element.as_ref().is_none_or(|r| r.len() <= MAX_REF_BYTES)
+            }
         }
     }
 }
@@ -637,35 +767,101 @@ const NAMED_KEYS: &[&str] = &[
     "PageDown",
 ];
 
+/// How a key's name is read: without regard to case, so `END`, `End` and
+/// `end` name the same key, as do `CTRL` and `Ctrl` as a modifier.
+fn named_key(name: &str) -> Option<&'static str> {
+    NAMED_KEYS
+        .iter()
+        .copied()
+        .find(|named| named.eq_ignore_ascii_case(name))
+}
+
+/// The named keys `name` could have been misspelled for, as the closest ones
+/// first: the keys sharing its first letter, so an error can offer them.
+fn near_keys(name: &str) -> Vec<&'static str> {
+    let wanted = name.trim().to_ascii_lowercase();
+    let Some(first) = wanted.chars().next() else {
+        return Vec::new();
+    };
+    NAMED_KEYS
+        .iter()
+        .copied()
+        .filter(|named| named.to_ascii_lowercase().starts_with(first))
+        .collect()
+}
+
 impl PageKey {
     pub fn parse(chord: &str) -> Option<Self> {
-        let mut parts: Vec<&str> = chord.split('+').collect();
+        Self::parse_detailed(chord).ok()
+    }
+
+    /// [`Self::parse`], saying why the chord names no key: a caller needs to
+    /// know what to write instead, and that is never the same for a missing
+    /// modifier as for a key that does not exist.
+    ///
+    /// # Errors
+    /// The chord's own problem, phrased for the person who wrote it.
+    pub fn parse_detailed(chord: &str) -> Result<Self, String> {
+        let written = chord.trim();
+        if written.is_empty() {
+            return Err(
+                "press-page needs a key: name one, such as Enter, Tab, Escape, ArrowDown, End or Control+a"
+                    .into(),
+            );
+        }
+        let mut parts: Vec<&str> = written.split('+').collect();
         // `Control++` names the plus key itself.
-        if chord.ends_with("++") {
+        if written.ends_with("++") {
             parts.truncate(parts.len().saturating_sub(2));
             parts.push("+");
         }
-        let key = parts.pop()?;
+        let Some(key) = parts.pop().filter(|key| !key.is_empty()) else {
+            return Err(format!(
+                "press-page was given {written:?}, which ends before it names a key; write a key after the last +, such as Control+a"
+            ));
+        };
         let mut modifiers = KeyModifiers::default();
         for part in parts {
-            let flag = match part {
-                "Control" | "Ctrl" => &mut modifiers.ctrl,
-                "Shift" => &mut modifiers.shift,
-                "Alt" => &mut modifiers.alt,
-                "Meta" => &mut modifiers.meta,
-                _ => return None,
+            let flag = if part.eq_ignore_ascii_case("control") || part.eq_ignore_ascii_case("ctrl")
+            {
+                &mut modifiers.ctrl
+            } else if part.eq_ignore_ascii_case("shift") {
+                &mut modifiers.shift
+            } else if part.eq_ignore_ascii_case("alt") {
+                &mut modifiers.alt
+            } else if part.eq_ignore_ascii_case("meta") || part.eq_ignore_ascii_case("cmd") {
+                &mut modifiers.meta
+            } else {
+                return Err(format!(
+                    "{part:?} is not a key modifier; hold one of Control (or Ctrl), Shift, Alt or Meta before the key, as in Control+{key}"
+                ));
             };
             if std::mem::replace(flag, true) {
-                return None;
+                return Err(format!(
+                    "{part:?} is held twice in {written:?}; name each modifier once"
+                ));
             }
         }
-        let key = match key {
-            "Space" => " ",
-            named if NAMED_KEYS.contains(&named) => named,
-            character if character.chars().count() == 1 => character,
-            _ => return None,
+        let key: &str = if key.eq_ignore_ascii_case("space") {
+            " "
+        } else if let Some(named) = named_key(key) {
+            named
+        } else if key.chars().count() == 1 {
+            key
+        } else {
+            let near = near_keys(key);
+            let did_you_mean = if near.is_empty() {
+                String::new()
+            } else {
+                format!("; did you mean {}?", near.join(" or "))
+            };
+            return Err(format!(
+                "{key:?} is not a key name. Name a key as one of {} (in any letter case), or a single character such as a{main_did_you_mean}",
+                NAMED_KEYS.join(", "),
+                main_did_you_mean = did_you_mean
+            ));
         };
-        Some(Self {
+        Ok(Self {
             key: key.to_string(),
             modifiers,
         })
@@ -701,6 +897,9 @@ pub struct PageReply {
     /// Structured findings: the element at a point, how a settle went, log
     /// entries. Always page content, so never trusted as instructions.
     pub data: Option<serde_json::Value>,
+    /// The picture a [`PageRequest::Capture`] painted, a PNG. What it shows
+    /// came from the page: a reader of it trusts none of the words in it.
+    pub image: Option<Vec<u8>>,
     /// Whether the request led the page away from its document.
     pub navigation: PageNavigation,
     /// The navigation it started had not finished loading when the engine
@@ -808,6 +1007,10 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
             command["since"] = (*since).into();
         }
         PageRequest::Reader { enabled } => command["enabled"] = (*enabled).into(),
+        PageRequest::Capture { max_width, .. } => {
+            command["max_width"] =
+                u32::from(max_width.unwrap_or(u32::from(MAX_CAPTURE_WIDTH))).into();
+        }
         PageRequest::Pointer { steps, button } => {
             command["button"] = button.as_str().into();
             command["steps"] = steps
@@ -867,6 +1070,22 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
             );
         }
         PageRequest::Outline { .. } | PageRequest::Click { .. } | PageRequest::Changes { .. } => {}
+        PageRequest::Scroll {
+            to, by, into_view, ..
+        } => {
+            // A named element travels as its ref under `element`, as every
+            // other request's does; the end of the page, the distance and
+            // the element to bring into view have keys of their own.
+            if let Some(to) = to {
+                command["to"] = to.as_str().into();
+            }
+            if let Some(by) = by {
+                command["by"] = (*by).into();
+            }
+            if let Some(into_view) = into_view {
+                command["into_view"] = into_view.as_str().into();
+            }
+        }
     }
     command
 }
@@ -903,13 +1122,18 @@ pub(crate) fn decode_result(
         if navigated != (navigation == PageNavigation::Started) {
             return None;
         }
+        // The picture travels as its own bytes, so the findings beside it are
+        // measured without it: a photograph of a page is never findings.
+        let mut picture = None;
+        capture_image(&value["data"], &mut picture)?;
         let data = match &value["data"] {
             serde_json::Value::Null => None,
             data @ serde_json::Value::Object(_) => {
-                if runtime_collab::wire_json_len(data) > MAX_DATA_BYTES {
+                let findings = without_image(data);
+                if runtime_collab::wire_json_len(&findings) > MAX_DATA_BYTES {
                     return None;
                 }
-                Some(data.clone())
+                Some(findings)
             }
             _ => return None,
         };
@@ -918,6 +1142,7 @@ pub(crate) fn decode_result(
             message,
             outline,
             data,
+            image: picture,
             navigation,
             loading: navigated && value["loading"].as_bool()?,
         })
@@ -928,6 +1153,48 @@ pub(crate) fn decode_result(
         })
     };
     Some((request_id, result))
+}
+
+/// The findings an answer carries, with the picture taken out of them: the
+/// picture's own bytes are the reply's image, never part of its findings.
+fn without_image(data: &serde_json::Value) -> serde_json::Value {
+    let mut findings = data.clone();
+    if let Some(object) = findings.as_object_mut() {
+        object.remove("capture");
+    }
+    findings
+}
+
+/// The picture an answer carries, decoded from its base64 PNG, bounded in
+/// both its encoding and its pixels. `None` refuses the whole answer: a
+/// picture it cannot take is not one it may quietly drop.
+fn capture_image(data: &serde_json::Value, image: &mut Option<Vec<u8>>) -> Option<()> {
+    let Some(capture) = data.get("capture") else {
+        return Some(());
+    };
+    let bytes = decode_png(capture.as_str()?)?;
+    *image = Some(bytes);
+    Some(())
+}
+
+/// The first bytes of every PNG file.
+const PNG_SIGNATURE: [u8; 4] = [0x89, b'P', b'N', b'G'];
+
+/// The PNG `encoded` stands for, refused if it is longer than a picture may
+/// be or is not a PNG at all.
+fn decode_png(encoded: &str) -> Option<Vec<u8>> {
+    if encoded.len() > MAX_CAPTURE_BYTES.div_ceil(3) * 4 {
+        return None;
+    }
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    // A PNG, and no other kind of file, whatever the page may have wanted.
+    if !bytes.starts_with(&PNG_SIGNATURE) || bytes.len() > MAX_CAPTURE_BYTES {
+        return None;
+    }
+    Some(bytes)
 }
 
 #[cfg(test)]
@@ -987,6 +1254,36 @@ mod tests {
             }),
             "Pressed Enter on element d1e5"
         );
+        assert_eq!(
+            described(PageRequest::Scroll {
+                element: None,
+                to: Some(ScrollTarget::Bottom),
+                by: None,
+                into_view: None,
+                frame: None,
+            }),
+            "Scrolled to the bottom"
+        );
+        assert_eq!(
+            described(PageRequest::Scroll {
+                element: None,
+                to: None,
+                by: Some(-400),
+                into_view: None,
+                frame: None,
+            }),
+            "Scrolled by -400 pixels"
+        );
+        assert_eq!(
+            described(PageRequest::Scroll {
+                element: None,
+                to: None,
+                by: None,
+                into_view: Some(element()),
+                frame: None,
+            }),
+            "Scrolled element d1e5 into view"
+        );
     }
 
     #[test]
@@ -1021,6 +1318,50 @@ mod tests {
             for bad in ["", "Enterr", "Hyper+a", "Shift+Shift+a", "ab", "Control+"] {
                 assert!(PageKey::parse(bad).is_none(), "{bad}");
             }
+        }
+        // phase: key_names_are_read_in_any_letter_case
+        {
+            // A person writes END or end for the same key a keyboard has.
+            for (written, canonical) in [
+                ("END", "End"),
+                ("end", "End"),
+                ("arrowdown", "ArrowDown"),
+                ("PageUp", "PageUp"),
+                ("pageup", "PageUp"),
+                ("SPACE", "Space"),
+                ("ctrl+END", "Control+End"),
+                ("SHIFT+Tab", "Shift+Tab"),
+                ("cmd+a", "Meta+a"),
+            ] {
+                let key = PageKey::parse(written).unwrap_or_else(|| panic!("{written}"));
+                assert_eq!(key.chord(), canonical, "{written}");
+                assert_eq!(PageKey::parse(&key.chord()), Some(key), "{written}");
+            }
+            // A single character still means itself, whatever its case.
+            assert_eq!(PageKey::parse("A").unwrap().key, "A");
+            assert_eq!(PageKey::parse("a").unwrap().key, "a");
+        }
+        // phase: a_bad_key_says_what_a_key_is
+        {
+            let unknown = PageKey::parse_detailed("Homee").unwrap_err();
+            assert!(unknown.contains("\"Homee\" is not a key name"), "{unknown}");
+            assert!(unknown.contains("Home"), "{unknown}");
+            assert!(unknown.contains("did you mean Home?"), "{unknown}");
+            let modifier = PageKey::parse_detailed("Hyper+x").unwrap_err();
+            assert!(
+                modifier.contains("\"Hyper\" is not a key modifier"),
+                "{modifier}"
+            );
+            assert!(modifier.contains("Control"), "{modifier}");
+            let empty = PageKey::parse_detailed("  ").unwrap_err();
+            assert!(empty.contains("needs a key"), "{empty}");
+            let trailing = PageKey::parse_detailed("Control+").unwrap_err();
+            assert!(
+                trailing.contains("ends before it names a key"),
+                "{trailing}"
+            );
+            let twice = PageKey::parse_detailed("Shift+Shift+a").unwrap_err();
+            assert!(twice.contains("held twice"), "{twice}");
         }
         // phase: invalid_requests_are_refused_before_the_engine
         {
@@ -1185,6 +1526,84 @@ mod tests {
                 PointerButton::parse("middle"),
                 PointerButton::Left,
                 "an unknown button is the one a hand uses"
+            );
+        }
+        // phase: a_scroll_says_one_place_and_one_way_there
+        {
+            let scroll =
+                |element: Option<&str>, to, by, into_view: Option<&str>| PageRequest::Scroll {
+                    element: element.map(str::to_owned),
+                    to,
+                    by,
+                    into_view: into_view.map(str::to_owned),
+                    frame: None,
+                };
+            // The wheel turns over the viewport, or over the box the caller
+            // names, and it turns until one place is reached.
+            for good in [
+                scroll(None, None, Some(600), None),
+                scroll(None, None, Some(-600), None),
+                scroll(None, Some(ScrollTarget::Top), None, None),
+                scroll(None, Some(ScrollTarget::Bottom), None, None),
+                scroll(Some("d1e2"), None, Some(4000), None),
+                scroll(Some("d1e2"), Some(ScrollTarget::Bottom), None, None),
+                scroll(None, None, None, Some("d1e7")),
+                scroll(Some("d1e2"), None, None, Some("d1e7")),
+            ] {
+                assert!(good.valid(), "{good:?}");
+            }
+            // The most a scroll may go by, and a step past it either way.
+            let furthest = i32::try_from(MAX_SCROLL_BY).unwrap();
+            for bad in [
+                // A scroll goes somewhere.
+                scroll(None, None, None, None),
+                // Two places at once.
+                scroll(None, Some(ScrollTarget::Top), Some(400), None),
+                scroll(None, Some(ScrollTarget::Top), None, Some("d1e7")),
+                // A distance that is not bounded, or is nothing at all.
+                scroll(None, None, Some(furthest + 1), None),
+                scroll(None, None, Some(-furthest - 1), None),
+                // Something that is not an element ref.
+                scroll(Some("#menu"), None, Some(400), None),
+                scroll(None, None, None, Some("d1e2;alert(1)")),
+                scroll(None, None, None, Some(&"d1e".repeat(20))),
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
+            assert_eq!(ScrollTarget::parse("bottom"), Some(ScrollTarget::Bottom));
+            assert_eq!(ScrollTarget::parse("top"), Some(ScrollTarget::Top));
+            assert_eq!(ScrollTarget::parse("sideways"), None);
+            let command = encode_request(9, &scroll(None, Some(ScrollTarget::Bottom), None, None));
+            assert_eq!(
+                command,
+                serde_json::json!({"op":"page","request_id":9,"action":"scroll","to":"bottom"})
+            );
+            let command = encode_request(10, &scroll(Some("d1e2"), None, Some(-400), None));
+            assert_eq!(
+                command,
+                serde_json::json!({"op":"page","request_id":10,"action":"scroll","element":"d1e2",
+                    "by":-400})
+            );
+            // An element to bring into view travels as its ref, as every
+            // other request's element does.
+            let command = encode_request(11, &scroll(None, None, None, Some("d1e7")));
+            assert_eq!(
+                command,
+                serde_json::json!({"op":"page","request_id":11,"action":"scroll",
+                    "element":"d1e7","into_view":"d1e7"})
+            );
+            // A scroll in a frame names the frame the outline printed.
+            let framed = PageRequest::Scroll {
+                element: None,
+                to: Some(ScrollTarget::Top),
+                by: None,
+                into_view: None,
+                frame: Some(FrameId::parse("1.2").unwrap()),
+            };
+            assert!(framed.valid());
+            assert_eq!(
+                encode_request(12, &framed)["frame"],
+                serde_json::json!("1.2")
             );
         }
         // phase: wire_encoding_names_every_field
@@ -1505,6 +1924,122 @@ mod tests {
             let anonymous = serde_json::json!({"event":"page_result","request_id":0,"ok":false,
                 "code":"busy","message":""});
             assert!(decode_result(&anonymous).is_none());
+        }
+    }
+
+    /// A picture of the page is a request like any other, and its answer's
+    /// pixels travel as the reply's own image: a PNG, bounded, and never a
+    /// finding the caller has to decode.
+    #[test]
+    fn a_capture_asks_for_a_bounded_picture_and_answers_with_its_pixels() {
+        use base64::Engine as _;
+        let png: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 2, 0, 0, 0, 144, 119, 83, 222,
+        ];
+
+        // phase: the_viewport_when_no_element_is_named
+        let page = PageRequest::Capture {
+            element: None,
+            max_width: None,
+            frame: None,
+        };
+        assert!(page.valid());
+        assert_eq!(page.action(), "capture");
+        assert_eq!(page.described(), "Pictured the page");
+        assert_eq!(page.element(), None);
+        assert_eq!(
+            encode_request(7, &page),
+            serde_json::json!({
+                "op": "page",
+                "request_id": 7,
+                "action": "capture",
+                "max_width": u32::from(MAX_CAPTURE_WIDTH),
+            })
+        );
+
+        // phase: an_element_is_named_by_the_ref_the_outline_printed
+        let element = PageRequest::Capture {
+            element: Some("d1e5".into()),
+            max_width: Some(400),
+            frame: Some(FrameId::parse("1.2").unwrap()),
+        };
+        assert!(element.valid());
+        assert_eq!(element.described(), "Pictured element d1e5");
+        assert_eq!(
+            encode_request(8, &element),
+            serde_json::json!({
+                "op": "page",
+                "request_id": 8,
+                "action": "capture",
+                "element": "d1e5",
+                "frame": "1.2",
+                "max_width": 400,
+            })
+        );
+
+        // phase: a_width_no_engine_paints_or_a_ref_no_outline_printed_is_refused
+        for width in [0, u32::from(MAX_CAPTURE_WIDTH) + 1, 4000] {
+            assert!(
+                !PageRequest::Capture {
+                    element: None,
+                    max_width: Some(width),
+                    frame: None,
+                }
+                .valid(),
+                "{width}"
+            );
+        }
+        assert!(
+            PageRequest::Capture {
+                element: None,
+                max_width: Some(u32::from(MAX_CAPTURE_WIDTH)),
+                frame: None,
+            }
+            .valid()
+        );
+        assert!(
+            !PageRequest::Capture {
+                element: Some("not-a-ref".into()),
+                max_width: None,
+                frame: None,
+            }
+            .valid()
+        );
+
+        // phase: the_answer_carries_the_picture_as_its_own_pixels
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+        let answer = serde_json::json!({"event":"page_result","request_id":9,"ok":true,
+            "url":"https://letters.test/scan","message":"The view","outline":null,
+            "navigation":"none","navigated":false,"loading":false,
+            "data":{"x":0.0,"y":0.0,"width":800.0,"height":600.0,"format":"png","capture":encoded}});
+        let reply = decode_result(&answer)
+            .expect("a picture is a well-formed answer")
+            .1;
+        let reply = reply.expect("it succeeded");
+        assert_eq!(reply.image.as_deref(), Some(png));
+        assert!(
+            reply.data.unwrap().get("capture").is_none(),
+            "the pixels are the image, never a base64 finding beside it"
+        );
+
+        // phase: what_is_not_a_png_in_named_limits_is_not_a_picture
+        for (label, capture) in [
+            ("not base64", "!!!".to_string()),
+            (
+                "another file",
+                base64::engine::general_purpose::STANDARD.encode(b"%PDF-1.7 ..."),
+            ),
+            (
+                "larger than any engine paints",
+                base64::engine::general_purpose::STANDARD.encode(vec![0u8; MAX_CAPTURE_BYTES + 1]),
+            ),
+        ] {
+            let bad = serde_json::json!({"event":"page_result","request_id":9,"ok":true,
+                "url":"https://letters.test/scan","message":"The view","outline":null,
+                "navigation":"none","navigated":false,"loading":false,
+                "data":{"capture":capture}});
+            assert!(decode_result(&bad).is_none(), "{label}");
         }
     }
 }

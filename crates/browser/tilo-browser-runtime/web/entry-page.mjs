@@ -746,7 +746,12 @@ export async function startEntryPage({mode}) {
       const known = remembering(() => rememberedRoom(next.scope));
       if (known?.name && !workspaceName) workspaceName = known.name;
     },
-    mountDesktop,
+    // The person's own desktop has no room's peer to certify who writes:
+    // the browser's root identity is the person, as everywhere else.
+    mountDesktop: async (surface, options) => {
+      const identity = options.peer ? null : currentIdentity() ?? await browserIdentity({create: false}).catch(() => null);
+      return mountDesktop(surface, identity ? {author: identity.userPublicKey, ...options} : options);
+    },
     ownDesktopOpen: home => ownDesktopOpen(home),
     enterViaHost: async ({workspace, room}) => {
       reportErrors(workspace.admission);
@@ -818,7 +823,9 @@ export async function startEntryPage({mode}) {
       keepJoinedHost({origin, room, userPublicKey: identity.userPublicKey});
       return peer;
     },
-    onInvite: () => { void workspaceActions?.perform(INVITE.id); },
+    // An embed lists no host actions, so it has nothing to invite with:
+    // the desktop offers no Invite there rather than one that does nothing.
+    ...(embed ? {} : {onInvite: () => { void workspaceActions?.perform(INVITE.id); }}),
     pairDevice: async ({origin, room, userPublicKey, invite, workspace}) => {
       displayName = chosenDisplayName(userPublicKey) ?? defaultDisplayName(userPublicKey);
       let waiting = () => {};
@@ -894,9 +901,16 @@ export async function startEntryPage({mode}) {
       });
     }
     if (hostActions) {
-      const offered = remembering(() => workspaceChoices({home: page.entry?.home, homeRoom: homeRoomOf(page.entry),
-        entered: enteredWorkspaces(), current: here})) ?? [];
-      hostActions('workspaces').setHostActions(workspaceSwitchActions(offered, {current: workspaceName}));
+      let offered = [];
+      const offer = own => {
+        offered = remembering(() => workspaceChoices({home: page.entry?.home, homeRoom: homeRoomOf(page.entry),
+          entered: enteredWorkspaces(), current: here, own})) ?? [];
+        hostActions('workspaces').setHostActions(workspaceSwitchActions(offered, {current: workspaceName}));
+      };
+      offer(false);
+      // The way back from a room to the person's own desktop, where they
+      // may have one: asked of the home's door, so offered once it answers.
+      if (!embed && here.kind !== 'own') void ownDesktopAllowed(page.entry?.home).then(open => { if (open) offer(true); });
       switchWorkspace = id => {
         const choice = offered.find(candidate => candidate.id === id);
         return choice ? openWorkspace({choice, page, status}) : undefined;
@@ -911,15 +925,23 @@ export async function startEntryPage({mode}) {
       },
       show: url => {
         ownPhoto = url;
-        if (page.peer?.userPublicKey) void page.mount?.setPersonPhoto?.(page.peer.userPublicKey, url);
+        const person = pagePerson(page);
+        if (person) void page.mount?.setPersonPhoto?.(person, url);
       },
     };
+    // On the person's own desktop no room names them: the page does.
+    const own = page.peer ? null : pagePerson(page);
+    if (own) {
+      displayName ??= chosenDisplayName(own) ?? defaultDisplayName(own);
+      page.mount?.setOwnPerson?.({user: own, label: displayName});
+    }
     const attachIdentity = () => keepIdentity({peer: page.peer, mount: hostActions?.('identity') ?? page.mount, home: page.entry?.home,
       name: () => displayName, runtime, link: page.link, photos, naming: {
         ask: (current, save) => askName(current, save),
         set: chosen => {
-          displayName = chooseDisplayName(page.peer.userPublicKey, chosen);
-          page.peer.setDisplayName?.(displayName);
+          displayName = chooseDisplayName(pagePerson(page), chosen);
+          if (page.peer) page.peer.setDisplayName?.(displayName);
+          else page.mount?.setOwnPerson?.({user: pagePerson(page), label: displayName});
           return displayName;
         },
       }});
@@ -1157,6 +1179,7 @@ function homeRoomOf(entry) {
 /** The address that opens `choice` (`workspaceChoices`): the bare entry for the home. */
 function choiceUrl(choice, entry, link) {
   if (choice.home) return entry.base;
+  if (choice.own) return link.format({mode: 'desktop', target: {scope: {kind: 'own'}}});
   return link.format({mode: 'desktop', target: {scope: {kind: 'room', host: choice.origin, room: choice.room}}});
 }
 
@@ -1191,7 +1214,8 @@ async function openWorkspace({choice, page, status}) {
     await card('Your latest changes here are not saved yet, so Tilo stayed in this workspace. Try again in a moment.', [['OK', null]]);
     return;
   }
-  remembering(() => chooseWorkspace(choice.home ? null : choice));
+  // The own desktop is no room a bare entry could reopen: the choice kept stays.
+  if (!choice.own) remembering(() => chooseWorkspace(choice.home ? null : choice));
   status.textContent = `Opening ${choice.name}…`;
   await closeRoom(page);
   loadPage(url);
@@ -1417,7 +1441,8 @@ async function offerOtherWorkspaces({scope, entry, runtime}) {
   const choice = await card('Open another of your workspaces',
     [...choices.map(option => [option.unavailable ? `${option.name} (did not open last time)` : option.name, option]), ['Not now', null]]);
   if (!choice) return true;
-  remembering(() => chooseWorkspace(choice.home ? null : choice));
+  // The own desktop is no room a bare entry could reopen: the choice kept stays.
+  if (!choice.own) remembering(() => chooseWorkspace(choice.home ? null : choice));
   loadPage(choiceUrl(choice, entry, link));
   return true;
 }
@@ -1439,20 +1464,29 @@ async function setUpFromLink(secret, setUp) {
  * from the profile their hosts keep; one chosen only here goes to them.
  */
 async function followProfile(page, onName, onKept = () => {}, onNone = () => {}) {
-  const userPublicKey = page.peer?.userPublicKey;
-  if (!userPublicKey || !page.peer.setDisplayName) return;
-  const origins = [page.peer.origin, ...membershipOrigins(userPublicKey),
+  const userPublicKey = pagePerson(page);
+  if (!userPublicKey || (page.peer && !page.peer.setDisplayName)) return;
+  const origins = [page.peer?.origin, ...membershipOrigins(userPublicKey),
     ...listedWorkspaces({home: page.entry?.home}).map(workspace => workspace.host.origin)].filter(Boolean);
   try {
     await syncProfile({userPublicKey, origins, identity: currentIdentity(), chosen: chosenDisplayName(userPublicKey), onKept, onNone,
       apply: name => {
         const kept = chooseDisplayName(userPublicKey, name);
-        page.peer.setDisplayName(kept);
+        if (page.peer) page.peer.setDisplayName(kept);
+        else page.mount?.setOwnPerson?.({user: userPublicKey, label: kept});
         onName(kept);
       }});
   } catch (error) {
     console.warn('identity:', error);
   }
+}
+
+/**
+ * The person this page acts as: the one its room's peer is certified as,
+ * else on their own desktop the browser's root identity.
+ */
+function pagePerson(page) {
+  return page.peer ? page.peer.userPublicKey ?? null : currentIdentity()?.userPublicKey ?? null;
 }
 
 /** Reload this page to join the workspace it watches. */
@@ -1504,8 +1538,10 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
   if (peer?.userPublicKey && peer.userPublicKey !== identity.userPublicKey) return null;
   const mac = /Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? '');
   const actions = createIdentityActions({
-    identity, name, pairing: pairingOf({peer, identity, runtime, link}), naming: peer?.setDisplayName ? naming : null,
-    photos: peer?.setDisplayName ? photos : null,
+    // A watching peer goes by no name of its own; the person's own desktop
+    // (no peer) and a room they joined do.
+    identity, name, pairing: pairingOf({peer, identity, runtime, link}), naming: !peer || peer.setDisplayName ? naming : null,
+    photos: !peer || peer.setDisplayName ? photos : null,
     hosts: () => membershipOrigins(identity.userPublicKey),
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
     pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', showPairLink: pairLinkSheet, askPairing: pairingAsk,

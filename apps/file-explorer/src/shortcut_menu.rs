@@ -254,6 +254,8 @@ mod tests {
                 resource_kind: SHORTCUT_RESOURCE_KIND.into(),
                 resource_label: label.into(),
                 action_label: label.into(),
+                keywords: Vec::new(),
+                icon: None,
                 description: None,
                 locus: ExecutionLocus::default(),
                 kind: OperationKind::View,

@@ -334,6 +334,9 @@ fn the_window_lists_groups_people_and_the_selected_person() {
     // What can be done to the person is the window bar's.
     for id in [
         BAR_NEW,
+        BAR_CALL,
+        BAR_MESSAGE,
+        BAR_EMAIL,
         BAR_FAVORITE,
         BAR_EDIT,
         BAR_DELETE,
@@ -742,6 +745,68 @@ fn header_commands_favorite_delete_and_open_the_website() {
     assert_eq!(app.opened_url.as_deref(), Some(ada.website.as_str()));
     work.run_pending();
     assert_eq!(recorder.opened_uris(), [ada.website]);
+}
+
+/// A contact is reachable where they are: Call, Text and Email hand the
+/// person's own number and address to the desktop, which opens whichever app
+/// on this device serves `tel:`, `sms:` and `mailto:`.
+#[test]
+fn a_contact_can_be_called_messaged_and_emailed() {
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
+    let work = ui::background::Pumped::new();
+    let _work = work.background().enter();
+    let mut app = synced();
+    let ada = selected_contact(&app);
+    let phone = ada.phones[0].value.clone();
+    let email = ada.emails[0].value.clone();
+    for id in [BAR_CALL, BAR_MESSAGE, BAR_EMAIL] {
+        assert!(bar_offers(id), "{id} is in the window's bar");
+    }
+
+    for (id, hand_off) in [
+        (BAR_CALL, format!("tel:{}", phone.replace(' ', ""))),
+        (BAR_MESSAGE, format!("sms:{}", phone.replace(' ', ""))),
+        (BAR_EMAIL, format!("mailto:{email}")),
+    ] {
+        press_bar(&mut app, id);
+        work.run_pending();
+        app.settle();
+        assert!(
+            recorder.opened_uris().contains(&hand_off),
+            "{id} hands {hand_off} to the desktop: {:?}",
+            recorder.opened_uris()
+        );
+    }
+}
+
+/// A person with nothing to call or write has no verb for it: the bar draws
+/// none rather than one that would do nothing.
+#[test]
+fn a_contact_without_a_number_or_address_offers_no_call_or_email() {
+    let mut bare = Contact::new();
+    assert_eq!(crate::detail::primary_phone(&bare), None);
+    assert_eq!(crate::detail::primary_email(&bare), None);
+    bare.phones.push(Labeled::new("mobile", "   "));
+    bare.emails.push(Labeled::new("work", "ada at example"));
+    assert_eq!(
+        crate::detail::primary_phone(&bare),
+        None,
+        "a blank line is not a number"
+    );
+    assert_eq!(
+        crate::detail::primary_email(&bare),
+        None,
+        "an address without @ is not one"
+    );
+    bare.phones.push(Labeled::new("home", "(555) 0100"));
+    bare.emails
+        .push(Labeled::new("home", "someone@example.test"));
+    assert_eq!(crate::detail::primary_phone(&bare), Some("(555) 0100"));
+    assert_eq!(
+        crate::detail::primary_email(&bare),
+        Some("someone@example.test")
+    );
 }
 
 /// Saves round-trip through the document; refused saves, favourites and
@@ -2154,7 +2219,7 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
             .unwrap();
         h.press_left(h.row_center(other_idx));
         assert_eq!(
-            h.app.pending_switch.map(|id| id),
+            h.app.pending_switch,
             Some(h.row_id(other_idx)),
             "the guard asks before dropping the edit"
         );

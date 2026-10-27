@@ -777,12 +777,13 @@ impl MouseKeyboardPane {
         let shown = self.selected_source();
         let osk = self.editor.get().scope == OSK;
         let mut page = Vec::new();
+        // `None` while the drawing is being compiled.
         let map = if osk {
-            None
+            Some(Err(String::new()))
         } else {
-            self.keyboard_preview(&shown).ok()
+            self.keyboard_preview(&shown)
         };
-        if let Some(map) = &map
+        if let Some(Ok(map)) = &map
             && shown == profile.active
             && map.live_agrees() == Some(false)
         {
@@ -820,7 +821,7 @@ impl MouseKeyboardPane {
         &self,
         shown: &str,
         profile: &KeyboardProfile,
-        map: Option<ui::KeyboardMap>,
+        map: Option<Result<ui::KeyboardMap, String>>,
     ) -> SettingsSection {
         let name = self.source_name(shown);
         let in_use = shown == profile.active;
@@ -856,7 +857,7 @@ impl MouseKeyboardPane {
             return block_section(Box::new(body));
         }
         match map {
-            Some(map) => {
+            Some(Ok(map)) => {
                 let levels = map.level_count().clamp(1, 4);
                 let level = self.last.keyboard_preview_level.min(levels - 1);
                 let layers = ui::widget::ToggleGroup::new(
@@ -898,7 +899,8 @@ impl MouseKeyboardPane {
                     body = body.push(Box::new(layers));
                 }
             }
-            None => body = body.push(error_caption(&t("input-map-unavailable"))),
+            Some(Err(_)) => body = body.push(error_caption(&t("input-map-unavailable"))),
+            None => body = body.push(caption(&t("input-map-drawing"))),
         }
         block_section(Box::new(body))
     }
@@ -1008,7 +1010,6 @@ impl MouseKeyboardPane {
             editor: self.editor.clone(),
             osk_always: false,
             document: self.cx.storage().settings_document().clone(),
-            map_cache: std::rc::Rc::default(),
         }
     }
 
@@ -1114,33 +1115,10 @@ fn layer_key(level: usize) -> &'static str {
     }
 }
 
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model)]
-#[serde(default)]
-pub struct OskSourceSettings {
-    #[model(readonly)]
-    layout: String,
-    #[model(readonly)]
-    layouts: Vec<String>,
-}
-
-impl Default for OskSourceSettings {
-    fn default() -> Self {
-        Self {
-            layout: "qwerty".into(),
-            layouts: Vec::new(),
-        }
-    }
-}
-
-impl ui::storage::SettingsSchema for OskSourceSettings {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
-}
-
-#[ui::tilo_resource::resource(kind = "settings.osk-sources", label = "On-screen keyboard layouts")]
-impl OskSourceSettings {}
+pub use crate::prefs::OskSourceSettings;
 
 fn osk_profile(document: &ui::storage::SettingsDocument) -> KeyboardProfile {
-    let stored = ui::storage::Settings::<OskSourceSettings>::for_app("so.tilo.osk")
+    let stored = ui::storage::Settings::<OskSourceSettings>::for_app(crate::prefs::KEYBOARD_APP_ID)
         .in_document(document.clone())
         .get();
     let configured = if stored.layouts.is_empty() {
@@ -1173,7 +1151,7 @@ fn osk_profile(document: &ui::storage::SettingsDocument) -> KeyboardProfile {
 }
 
 fn store_osk(document: &ui::storage::SettingsDocument, profile: &KeyboardProfile) -> EffectAnswer {
-    ui::storage::Settings::<OskSourceSettings>::for_app("so.tilo.osk")
+    ui::storage::Settings::<OskSourceSettings>::for_app(crate::prefs::KEYBOARD_APP_ID)
         .in_document(document.clone())
         .set(&OskSourceSettings {
             layout: profile.active.clone(),

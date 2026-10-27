@@ -297,7 +297,7 @@ impl DbClientApp {
             .zip(row)
             .and_then(|(result, row)| result.row_text(row));
         match text {
-            Some(text) => self.copy_to_clipboard(text, "db-copied-row"),
+            Some(text) => self.copy_to_clipboard(&text, "db-copied-row"),
             None => {
                 self.session.status = RunStatus::Ok(crate::i18n::t("db-copy-nothing"));
             }
@@ -308,18 +308,41 @@ impl DbClientApp {
     fn copy_result(&mut self) {
         let result = self.link.read(|model| model.query.clone());
         match result {
-            Some(result) => self.copy_to_clipboard(result.text(), "db-copied-result"),
+            Some(result) => self.copy_to_clipboard(&result.text(), "db-copied-result"),
             None => {
                 self.session.status = RunStatus::Ok(crate::i18n::t("db-copy-nothing"));
             }
         }
     }
 
+    /// Write the result to a CSV file, asked from the window's bar: export is
+    /// the record's own effect, so the bar asks the same door the palette and
+    /// an agent do (`APP-db-client-03`).
+    fn export_result_from_bar(&self) {
+        let target = self.link.read(|model| {
+            model
+                .active
+                .map(|connection| (connection, model.query_generation, model.query.is_some()))
+        });
+        let Some((connection, generation, has_result)) = target else {
+            return;
+        };
+        if !has_result {
+            return;
+        }
+        if let Some(actions) = &self.actions {
+            actions.effect(&DbEffect::ExportCsv {
+                connection,
+                generation,
+            });
+        }
+    }
+
     /// Put `text` on the clipboard and say so — or say it did not take. A
     /// copy can fail after it returns, so it is watched and the failure it
     /// reports later replaces the confirmation.
-    fn copy_to_clipboard(&mut self, text: String, done: &str) {
-        if self.copy.watch(ui::try_clipboard_copy(&text)) {
+    fn copy_to_clipboard(&mut self, text: &str, done: &str) {
+        if self.copy.watch(ui::try_clipboard_copy(text)) {
             self.session.status = RunStatus::Ok(crate::i18n::t(done));
         } else {
             self.session.status = RunStatus::Error(crate::i18n::t("db-copy-failed"));
@@ -539,15 +562,19 @@ impl DbClientApp {
                 };
                 match write_csv(&path, &result) {
                     Ok(()) => {
-                        self.session.status = RunStatus::Ok(format!(
-                            "Exported {} rows to {}",
-                            result.rows.len(),
-                            path.display()
+                        self.session.status = RunStatus::Ok(crate::i18n::t_args(
+                            "db-exported",
+                            &[
+                                ("count", crate::i18n::count(result.rows.len())),
+                                ("path", crate::i18n::text(&path.display().to_string())),
+                            ],
                         ));
                     }
                     Err(error) => {
-                        self.session.status =
-                            RunStatus::Error(format!("CSV export failed: {error}"));
+                        self.session.status = RunStatus::Error(crate::i18n::t_args(
+                            "db-export-failed",
+                            &[("error", crate::i18n::text(&error))],
+                        ));
                     }
                 }
             }
@@ -559,15 +586,16 @@ impl DbClientApp {
             Ok(ui::portal::PortalOutcome::Failed(error)) => {
                 self.export_rx = None;
                 self.export_snapshot = None;
-                self.session.status =
-                    RunStatus::Error(format!("Couldn't open the save dialog: {error}"));
+                self.session.status = RunStatus::Error(crate::i18n::t_args(
+                    "db-export-dialog-failed",
+                    &[("error", crate::i18n::text(&error))],
+                ));
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.export_rx = None;
                 self.export_snapshot = None;
-                self.session.status =
-                    RunStatus::Error("CSV save dialog closed unexpectedly".into());
+                self.session.status = RunStatus::Error(crate::i18n::t("db-export-dialog-closed"));
             }
         }
     }
@@ -727,7 +755,7 @@ impl DbClientApp {
     fn live_job_label(&self) -> Option<String> {
         match &self.session.status {
             RunStatus::Busy(label) => Some(label.clone()),
-            _ if self.effect_reply.is_some() => Some("Database operation…".into()),
+            _ if self.effect_reply.is_some() => Some(crate::i18n::t("db-busy-operation")),
             _ => None,
         }
     }
@@ -1041,6 +1069,29 @@ pub(crate) const CANCEL_QUERY: &str = "db.query.cancel";
 pub(crate) const COPY_ROW: &str = "db.result.copy-row";
 /// The window bar's action that copies the whole result.
 pub(crate) const COPY_RESULT: &str = "db.result.copy-result";
+/// The window bar's action that writes the result to a CSV file the person
+/// picks: it exists as an effect, so the bar offers it (`APP-db-client-03`).
+pub(crate) const EXPORT_CSV: &str = "db.result.export-csv";
+
+/// What the bar offers once there is a result to take away or out: copy a
+/// row, copy the result, or write it as CSV.
+fn result_actions() -> Vec<ToolbarAction> {
+    vec![
+        ToolbarAction::new(COPY_ROW, Icon::Copy.name(), crate::i18n::t("db-copy-row")).in_menu(),
+        ToolbarAction::new(
+            COPY_RESULT,
+            Icon::ClipboardPaste.name(),
+            crate::i18n::t("db-copy-result"),
+        )
+        .in_menu(),
+        ToolbarAction::new(
+            EXPORT_CSV,
+            Icon::Download.name(),
+            crate::i18n::t("db-export-csv"),
+        )
+        .in_menu(),
+    ]
+}
 
 impl DbClientApp {
     /// Run what the person did in the window's bar, then declare its slots:
@@ -1068,6 +1119,10 @@ impl DbClientApp {
             {
                 self.apply(Intent::Cancel);
                 self.publish();
+            } else if let ToolbarEvent::Action { id } = &event
+                && id == EXPORT_CSV
+            {
+                self.export_result_from_bar();
             } else if let ToolbarEvent::Action { id } = &event
                 && (id == COPY_ROW || id == COPY_RESULT)
             {
@@ -1112,18 +1167,7 @@ impl DbClientApp {
                 );
             }
             if has_result {
-                actions.push(
-                    ToolbarAction::new(COPY_ROW, Icon::Copy.name(), crate::i18n::t("db-copy-row"))
-                        .in_menu(),
-                );
-                actions.push(
-                    ToolbarAction::new(
-                        COPY_RESULT,
-                        Icon::ClipboardPaste.name(),
-                        crate::i18n::t("db-copy-result"),
-                    )
-                    .in_menu(),
-                );
+                actions.extend(result_actions());
             }
             ui::widget::NavShell::push_window_actions(&mut toolbar, actions);
         }
@@ -1137,7 +1181,7 @@ impl DbClientApp {
                 .into_iter()
                 .map(|tab| ToolbarView {
                     id: tab.view_id().to_owned(),
-                    label: tab.label().to_owned(),
+                    label: tab.label(),
                 })
                 .collect(),
             chosen: tab.view_id().to_owned(),
@@ -1398,17 +1442,18 @@ impl DbClientApp {
                 self.export_snapshot = Some(result);
                 self.export_rx = Some(
                     ui::portal::PickRequest::save(
-                        "Export query results",
-                        "Export CSV",
+                        &crate::i18n::t("db-export-title"),
+                        &crate::i18n::t("db-export-accept"),
                         "query-results.csv",
                     )
                     .filter(
-                        ui::portal::FileFilter::new("CSV (comma-separated values)").glob("*.csv"),
+                        ui::portal::FileFilter::new(&crate::i18n::t("db-export-filter"))
+                            .glob("*.csv"),
                     )
                     .thread_name("db-client-export-csv")
                     .send(),
                 );
-                self.session.status = RunStatus::Busy("Choose where to save the CSV…".into());
+                self.session.status = RunStatus::Busy(crate::i18n::t("db-export-choosing"));
             }
         }
 
@@ -2415,5 +2460,15 @@ mod tests {
             assert!(!results, "another database's rows are not shown");
             assert!(failed);
         }
+    }
+
+    /// The window bar's sidebar button flips the sidebar on every click, in a
+    /// window wide enough to dock it and in a narrow one.
+    #[test]
+    fn the_window_bars_sidebar_button_flips_the_sidebar() {
+        ui::framework::testing::check_window_sidebar_button(
+            ui::framework::testing::TestApp::<crate::DbClientShell>::new,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
     }
 }

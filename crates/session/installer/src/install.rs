@@ -1108,7 +1108,7 @@ mod tests {
             let opts = InstallOptions {
                 filesystem: "ext4".to_string(),
                 hostname: "lab-1".to_string(),
-                full_name: "ada Example".to_string(),
+                full_name: "Ada Example".to_string(),
                 locale: "nl_NL.UTF-8".to_string(),
                 timezone: "Europe/Amsterdam".to_string(),
                 keymap: "de".to_string(),
@@ -1132,7 +1132,7 @@ mod tests {
                     "--hostname",
                     "lab-1",
                     "--full-name",
-                    "ada Example",
+                    "Ada Example",
                     "--locale",
                     "nl_NL.UTF-8",
                     "--confirm-erase",

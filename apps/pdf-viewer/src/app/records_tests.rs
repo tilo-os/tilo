@@ -666,3 +666,21 @@ fn exports_are_deterministic_and_carry_page_operations() {
         assert!(overlap, "quad {quad:?} covers the word {word:?}");
     }
 }
+
+#[test]
+fn a_reading_position_records_a_page_fraction_and_zoom() {
+    let bytes = PdfMarkup::planned(3);
+    let mut doc = AutoCommit::load(&bytes).expect("a planned record");
+    let page = PdfMarkup::of(&doc).page_plan()[1].id.clone();
+    apply(
+        &mut doc,
+        crate::actions::record_reading_position_action(&page, 0.25, 1.75),
+    );
+    assert_eq!(
+        PdfMarkup::of(&doc).reading_position(),
+        Some((page, 0.25, 1.75))
+    );
+    let unchanged = PdfMarkup::of(&doc).reading_position();
+    apply(&mut doc, PdfMarkup::START_PAGE_PLAN.with(2));
+    assert_eq!(PdfMarkup::of(&doc).reading_position(), unchanged);
+}

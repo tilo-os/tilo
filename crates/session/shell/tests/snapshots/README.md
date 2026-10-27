@@ -1,6 +1,6 @@
 # Reviewed shell references
 
-`artifacts.json` pins the overview, tab reorder and maximized decision state references
+`artifacts.json` pins the overview, tab reorder, maximized decision state and narrow window bar references
 by public immutable URL, SHA-256 and byte length. They retain the
 repository's license. Controlled
 font licenses and provenance remain in `crates/sdk/ui-core/assets/fonts`.

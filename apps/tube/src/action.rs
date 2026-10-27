@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::actions::TubeEffect;
-use crate::model::{ChannelId, Route, SearchType, Settings, VideoId};
+use crate::model::{ChannelId, Route, Settings, VideoId};
 use crate::resource::Library;
 use ui::tilo_resource::Edit;
 
@@ -22,9 +22,6 @@ pub enum Action {
     Navigate(Route),
     OpenVideo(VideoId),
     OpenChannel(ChannelId),
-    /// Toggle a type in the multi-select filter; first click narrows to just
-    /// that type (see [`crate::model::SearchTypeFilter`]).
-    ToggleSearchType(SearchType),
     /// Pop the navigation stack (`ui::NavStack`); also reached via Escape /
     /// Alt-Left / edge-swipe.
     Back,

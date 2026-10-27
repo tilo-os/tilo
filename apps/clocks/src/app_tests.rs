@@ -1,3 +1,8 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "the test moves its clock on by a paused timer's length"
+)]
+
 use super::{
     WEEKDAYS, custom_timer_duration_seconds, remaining_fraction, repeat_summary, timezone_label,
     timezone_results,
@@ -225,8 +230,29 @@ fn command(command: &str, activity_id: Option<&str>) {
 
 #[test]
 fn a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls() {
-    let mut app = TestApp::<ClocksShell>::new().unwrap();
+    // The timer the app schedules rings on the shell's own thread, which a
+    // clock held for this one does not reach: the test takes the process to
+    // itself and holds the clock everywhere in it.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls",
+        a_live_window_at_the_clock_it_holds,
+    );
+}
 
+/// The clock the shell's floating window follows: its own thread's, which
+/// this test holds for the whole process it has to itself.
+fn a_live_window_at_the_clock_it_holds() {
+    let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
+    let mut app = TestApp::<ClocksShell>::new().unwrap();
+    let added = ui::time::wall();
+    let _held = tilo_clock::testing::hold_wall_everywhere(process, added);
+    // The wall clock reads `added` until a phase moves it a second on,
+    // past the timer's end.
+    shell_floating_clock_phases(&mut app, added);
+}
+
+fn shell_floating_clock_phases(app: &mut TestApp<ClocksShell>, added: std::time::SystemTime) {
     // Phase: nothing runs, so the shell shows nothing.
     app.settle();
     assert!(!snapshot().active, "idle: nothing shown");
@@ -303,12 +329,14 @@ fn a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls() {
     app.invoke(Clocks::REMOVE_TIMER.with(ui::prelude::Id::from_raw(id.as_str())))
         .unwrap();
     app.invoke(Clocks::RESET_STOPWATCH.invoke()).unwrap();
-    // The wall clock is held, then moved past the timer's end.
-    let added = ui::time::wall();
-    ui::time::freeze_wall(added);
+    // The wall clock reads `added`, then a second later: past the timer's
+    // end, and the timer started at `added`.
     app.invoke(Clocks::ADD_TIMER.with(("Tea".into(), 1)))
         .unwrap();
-    ui::time::freeze_wall(added + std::time::Duration::from_secs(1));
+    let _held = tilo_clock::testing::hold_wall_everywhere(
+        tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process(),
+        added + std::time::Duration::from_secs(1),
+    );
     app.settle();
     assert!(snapshot().notification_id.is_some(), "the timer rang");
     let first = snapshot();
@@ -584,17 +612,17 @@ fn a_running_stopwatch_counts_up_with_no_input() {
     app.with_surface::<super::ClocksApp, _>(|surface| surface.set_mode(super::STOPWATCH))
         .unwrap();
     let started = ui::time::wall();
-    ui::time::freeze_wall(started);
-    app.invoke(Clocks::START_STOPWATCH.invoke()).unwrap();
-    app.settle();
     let shows = |app: &mut TestApp<ClocksShell>, text: &str| {
         app.with_surface::<super::ClocksApp, _>(|surface| {
             ui::a11y::texts(surface).iter().any(|shown| shown == text)
         })
         .unwrap()
     };
+    tilo_clock::testing::with_wall(started, || {
+        app.invoke(Clocks::START_STOPWATCH.invoke()).unwrap();
+        app.settle();
+    });
     assert!(shows(&mut app, "0:00"), "the stopwatch starts at nought");
-    ui::time::freeze_wall(started + std::time::Duration::from_secs(3));
     let bound = ui::time::now() + tilo_test_env::hang_bound();
     while !shows(&mut app, "0:03") {
         assert!(
@@ -602,9 +630,12 @@ fn a_running_stopwatch_counts_up_with_no_input() {
             "the running stopwatch still shows the time it was started at"
         );
         // The tick is due a second after the last sync, on the monotonic
-        // clock, which the held wall clock leaves running.
+        // clock, which the wall clock leaves running. Three seconds after
+        // it started, the frame reads three seconds.
         std::thread::sleep(std::time::Duration::from_millis(50));
-        let _ = app.harness().poll_frame().unwrap();
+        tilo_clock::testing::with_wall(started + std::time::Duration::from_secs(3), || {
+            let _ = app.harness().poll_frame().unwrap();
+        });
     }
 }
 
@@ -713,4 +744,14 @@ fn the_timer_setup_fills_the_width_of_the_page() {
         quick.x1 > 1280.0 * 0.75,
         "the quick starts reach the page's trailing side: {quick:?}"
     );
+}
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<ClocksShell>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
 }

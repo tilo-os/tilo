@@ -123,11 +123,11 @@ impl TopBarChrome {
         );
         let hovered = self.hovered_control();
         ChipFace::new(later, &words.later)
-            .hovered(hovered == Some(Self::CONTROL_ASK_LATER))
+            .hovered(hovered.as_deref() == Some(Self::CONTROL_ASK_LATER))
             .paint(scene, transform, text_renderer, theme);
         ChipFace::new(answer, &ask.answer)
             .style(ChipStyle::Live)
-            .hovered(hovered == Some(Self::CONTROL_ASK_ANSWER))
+            .hovered(hovered.as_deref() == Some(Self::CONTROL_ASK_ANSWER))
             .paint(scene, transform, text_renderer, theme);
         self.ask = AskRects {
             pill,

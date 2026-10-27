@@ -25,8 +25,17 @@
     allow(dead_code, reason = "only the browser page fetches deferred code")
 )]
 mod app_load;
+// Native builds compile it for its tests; the page is its only user.
 #[cfg(target_arch = "wasm32")]
 mod background_work;
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser page opens windows")
+)]
+mod capture_declarations;
+// Content handed to an app, opened as its file: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod content_open;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod page_content;
 #[cfg(target_arch = "wasm32")]
@@ -124,10 +133,16 @@ mod link;
 mod mount_service_custody;
 #[cfg(target_arch = "wasm32")]
 mod page_authors;
+// Which peer speaks for the page's person: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod page_person;
 #[cfg(target_arch = "wasm32")]
 mod peer;
 #[cfg(target_arch = "wasm32")]
 mod person_chat;
+// The person's own records each window holds: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod person_records;
 #[cfg(target_arch = "wasm32")]
 mod replication;
 #[cfg(target_arch = "wasm32")]

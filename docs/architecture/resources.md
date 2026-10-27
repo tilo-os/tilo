@@ -199,6 +199,18 @@ impl Snippets {
   record (`snippets::NewSnippet { title, folder }`) with a JSON schema derived
   from the parameter types themselves.
   Agents, the palette and forms (§3.3) all use it.
+- A parameter that names an existing resource (a note, a file, an issue) is a
+  reference to it, `ResourceAt` (the app that keeps it, its kind, its id and
+  how it reads), declared `#[param("The note", resource = "notes.notebook.pages")]`.
+  A person picks it in the system palette from the workspace's resources of
+  that kind, found by the titles their apps publish in search, the same way
+  the palette picks who, where and which grant (`tilo_actions::Pick`); an
+  agent passes the same reference. Nobody types an id. A button whose action
+  needs such a parameter opens search on that action
+  (`SearchRequest::asking(scope, action)`), and the palette starts on its
+  first missing argument, a picked one on its picker. Tasks' "Link a note"
+  is one: its button opens straight on the notes of the workspace, and
+  picking one runs the issue's `link-note`.
 - Verbs run against the record the framework reads for them, and write back as
   a diff. A verb that only touches one item is an item method: it takes the
   item instead of `&mut self` and reads and writes only that item.
@@ -298,6 +310,21 @@ Effects remain for work with no document entry: starting a sync job, choosing
 a file, a view change. They are typed (`#[derive(Effect)]`), long work is a job
 with progress and cancellation, and a job changes the document only through
 the resource's actions.
+
+An effect composes with other apps through their published actions, never
+through glue of its own: `cx.call(Call::on(app, record, &reference, action).with(args), then)`
+invokes the action on the resource a `ResourceRef` names (one a person picked,
+a link holds, or an earlier call answered) and runs `then` with its output.
+The call continues the effect's invocation, so the host decides it as the
+effect's caller: the person at the palette, an agent, another member, by
+their own grants, never the app's. The other app records it once in its
+history as theirs and their undo there takes it back; what the effect then
+submits to its own resource is theirs the same way. Neither reaches further
+than the invocation it continues: a reading action's effect that edits asks
+the person first ([permissions.md](permissions.md) §4, Attenuation). Pressed by the person at
+the device, the call is the app's own request, which needs the workspace's
+grant to the app. Tasks writing an issue's note is one: Notes makes the note
+through `create-page`, and the tracker links what it answered through `link`.
 
 ### 2.5 Child and derived resources
 
@@ -440,7 +467,7 @@ live, and the action runs through that view, exactly as a person's click does.
   it where they are.
 - **Presence.** Whoever acts is a participant with presence in the view: a
   person, a collaborator, an agent, a Shortcut. Presence names the actor and on
-  whose behalf it acts ("Claude, for ada"), shows where it works and what it
+  whose behalf it acts ("Claude, for Ada"), shows where it works and what it
   just changed.
 - **Me and others.** The person's own changes, a collaborator's and an agent's
   look different in every view and in history.

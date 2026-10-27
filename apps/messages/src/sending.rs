@@ -232,7 +232,7 @@ impl Sending {
         };
         Ok(cx.spawn(move |_|async move {
             let receipt=client.send(request).await?;
-            let page=client.history().read(receipt.route.clone()).await.ok();
+            let page=client.history().read(receipt.route.clone(),None).await.ok();
             Ok::<_,tilo_messaging::SendError>((receipt,page))
         },move |(),result,_|{
             match result {

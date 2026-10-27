@@ -7,6 +7,7 @@
 //! per-item controls are not offered to agents one by one as UI controls:
 //! each is one of the artwork's actions, which an agent already has.
 
+pub mod bar;
 pub mod brushes;
 pub mod export;
 pub mod files;

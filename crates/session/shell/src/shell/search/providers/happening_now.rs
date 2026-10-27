@@ -148,6 +148,7 @@ fn row(id: String, title: String, reason: String, people: &[RosterRow]) -> Faced
         on_open: Rc::new(|_doc, _root, _chrome: &Chrome, _args: &ActionArgs| Ok(())),
         on_invoke: None,
         on_begin_invoke: None,
+        resource: None,
     };
     (row, people.iter().map(face).collect())
 }

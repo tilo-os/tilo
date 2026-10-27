@@ -29,6 +29,7 @@ fn run() -> TrackerRun {
         epoch: 2,
         starter: "ada".into(),
         active: true,
+        paused_through: None,
         budget: None,
         subject: None,
         model: None,

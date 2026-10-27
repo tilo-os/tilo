@@ -129,6 +129,16 @@ pub fn add_element_action(slide: &str, element: &Element) -> Action {
     }))
 }
 
+/// Place `element` (as the clipboard carries it) on slide `slide`: the pasted
+/// element, under the id it carries.
+#[must_use]
+pub fn paste_element_action(slide: &str, element: &ElementData) -> Action {
+    stamped(DeckAction::InsertElement(deck::deck::InsertElement {
+        slide: Id::from(slide),
+        element: element.clone(),
+    }))
+}
+
 #[must_use]
 pub fn delete_element_action(slide: &str, element: &str) -> Action {
     stamped(DeckAction::DeleteElement(deck::deck::DeleteElement {

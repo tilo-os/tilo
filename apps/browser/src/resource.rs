@@ -55,7 +55,7 @@ pub struct Browser {
 )]
 impl Browser {
     /// Bookmark a page.
-    #[action]
+    #[action(keywords = "bookmark, favourite, favorite, save page")]
     pub fn add_bookmark(
         &mut self,
         cx: &mut ActionCx,
@@ -93,7 +93,7 @@ impl Browser {
     }
 
     /// Turn tracker protection on or off for a site.
-    #[action]
+    #[action(keywords = "ad blocker, tracking protection, block trackers, privacy")]
     pub fn set_site_protection(
         &mut self,
         #[param("The site's address or exact origin, such as https://example.org")] origin: String,
@@ -487,9 +487,19 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
             }
         }
         let invocation = cx.invocation().unwrap_or_default();
+        // A picture of the page is content: the store keeps its bytes, and the
+        // answer names them, so the reader who can see it does.
+        if let Some(content) = ui::tilo_resource::content::current() {
+            self.page_mut().attach_content(content);
+        }
         match self.page_mut().admit(invocation, effect.operation())? {
             Effected::Pending => {
                 let reply = cx.reply();
+                // The window keeps the answer, not a job of this effect, so
+                // the reply's own job is what hears the caller give up: a
+                // page action nobody waits for any more is stopped rather
+                // than left holding its tab.
+                cx.cancel_by(reply.progress().cancellation_signal());
                 self.page_mut().answer_later(invocation, reply);
                 Ok(Effected::Pending)
             }
@@ -532,9 +542,9 @@ mod tests {
     use ui::tilo_resource::Resource as _;
 
     fn find<'a>(
-        resources: &'a [tilo_actions::Resource],
+        resources: &'a [ui::tilo_actions::Resource],
         id: &str,
-    ) -> Option<&'a tilo_actions::Resource> {
+    ) -> Option<&'a ui::tilo_actions::Resource> {
         resources.iter().find_map(|resource| {
             if resource.id.as_str() == id {
                 Some(resource)

@@ -811,8 +811,9 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
                     assert!(history.next_undo_in(doc, &author(), 11).is_some());
                 })
                 .unwrap();
-            *permissions.borrow_mut() =
-                crate::permissions::PermissionContext::stranger("probe-author").at_unix_time(100);
+            permissions.set(
+                crate::permissions::PermissionContext::stranger("probe-author").at_unix_time(100),
+            );
             assert!(runner.invoke("edit").is_err());
             assert_eq!(body(&host.records, &checkout), "edited");
             assert_eq!(
