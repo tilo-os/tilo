@@ -153,6 +153,12 @@ it, and a person's restriction always reaches their agents.
   reviewed once by the installer, and bounded by the installer's own authority.
   It never includes governance ([bots.md](bots.md) §3). Agents and bots hold the
   same kind of root-signed, expiring delegation for their own device keys.
+- **Composed actions.** An effect calling another app's published action
+  while it runs an invocation someone asked of it continues that
+  invocation: the host decides the call as its caller, by their grants and
+  under the custody it kept for them, and the app's own identity adds
+  nothing. A call continuing an invocation the app made of itself through
+  its own door is the app's own request, decided as one.
 - **History.** Every entry records the actor and the person it acted for
   ([resources.md](resources.md) §5.1).
 
