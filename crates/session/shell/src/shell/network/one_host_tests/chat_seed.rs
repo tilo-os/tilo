@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_user_identity::DeviceCapabilities;
 
 use super::cold_reads::{CHAT, chat_channels, open_cold, open_launched, until_broker_took};
-use super::{Device, Person, RoomId, Wakes, hosted_workspace, scratch, until};
+use super::{Device, Person, RoomId, Wakes, hosted_workspace, scratch, until, until_or_say};
 
 /// The room's first channels, as the chat seeds them.
 const FIRST_CHANNELS: [&str; 2] = [chat::record::CHAT_CHANNEL, chat::record::VOICE_CHANNEL];
@@ -77,19 +77,28 @@ fn drive<T: Send + 'static>(
             }
         })
     };
-    let mut last = String::from("nothing");
-    let found = until(devices, what, || {
-        for found in heard.try_iter() {
-            match found {
-                Step::Waiting(seen) => last = seen,
-                Step::Done(value) => return Some(Ok(value)),
-                Step::Failed(why) => return Some(Err(why)),
+    // What the app showed last, said if the wait runs out.
+    let last = std::cell::RefCell::new(String::from("nothing"));
+    let found = until_or_say(
+        devices,
+        what,
+        || {
+            for found in heard.try_iter() {
+                match found {
+                    Step::Waiting(seen) => *last.borrow_mut() = seen,
+                    Step::Done(value) => return Some(Ok(value)),
+                    Step::Failed(why) => return Some(Err(why)),
+                }
             }
-        }
-        thread
-            .is_finished()
-            .then(|| Err(format!("the app stopped, after it showed {last}")))
-    });
+            thread.is_finished().then(|| {
+                Err(format!(
+                    "the app stopped, after it showed {}",
+                    last.borrow()
+                ))
+            })
+        },
+        || format!("; the app showed {}", last.borrow()),
+    );
     let running = Running {
         done,
         thread: Some(thread),
@@ -351,7 +360,8 @@ fn a_message_posted_in_a_new_workspaces_chat_reaches_the_persons_other_device() 
 
     // The desktop's new Chat offers `post` once it lists #chat, and the
     // message posted through it is in the chat's messages.
-    let mut posted = false;
+    // How the post started, once it was invoked.
+    let mut posted: Option<String> = None;
     let (desktop_broker, sent, desktop_app) = workspace.launch_on_desktop(
         dir.path(),
         "the message posted in the new chat",
@@ -360,7 +370,7 @@ fn a_message_posted_in_a_new_workspaces_chat_reaches_the_persons_other_device() 
             if !channels.as_deref().is_some_and(seeded) {
                 return Step::Waiting(format!("the channels {channels:?}"));
             }
-            if !posted {
+            if posted.is_none() {
                 let resources = app.collect_resources();
                 let Some(post) = offering(&resources, "post") else {
                     return Step::Waiting(format!(
@@ -373,20 +383,27 @@ fn a_message_posted_in_a_new_workspaces_chat_reaches_the_persons_other_device() 
                     "channel": chat::record::CHAT_CHANNEL,
                     "text": TEXT,
                 });
-                if let Err(refused) = app.invoke_local_resource_action(
+                match app.invoke_local_resource_action(
                     &address,
                     arguments.as_object().expect("the arguments are an object"),
                 ) {
-                    return Step::Failed(format!(
-                        "post on {} was refused: {refused:?}",
-                        post.id.as_str()
-                    ));
+                    Ok(started) => {
+                        posted = Some(format!("post on {} started {started:?}", post.id.as_str()));
+                    }
+                    Err(refused) => {
+                        return Step::Failed(format!(
+                            "post on {} was refused: {refused:?}",
+                            post.id.as_str()
+                        ));
+                    }
                 }
-                posted = true;
             }
             match first_part_messages(owners, room) {
                 Some(messages) if messages.iter().any(|text| text == TEXT) => Step::Done(messages),
-                messages => Step::Waiting(format!("posted; the messages {messages:?}")),
+                messages => Step::Waiting(format!(
+                    "{}; the messages {messages:?}",
+                    posted.as_deref().unwrap_or_default()
+                )),
             }
         },
     );
