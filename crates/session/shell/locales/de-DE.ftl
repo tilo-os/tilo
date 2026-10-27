@@ -1389,6 +1389,13 @@ search-answer-copied = Kopiert
 search-answer-money-stale = { $amount } = · Kurse { $age }
 search-matches = Passt zu „{ $word }“
 search-answer-open-address = { $address } öffnen
+search-provider-ask-agent = Einen Agenten fragen
+search-kind-agent = Agent
+search-ask-agent = Einen Agenten fragen: { $query }
+search-ask-agent-subtitle = Eine Aufgabe für { $agent }
+search-ask-agent-no-agent = In diesem Workspace arbeitet noch kein Agent. Füge einen hinzu, um zu fragen.
+search-ask-agent-no-model = Der Agent hat kein KI-Modell. Wähle eines in den Einstellungen.
+search-ask-agent-offline = Du bist offline, und das Modell des Agenten liegt im Internet.
 search-provider-web = Web
 search-kind-web = Web
 search-kind-websites = Websites
