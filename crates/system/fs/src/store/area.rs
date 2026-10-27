@@ -303,7 +303,9 @@ impl FileArea {
     fn open_with(dir: &Path, db: Database, budget: u64, durable: bool) -> io::Result<Self> {
         let data = data_dir(dir);
         std::fs::create_dir_all(&data)?;
-        {
+        // Every commit is a database sync, so an area whose tables exist
+        // (every open but the first) is opened without one.
+        if !has_tables(&db)? {
             let txn = db.begin_write().map_err(db_error)?;
             txn.open_table(ENTRIES).map_err(db_error)?;
             txn.open_multimap_table(CHUNKS).map_err(db_error)?;
@@ -1239,6 +1241,10 @@ impl FileArea {
                 }
             }
         }
+        if stored_before_sync.is_empty() {
+            // Nothing to record: a commit would only cost a sync.
+            return Ok(());
+        }
         let _commit = self.commit.lock_recover();
         let stored = stored_before_sync;
         let txn = self.database()?.begin_write().map_err(db_error)?;
@@ -1257,6 +1263,19 @@ impl Drop for FileArea {
     fn drop(&mut self) {
         let _ = self.flush();
     }
+}
+
+/// Whether `db` has every table the area keeps.
+fn has_tables(db: &Database) -> io::Result<bool> {
+    let txn = db.begin_read().map_err(db_error)?;
+    let present = |opened: Result<(), redb::TableError>| match opened {
+        Ok(()) => Ok(true),
+        Err(redb::TableError::TableDoesNotExist(_)) => Ok(false),
+        Err(error) => Err(db_error(error)),
+    };
+    Ok(present(txn.open_table(ENTRIES).map(drop))?
+        && present(txn.open_multimap_table(CHUNKS).map(drop))?
+        && present(txn.open_table(MEMBERS).map(drop))?)
 }
 
 fn parse_hex(name: &str) -> Option<AreaKey> {

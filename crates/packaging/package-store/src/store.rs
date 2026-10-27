@@ -1309,14 +1309,15 @@ impl PackageStore {
         }
         let _lock = self.lock()?;
         let mut registry = self.registry()?;
+        // Read only when a row would be evicted: a store under its cap
+        // never needs the mount table.
         let in_use = InUse::now();
-        let running: BTreeSet<String> = registry
-            .entries()
-            .iter()
-            .filter(|row| in_use.holds(&row.payload_root))
-            .map(|row| row.id.clone())
-            .collect();
-        let plan = plan_eviction(&Self::usage_index(&registry), max_bytes, &running);
+        let running = |id: &str| {
+            registry
+                .find(id)
+                .is_some_and(|row| in_use.holds(&row.payload_root))
+        };
+        let plan = plan_eviction(&Self::usage_index(&registry), max_bytes, running);
         if plan.is_empty() {
             return Ok(plan);
         }
@@ -1398,22 +1399,26 @@ impl UsageIndex {
 /// distinct bytes left are at most `max_bytes`. Evicting a row frees its
 /// loose bytes and every blob no remaining row references; a blob another
 /// row still shares frees nothing. `0` plans nothing.
-fn plan_eviction(index: &UsageIndex, max_bytes: u64, running: &BTreeSet<String>) -> Vec<String> {
+fn plan_eviction(
+    index: &UsageIndex,
+    max_bytes: u64,
+    running: impl Fn(&str) -> bool,
+) -> Vec<String> {
     let mut plan = Vec::new();
     if max_bytes == 0 {
         return plan;
     }
     let mut total = index.disk_usage().total_bytes;
     let mut refcount = index.refcount.clone();
-    let mut candidates: Vec<&UsageRow> = index
-        .rows
-        .iter()
-        .filter(|row| !row.pinned && !running.contains(&row.id))
-        .collect();
+    let mut candidates: Vec<&UsageRow> = index.rows.iter().filter(|row| !row.pinned).collect();
     candidates.sort_by_key(|row| row.last_used);
     for row in candidates {
         if total <= max_bytes {
             break;
+        }
+        // Asked only of a row that would go, in least-recently-used order.
+        if running(&row.id) {
+            continue;
         }
         total = total.saturating_sub(row.loose_bytes);
         let distinct: BTreeSet<BlobHash> = row.blobs.iter().map(|(hash, _)| *hash).collect();
@@ -1466,8 +1471,8 @@ mod eviction_plan_tests {
         BlobHash::of(&[seed])
     }
 
-    fn none() -> BTreeSet<String> {
-        BTreeSet::new()
+    fn none(_: &str) -> bool {
+        false
     }
 
     #[test]
@@ -1478,7 +1483,7 @@ mod eviction_plan_tests {
         ]);
         let running = BTreeSet::from(["so.tilo.running".to_string()]);
         assert_eq!(
-            plan_eviction(&index, 1, &running),
+            plan_eviction(&index, 1, |id| running.contains(id)),
             vec!["so.tilo.idle"],
             "the least recently used app is running, so it stays over the cap"
         );
@@ -1511,19 +1516,23 @@ mod eviction_plan_tests {
         );
         assert_eq!(index.disk_usage().tried_bytes, 800, "each row's own bytes");
         // Evicting a frees only its own 100 bytes: b still holds the library.
-        assert_eq!(plan_eviction(&index, 450, &none()), vec!["so.tilo.a"]);
-        assert_eq!(plan_eviction(&index, 400, &none()), vec!["so.tilo.a"]);
+        assert_eq!(plan_eviction(&index, 450, none), vec!["so.tilo.a"]);
+        assert_eq!(plan_eviction(&index, 400, none), vec!["so.tilo.a"]);
         // 400 left after a is still over 399, and b then frees 400.
         assert_eq!(
-            plan_eviction(&index, 399, &none()),
+            plan_eviction(&index, 399, none),
             vec!["so.tilo.a", "so.tilo.b"]
         );
         assert!(
-            plan_eviction(&index, 500, &none()).is_empty(),
+            plan_eviction(&index, 500, none).is_empty(),
             "already under the cap"
         );
         assert!(
-            plan_eviction(&index, 0, &none()).is_empty(),
+            plan_eviction(&index, 500, |id| panic!("{id} was asked about")).is_empty(),
+            "under the cap no row is asked whether it runs"
+        );
+        assert!(
+            plan_eviction(&index, 0, none).is_empty(),
             "0 disables the sweep"
         );
     }
@@ -1535,7 +1544,7 @@ mod eviction_plan_tests {
             row("so.tilo.tried", 5, false, &[(2, 1_000)]),
         ]);
         assert_eq!(
-            plan_eviction(&index, 1, &none()),
+            plan_eviction(&index, 1, none),
             vec!["so.tilo.tried"],
             "the oldest row is pinned, and the cap is never met, yet it stays"
         );
@@ -1551,14 +1560,14 @@ mod eviction_plan_tests {
             loose,
         ]);
         assert_eq!(index.disk_usage().total_bytes, 250);
-        assert_eq!(plan_eviction(&index, 150, &none()), vec!["so.tilo.oldest"]);
+        assert_eq!(plan_eviction(&index, 150, none), vec!["so.tilo.oldest"]);
         assert_eq!(
-            plan_eviction(&index, 100, &none()),
+            plan_eviction(&index, 100, none),
             vec!["so.tilo.oldest", "so.tilo.legacy"],
             "a row without a record frees its whole tree"
         );
         assert_eq!(
-            plan_eviction(&index, 1, &none()),
+            plan_eviction(&index, 1, none),
             vec!["so.tilo.oldest", "so.tilo.legacy", "so.tilo.newest"]
         );
     }
