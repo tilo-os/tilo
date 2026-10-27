@@ -2201,6 +2201,18 @@ impl MailApp {
     /// Hand a newly-set status to the shell, which shows it as a toast and
     /// lets it fade on its own.
     fn show_status(&mut self) {
+        // A message held for undo keeps its notice up: the notice used to die
+        // after four seconds while the message could still be taken back for
+        // ten, so anyone reaching for Undo a beat late found nothing and the
+        // mail went out (`APP-mail-01`). While a send is held, the notice is
+        // put back up whenever it goes.
+        if self.send_notice
+            && (!self.held_sends.is_empty() || self.sends_to_hold > 0)
+            && self.nav.toast_text().is_none()
+        {
+            self.nav
+                .toast_with_action("Sending…", ToastKind::Info, "undo-2", "Undo");
+        }
         let (status, undoable) = {
             let mut st = self.shared.borrow_mut();
             (st.status.take(), std::mem::take(&mut st.status_undo))
@@ -6256,6 +6268,17 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         let outgoing = send(&mut app, &mut doc);
         app.show_status();
         assert!(app.send_notice, "the sending notice offers Undo");
+        // The notice outlives its own four-second lifetime while a send can
+        // still be taken back for ten (`APP-mail-01`): it goes, and comes
+        // back on the next sync until the message is on its way.
+        app.nav.dismiss_toast();
+        app.show_status();
+        assert!(
+            app.nav
+                .toast_text()
+                .is_some_and(|text| text.contains("Sending")),
+            "the undo notice is still up while the message is held"
+        );
         app.server_outbox()
             .borrow_mut()
             .deliver(outgoing, Box::new(|_| {}));
