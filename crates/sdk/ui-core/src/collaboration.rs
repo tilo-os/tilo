@@ -1429,6 +1429,17 @@ impl CollaborationManager {
         }
     }
 
+    /// Why the last join of `route` failed, until a join of it succeeds:
+    /// a route that never joined (a refused committed read, a record its
+    /// room cannot create) says why here, rather than staying unready.
+    #[must_use]
+    pub fn route_join_failure(&self, route: &RouteSpec) -> Option<String> {
+        match &self.backend {
+            Backend::Transport(transport) => transport.route_join_failure(&route.channel_id()),
+            Backend::Disabled(_) => None,
+        }
+    }
+
     /// Independently sample the existing transport read gates without admission.
     #[cfg(all(feature = "native", any(test, feature = "test-support")))]
     pub(crate) fn controlled_document_read_phase_for_test(

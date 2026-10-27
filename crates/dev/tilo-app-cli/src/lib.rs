@@ -1207,9 +1207,12 @@ fn locale_artifact_writes(app_dir: &Path, locale: &str, force: bool) -> Result<V
     let source_path = app_dir.join("locales/en-US.ftl");
     let source_catalog = std::fs::read_to_string(&source_path)
         .with_context(|| format!("reading source catalog {}", source_path.display()))?;
-    parse_fluent_catalog(&source_catalog)
+    let source_contract = parse_fluent_catalog(&source_catalog)
         .with_context(|| format!("source catalog {} is invalid", source_path.display()))?;
-    let registry_source = rustfmt_source(&locale_registry_source(&locales), &registry_path)?;
+    let registry_source = rustfmt_source(
+        &locale_registry_with_keys(&locales, &catalog_message_ids(&source_contract)),
+        &registry_path,
+    )?;
 
     let mut writes = vec![PendingWrite {
         path,
@@ -1327,6 +1330,11 @@ pub fn sync_locale_catalogs(request: &LocaleSyncRequest) -> Result<LocaleSyncOut
             });
         }
     }
+    writes.extend(locale_key_writes(
+        &app_dir,
+        &source_contract,
+        request.dry_run,
+    )?);
     if !request.dry_run {
         write_batch(&writes)?;
     }
@@ -1337,6 +1345,41 @@ pub fn sync_locale_catalogs(request: &LocaleSyncRequest) -> Result<LocaleSyncOut
         unresolved,
         dry_run: request.dry_run,
     })
+}
+
+/// The registry rewritten for the messages of `source` (the parsed
+/// `locales/en-US.ftl`), when the app's registry is generated and its label
+/// keys no longer match the catalog: one `Key` per message, so a label the
+/// catalog does not have is a compile error.
+fn locale_key_writes(
+    app_dir: &Path,
+    source: &FluentCatalogContract,
+    dry_run: bool,
+) -> Result<Vec<PendingWrite>> {
+    let path = app_dir.join("src/locales.rs");
+    let Ok(registry) = std::fs::read_to_string(&path) else {
+        return Ok(Vec::new());
+    };
+    if !registry.starts_with(LOCALE_REGISTRY_HEADER) {
+        return Ok(Vec::new());
+    }
+    let locales = parse_locale_registry(&registry)
+        .with_context(|| format!("{} is not a generated locale registry", path.display()))?;
+    let refreshed = rustfmt_source(
+        &locale_registry_with_keys(&locales, &catalog_message_ids(source)),
+        &path,
+    )?;
+    if refreshed == registry {
+        return Ok(Vec::new());
+    }
+    if dry_run {
+        return Ok(Vec::new());
+    }
+    Ok(vec![PendingWrite {
+        path,
+        source: refreshed,
+        description: "label keys",
+    }])
 }
 
 fn parse_editable_fluent(
@@ -1546,14 +1589,78 @@ fn catalog_declaration(locales: &[String]) -> String {
     )
 }
 
-fn locale_registry_source(locales: &[String]) -> String {
+/// The registry declaring one `Key` per message of `messages` (ids in source
+/// catalog order), as `tilo-app` writes it from `locales/en-US.ftl`.
+fn locale_registry_with_keys(locales: &[String], messages: &[String]) -> String {
     let mut source = String::from(LOCALE_REGISTRY_HEADER);
     source.push_str("// Edit Fluent catalogs under locales/; tilo-app maintains this registry.\n");
+    source.push_str(
+        "// `Key` is a Fluent message of locales/en-US.ftl, so a mistyped label is a\n\
+         // compile error: `cx.button(crate::locales::keys::ADD, App::ADD.invoke())`.\n\
+         // `tilo-app locale` rewrites the keys after a catalog edit.\n",
+    );
     for locale in locales {
         let _ = writeln!(source, "{LOCALE_ENTRY_PREFIX}{locale}");
     }
     let _ = writeln!(source, "\n{}", catalog_declaration(locales));
+    source.push('\n');
+    source.push_str(KEYS_MODULE);
+    let mut seen = BTreeSet::new();
+    for id in messages {
+        let name = label_key_name(id);
+        // A term is a shared fragment, not a label a control shows.
+        if name.is_empty() || !seen.insert(name.clone()) {
+            continue;
+        }
+        let _ = writeln!(
+            source,
+            "        pub const {name}: ui::i18n::LabelKey = ui::i18n::LabelKey::new({id:?});"
+        );
+    }
+    source.push_str("}\n");
     source
+}
+
+/// The `keys` module of generated label keys in `src/locales.rs`.
+const KEYS_MODULE: &str = "pub mod keys {";
+
+/// The `Key` constant a Fluent message id names: `bookmarks-add` is
+/// `BOOKMARKS_ADD`. A term is not a message a control shows, so it has no
+/// key; a message's plural variants are selectors inside it, never ids.
+fn label_key_name(id: &str) -> String {
+    if id.starts_with('-') {
+        return String::new();
+    }
+    let mut name = String::with_capacity(id.len());
+    for character in id.chars() {
+        name.push(if character.is_ascii_alphanumeric() {
+            character.to_ascii_uppercase()
+        } else {
+            '_'
+        });
+    }
+    name
+}
+
+/// The `Key` constants `registry` declares, in declaration order.
+fn declared_key_names(registry: &str) -> Option<Vec<String>> {
+    let file = syn::parse_file(registry).ok()?;
+    let mut names = Vec::new();
+    for item in &file.items {
+        let syn::Item::Mod(module) = item else {
+            continue;
+        };
+        if module.ident != "keys" {
+            continue;
+        }
+        let (_, items) = module.content.as_ref()?;
+        for item in items {
+            if let syn::Item::Const(constant) = item {
+                names.push(constant.ident.to_string());
+            }
+        }
+    }
+    Some(names)
 }
 
 fn screen_artifact_writes(
@@ -2012,6 +2119,12 @@ fn artifact_locale_writes(
         )
     })?;
     let mut writes = Vec::new();
+    let updated = parse_fluent_catalog(&synchronized_source).with_context(|| {
+        format!(
+            "validating updated source catalog {}",
+            source_path.display()
+        )
+    })?;
     if synchronized_source != original_source {
         writes.push(PendingWrite {
             path: source_path,
@@ -2041,6 +2154,9 @@ fn artifact_locale_writes(
             });
         }
     }
+    // The registry names every message the catalog holds, so the keys a
+    // screen's labels are named by follow the messages it just added.
+    writes.extend(locale_key_writes(app_dir, &updated, false)?);
     Ok(writes)
 }
 
@@ -8644,10 +8760,11 @@ fn check_locale_artifacts(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
             });
         }
     }
-    check_locale_registry(&registry_path, &catalog_ids, checks);
+    check_locale_registry(app_dir, &registry_path, &catalog_ids, checks);
 }
 
 fn check_locale_registry(
+    app_dir: &Path,
     registry_path: &Path,
     catalog_ids: &[String],
     checks: &mut Vec<DoctorCheck>,
@@ -8674,6 +8791,20 @@ fn check_locale_registry(
         syn::parse_file(&registry).context("generated locale registry is not valid Rust")?;
         if !registry.contains(&catalog_declaration(&registered)) {
             bail!("the embedded catalog does not hold exactly the registered locales");
+        }
+        let source = app_dir.join("locales/en-US.ftl");
+        let messages = match std::fs::read_to_string(&source) {
+            Ok(source) => catalog_message_ids(&parse_fluent_catalog(&source)?),
+            Err(_) => Vec::new(),
+        };
+        if registry.contains(KEYS_MODULE) {
+            let declared = declared_key_names(&registry).unwrap_or_default();
+            let expected: Vec<String> = messages.iter().map(|id| label_key_name(id)).collect();
+            if declared != expected {
+                bail!("the generated label keys are stale; run `tilo-app locale --refresh`");
+            }
+        } else if !messages.is_empty() {
+            bail!("label keys are not generated; run `tilo-app locale --refresh`");
         }
         for locale in &registered {
             if !catalog_ids.iter().any(|catalog| catalog == locale) {
@@ -9811,12 +9942,16 @@ fn relative_path(from_dir: &Path, target: &Path) -> PathBuf {
 }
 
 fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
+    let catalog = app_catalog(spec);
+    let messages = catalog_message_ids(
+        &parse_fluent_catalog(&catalog).context("validating the template catalog")?,
+    );
     let mut files = vec![
         (PathBuf::from("Cargo.toml"), cargo_toml(spec)?),
         (PathBuf::from("src/lib.rs"), app_lib(spec)),
         (
             PathBuf::from("src/locales.rs"),
-            locale_registry_source(&["en-US".to_owned()]),
+            locale_registry_with_keys(&["en-US".to_owned()], &messages),
         ),
         (PathBuf::from("src/main.rs"), app_main(spec)),
         (PathBuf::from("tests/app.rs"), app_test(spec)),
@@ -9827,7 +9962,7 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
         (PathBuf::from("tilo-app.toml"), app_manifest(spec)),
         (PathBuf::from("README.md"), app_readme(spec)),
         (PathBuf::from("AGENTS.md"), APP_AGENT_GUIDE.to_owned()),
-        (PathBuf::from("locales/en-US.ftl"), app_catalog(spec)),
+        (PathBuf::from("locales/en-US.ftl"), catalog),
         (PathBuf::from(surface::FILE), app_surface(spec)),
     ];
     if spec.template == Template::Graph {

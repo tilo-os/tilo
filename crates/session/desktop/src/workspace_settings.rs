@@ -1935,20 +1935,29 @@ pub fn capability_allows(cap: &CapOverride, apps: &dyn AppDirectory) -> String {
     )
 }
 
-/// One line saying what a grant answers, for what, where: "Allowed: reading
-/// and undoable changes in Notes".
+/// What one grant means, said as a person reads it: "Notes: reading and
+/// undoable changes allowed, outside effects ask first". Where it says
+/// "everything", the grant covers every kind.
 pub fn grant_allows(grant: &tilo_action_policy::Grant, apps: &dyn AppDirectory) -> String {
-    t_args(
-        match grant.answer {
-            tilo_action_policy::Answer::Allow => "workspace-settings-grant-allows",
-            tilo_action_policy::Answer::Ask => "workspace-settings-grant-asks",
-            tilo_action_policy::Answer::Deny => "workspace-settings-grant-denies",
-        },
-        &[
-            ("kinds", kinds_phrase(grant.kinds).into()),
-            ("where", node_phrase(&grant.node, apps).into()),
-        ],
-    )
+    grant_set_sentence(std::slice::from_ref(grant), apps)
+}
+
+/// A grant set as people and agents talk about it: one sentence per grant —
+/// where it applies, then what it answers for each kind of action it covers
+/// — from the most specific node to the least. An empty set grants nothing.
+pub fn grant_set_sentence(grants: &[tilo_action_policy::Grant], apps: &dyn AppDirectory) -> String {
+    struct Named<'a>(&'a dyn AppDirectory);
+    impl tilo_action_policy::Labels for Named<'_> {
+        fn label(&self, level: tilo_action_policy::Level, id: &str) -> Option<String> {
+            use tilo_action_policy::Level;
+            match level {
+                Level::App => Some(app_display_name(self.0, id)),
+                Level::Resource | Level::Item => self.0.resource_label(id),
+                _ => None,
+            }
+        }
+    }
+    tilo_action_policy::sentences(grants, &Named(apps))
 }
 
 /// The kinds of action a grant covers, in words.

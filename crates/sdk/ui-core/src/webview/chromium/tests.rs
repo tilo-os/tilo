@@ -1437,6 +1437,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
                     message: "Clicked".into(),
                     outline: None,
                     data: None,
+                    image: None,
                     navigation: PageNavigation::Started,
                     loading: true,
                 }),

@@ -237,6 +237,14 @@ impl ResourceKind {
         self.read(doc).is_ok()
     }
 
+    /// Whether `doc` holds a resource of this kind, or was kept before the
+    /// app changed its storage and is brought up to it when it opens: a
+    /// room still keeps the older document after a replica migrated its
+    /// own.
+    pub fn holds_or_older(&self, doc: &Doc) -> bool {
+        crate::evolution::stored_version(doc) < self.version || self.holds(doc)
+    }
+
     /// The heads of a saved document; `None` when `bytes` are no document.
     pub fn saved_heads(bytes: &[u8]) -> Option<Vec<automerge::ChangeHash>> {
         Doc::load(bytes).ok().map(|mut doc| doc.get_heads())

@@ -158,9 +158,13 @@ ENGINES = {
     "settings-core": "Settings' core, which Settings loads from libtilo_settings_engine.so",
     "settings-rare": "the Settings panes people rarely open, which Settings loads from "
                      "libtilo_settings_engine.so",
+    # The catalogue itself is no longer here: every text field resolves
+    # `:name:` and the picker opens for every app, so `emoji` is the
+    # toolkit's (crates/sdk/ui-core) and belongs in the runtime every app
+    # maps (docs/measurements/runtime-size.md). The engine library Chat,
+    # Notes and the on-screen keyboard still name is emptied out as they
+    # migrate.
     "tilo-emoji-engine": "the emoji catalogue's engine library (libtilo_emoji_engine.so)",
-    "emoji": "the emoji catalogue, which Chat, Notes and the on-screen keyboard load from "
-             "libtilo_emoji_engine.so",
     "browser-parts": "the parts of Browser people rarely use, which Browser loads from "
                      "libtilo_browser_import_engine.so",
     "tilo-archive-engine": "the archive codecs' engine library (libtilo_archive_engine.so)",

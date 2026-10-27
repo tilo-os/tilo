@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tilo_rich_text::RichText;
 use ui::tilo_resource::{self, Atom, Collection, Id, JsonSchema, Model, Refusal, Set};
 
-use crate::model::run::{Budget, ModelChoice, Run};
+use crate::model::run::{Area, Budget, ModelChoice, Run};
 
 /// The longest title an issue keeps.
 pub const MAX_TITLE_CHARS: usize = 240;
@@ -184,6 +184,37 @@ pub struct Issue {
     pub parent: Option<Id>,
     /// Links
     pub links: Collection<Link>,
+    /// Goal
+    ///
+    /// The project or area it works towards: an ordinary resource of the
+    /// workspace (`notes.note`, `tasks.tracker/issues/7`), never state of
+    /// its own. A sub-issue that names none works towards its parent's.
+    #[model(readonly)]
+    pub area: Option<Area>,
+    /// Due
+    ///
+    /// When it is wanted, in milliseconds since the epoch. None for an issue
+    /// nobody has dated.
+    pub due_ms: Option<i64>,
+    /// Priority
+    ///
+    /// How urgent it is, from 1 (the most urgent) to 4; None for one nobody
+    /// ranked.
+    pub priority: Option<u8>,
+    /// Planned cost
+    ///
+    /// The most the issue's work may cost, in the workspace's own currency
+    /// units (`tilo_doc`'s, as every amount is) and including its sub-issues'
+    /// plans. None for an issue nobody budgeted.
+    #[model(readonly)]
+    pub cost_budget: Option<u64>,
+    /// Spend
+    ///
+    /// What an agent's runs recorded they used, in the same units. Typed, as
+    /// a field a person can read, never taken from an agent's own word in
+    /// its report.
+    #[model(readonly)]
+    pub spend: Option<u64>,
     /// Thread
     ///
     /// Named `comments`, so whoever may comment in the workspace may write
@@ -225,6 +256,20 @@ impl Issue {
             return Err(Refusal::new(
                 "an assignee is a person or an agent: person:<id> or agent:<id>",
             ));
+        }
+        if let Some(area) = &self.area
+            && !area.names_a_resource()
+        {
+            return Err(Refusal::new("a goal is a resource of the workspace"));
+        }
+        if self
+            .priority
+            .is_some_and(|priority| !(1..=4).contains(&priority))
+        {
+            return Err(Refusal::new("a priority is 1 (most urgent) to 4"));
+        }
+        if self.cost_budget == Some(0) {
+            return Err(Refusal::new("a cost budget is more than nothing"));
         }
         Ok(())
     }

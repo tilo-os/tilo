@@ -639,7 +639,15 @@ def every_launch(ctx, res):
         slowest = max(late, key=lambda s: s["total_ms"])
         unnamed = (f" ({slowest['app']} logged no `tilo-gpu: window adapter` line before it)"
                    if slowest["renderer"] == "unknown" else "")
-        problems.append(f"slowest late launch{unnamed}: {slowest['line'][:900]}")
+        problems.append(f"slowest late launch{unnamed}: {slowest['line'][:1500]}")
+        # The broker's own account of that app's joins (`COLLAB-JOIN`): a join slower on the
+        # app's side than here waited for the broker's thread.
+        joins = [line[line.index("COLLAB-JOIN"):] for line in ctx.vm.exec(
+                     f'grep -a "COLLAB-JOIN channel=" "{core.SESSION_LOG}"; true', timeout=60,
+                     check=False).splitlines()
+                 if "COLLAB-JOIN" in line and slowest["app"] in line]
+        if joins:
+            problems.append(f"the broker's joins for {slowest['app']}: {'; '.join(joins[-3:])}")
     if "so.tilo.notes" not in apps:
         problems.append("so.tilo.notes logged no APP-STARTUP line")
     if problems:

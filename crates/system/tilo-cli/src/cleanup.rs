@@ -3,8 +3,10 @@
 //!
 //! Two scopes, because the caches have two owners:
 //!
-//! * **System** (root, `tilo-cache-gc.timer`): Flatpak runtimes no installed app uses, and the
-//!   copy of the last developer image upgrade in `/var/lib/tilo-vm/image`.
+//! * **System** (root, `tilo-cache-gc.timer`): Flatpak runtimes no installed app uses, the
+//!   copy of the last developer image upgrade in `/var/lib/tilo-vm/image`, and the OS image
+//!   data no deployment uses any more (`tilo-os-image-gc.service`, also after every update
+//!   and while the disk is low on space).
 //! * **User** (the person's own `tilo-cache-gc.timer`): the test fixture caches
 //!   `tools/test-env.sh` keeps in `$XDG_CACHE_HOME/tilo/test-env`, keyed by the revision of
 //!   what generated them, so every change to a generator leaves the previous set behind.
@@ -25,6 +27,14 @@
 //!   holds them while it removes, so an upgrade starting meanwhile waits or refuses.
 //! * A test cache: anything holding the cache's `.lock`, which every generator takes while
 //!   it writes and publishes. Held the same way while the entry goes.
+//! * OS image data: every deployment with a boot entry (the running one, the staged one and
+//!   the rollback), as bootc decides: the collection is `bootc internals composefs-gc
+//!   --prune-repo`, which removes the boot files, deployment state and repository objects
+//!   of images no boot entry names, such as an update that was cancelled half-way or a
+//!   generation an update superseded. It runs only while it holds the update lock every OS
+//!   update holds from download to activation, and the ESP's lock, which
+//!   `tilo-deployment` holds while it renames boot entries; an update running meanwhile
+//!   keeps it for the collection that runs after that update.
 //!
 //! Anything not in use goes once it has not been used for the policy's number of days, read
 //! from access and modification times (relatime still records a read once a day), or at once
@@ -51,6 +61,12 @@ pub const SYSTEM_RECORD: &str = "/var/lib/tilo-cache-gc/record.json";
 pub const VM_ROOT: &str = "/var/lib/tilo-vm";
 /// Flatpak's system installation.
 pub const FLATPAK_ROOT: &str = "/var/lib/flatpak";
+/// The OS image collection's record, beside [`SYSTEM_RECORD`]: it runs in its own unit.
+pub const OS_IMAGE_RECORD: &str = "/var/lib/tilo-cache-gc/os-images.json";
+/// The lock `tilo-verified-update` holds from an update's download to its activation.
+pub const UPDATE_LOCK: &str = "/run/tilo-verified-update.lock";
+/// The physical root, which holds the composefs repository and the deployments.
+pub const SYSROOT: &str = "/sysroot";
 
 const DAY: u64 = 24 * 60 * 60;
 
@@ -61,7 +77,21 @@ pub struct Policy {
     pub flatpak: FlatpakPolicy,
     pub vm_image: AgePolicy,
     pub test_caches: AgePolicy,
+    pub os_images: OsImagePolicy,
     pub space: SpacePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OsImagePolicy {
+    /// Remove the OS image data no deployment uses.
+    pub remove: bool,
+}
+
+impl Default for OsImagePolicy {
+    fn default() -> Self {
+        Self { remove: true }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -149,6 +179,7 @@ pub enum Kind {
     FlatpakRuntime,
     VmImage,
     TestCache,
+    OsImage,
 }
 
 /// Why an entry stayed.
@@ -218,7 +249,8 @@ pub struct Conditions {
 }
 
 impl Conditions {
-    fn low_on_space(&self, policy: &Policy) -> bool {
+    /// Whether the disk has less free space than the policy's floor.
+    pub fn low_on_space(&self, policy: &Policy) -> bool {
         let floor = policy.space.low_free_gb.saturating_mul(1_000_000_000);
         self.free.is_some_and(|free| free < floor)
     }
@@ -570,6 +602,141 @@ pub fn clean_flatpak(record: &mut Record, flatpak: &Flatpak, policy: &Policy) {
     }
 }
 
+/// bootc, and what its collection must not run alongside.
+pub struct Bootc {
+    pub program: PathBuf,
+    /// The physical root; `<sysroot>/composefs` is the repository. A machine without one
+    /// did not boot bootc's composefs backend and has nothing to collect.
+    pub sysroot: PathBuf,
+    /// The lock every OS update holds from its download to its activation.
+    pub update_lock: PathBuf,
+    /// The ESP, when this machine boots through systemd-boot entries: `tilo-deployment`
+    /// holds its directory's lock while it renames them.
+    pub esp: Option<PathBuf>,
+    /// Where the ESP is mounted when it may be mounted read-only; bootc needs it writable
+    /// to remove the boot files of the images it collects, so it is made writable for the
+    /// one command and read-only again after.
+    pub boot_mount: Option<PathBuf>,
+}
+
+/// What the cleanup calls the data it collects.
+pub const OS_IMAGE_NAME: &str = "OS image data no deployment uses";
+
+/// Runs bootc's collection with the ESP writable for the one command when it was mounted
+/// read-only, read-only again after. `$0` is bootc, `$1` the ESP's mount point.
+const COLLECT_SCRIPT: &str = "m=$1; ro=; if findmnt -n -o FSTYPE,OPTIONS \"$m\" 2>/dev/null | grep -q '^vfat *ro,'; then ro=1; mount -o remount,rw \"$m\" || exit 1; fi; \"$0\" internals composefs-gc --prune-repo; rc=$?; [ -z \"$ro\" ] || mount -o remount,ro \"$m\"; exit $rc";
+
+/// The update lock, created as `tilo-verified-update` requires it (owner-only, one link,
+/// never through a symbolic link). `Ok(None)` while an update holds it.
+fn try_hold_update_lock(path: &Path) -> Result<Option<FileLock>> {
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits().cast_signed())
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    match FileLock::try_exclusive(file) {
+        Ok(held) => Ok(Some(held)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => {
+            Err(error).with_context(|| format!("locking {}", path.display()))
+        }
+    }
+}
+
+/// The lock on a directory itself, as `flock DIR` takes it. `Ok(None)` while held.
+fn try_hold_directory(path: &Path) -> Result<Option<FileLock>> {
+    let directory =
+        std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    match FileLock::try_exclusive(directory) {
+        Ok(held) => Ok(Some(held)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => {
+            Err(error).with_context(|| format!("locking {}", path.display()))
+        }
+    }
+}
+
+/// The OS image data no deployment uses, as bootc decides: see the module's account of
+/// what counts as in use. Records the space it freed.
+pub fn clean_os_images(record: &mut Record, bootc: &Bootc, policy: &Policy) {
+    if !bootc.sysroot.join("composefs").is_dir() {
+        return;
+    }
+    let kept = |record: &mut Record, because| {
+        record.kept.push(Kept {
+            kind: Kind::OsImage,
+            name: OS_IMAGE_NAME.into(),
+            bytes: 0,
+            because,
+            eligible: None,
+        });
+    };
+    let failed = |record: &mut Record, error: String| {
+        record.failed.push(Failed {
+            kind: Kind::OsImage,
+            name: OS_IMAGE_NAME.into(),
+            error,
+        });
+    };
+    if !policy.os_images.remove {
+        return kept(record, KeptBecause::Disabled);
+    }
+    let update = match try_hold_update_lock(&bootc.update_lock) {
+        Ok(Some(held)) => held,
+        Ok(None) => return kept(record, KeptBecause::InUse),
+        Err(error) => return failed(record, format!("{error:#}")),
+    };
+    let esp = match bootc.esp.as_deref().map(try_hold_directory).transpose() {
+        Ok(Some(None)) => return kept(record, KeptBecause::InUse),
+        Ok(held) => held.flatten(),
+        Err(error) => return failed(record, format!("{error:#}")),
+    };
+    let before = free_space(&bootc.sysroot);
+    let mut command = if let Some(mount) = &bootc.boot_mount {
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(COLLECT_SCRIPT)
+            .arg(&bootc.program)
+            .arg(mount);
+        command
+    } else {
+        let mut command = Command::new(&bootc.program);
+        command.args(["internals", "composefs-gc", "--prune-repo"]);
+        command
+    };
+    let output = command.env("LC_ALL", "C").stdin(Stdio::null()).output();
+    let after = free_space(&bootc.sysroot);
+    drop(esp);
+    drop(update);
+    match output {
+        Ok(output) if output.status.success() => {
+            let freed = after
+                .zip(before)
+                .map_or(0, |(after, before)| after.saturating_sub(before));
+            if freed > 0 {
+                record.removed.push(Removed {
+                    kind: Kind::OsImage,
+                    name: OS_IMAGE_NAME.into(),
+                    bytes: freed,
+                });
+            }
+        }
+        Ok(output) => failed(record, last_line(&output.stderr)),
+        Err(error) => failed(
+            record,
+            format!("running {}: {error}", bootc.program.display()),
+        ),
+    }
+}
+
 /// Free bytes on the filesystem holding `path`.
 pub fn free_space(path: &Path) -> Option<u64> {
     let stat = rustix::fs::statvfs(path).ok()?;
@@ -667,7 +834,7 @@ fn describe(kind: Kind, name: &str) -> String {
         Kind::FlatpakRuntime if name.contains('/') => {
             format!("Flatpak runtime {}", runtime_name(name))
         }
-        Kind::FlatpakRuntime | Kind::VmImage => name.to_owned(),
+        Kind::FlatpakRuntime | Kind::VmImage | Kind::OsImage => name.to_owned(),
         Kind::TestCache => format!("test cache {name}"),
     }
 }
@@ -720,32 +887,85 @@ pub fn render(title: &str, record: Option<&Record>, now: SystemTime) -> String {
     lines.join("\n")
 }
 
-/// The root run: Flatpak runtimes and the VM image copy, recorded in [`SYSTEM_RECORD`].
+/// What one root run cleans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Flatpak runtimes and the VM image copy, recorded in [`SYSTEM_RECORD`]
+    /// (`tilo-cache-gc.service`, sandboxed to just those).
+    Caches,
+    /// The OS image data no deployment uses, recorded in [`OS_IMAGE_RECORD`]
+    /// (`tilo-os-image-gc.service`, which may write the physical root and the ESP).
+    OsImages,
+}
+
+/// bootc as this machine runs it.
+fn system_bootc() -> Bootc {
+    let esp = ["/boot", "/boot/efi"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|esp| esp.join("loader/entries").is_dir());
+    Bootc {
+        program: PathBuf::from(crate::os::bootc_program()),
+        sysroot: PathBuf::from(SYSROOT),
+        update_lock: PathBuf::from(UPDATE_LOCK),
+        esp,
+        boot_mount: Some(PathBuf::from("/boot")),
+    }
+}
+
+/// A root run of `scope`, recorded where `tilo os status` reads it.
 ///
 /// # Errors
 /// When the policy is unreadable or the record cannot be written.
-pub fn run_system() -> Result<Record> {
+pub fn run_system(scope: Scope) -> Result<Record> {
     let policy = Policy::load(&[PathBuf::from(SYSTEM_POLICY)])?;
-    let conditions = Conditions {
-        now: SystemTime::now(),
-        free: free_space(Path::new("/var")),
-    };
     let mut record = Record::default();
-    let flatpak = Flatpak {
-        program: PathBuf::from("flatpak"),
-        root: PathBuf::from(FLATPAK_ROOT),
+    let path = match scope {
+        Scope::Caches => {
+            let conditions = Conditions {
+                now: SystemTime::now(),
+                free: free_space(Path::new("/var")),
+            };
+            let flatpak = Flatpak {
+                program: PathBuf::from("flatpak"),
+                root: PathBuf::from(FLATPAK_ROOT),
+            };
+            clean_flatpak(&mut record, &flatpak, &policy);
+            if let Err(error) = clean_vm_image(&mut record, Path::new(VM_ROOT), &policy, conditions)
+            {
+                record.failed.push(Failed {
+                    kind: Kind::VmImage,
+                    name: "the copy of the last developer image upgrade".into(),
+                    error: format!("{error:#}"),
+                });
+            }
+            SYSTEM_RECORD
+        }
+        Scope::OsImages => {
+            clean_os_images(&mut record, &system_bootc(), &policy);
+            OS_IMAGE_RECORD
+        }
     };
-    clean_flatpak(&mut record, &flatpak, &policy);
-    if let Err(error) = clean_vm_image(&mut record, Path::new(VM_ROOT), &policy, conditions) {
-        record.failed.push(Failed {
-            kind: Kind::VmImage,
-            name: "the copy of the last developer image upgrade".into(),
-            error: format!("{error:#}"),
-        });
-    }
     record.finished = epoch_secs(SystemTime::now());
-    write_record(Path::new(SYSTEM_RECORD), &record)?;
+    write_record(Path::new(path), &record)?;
     Ok(record)
+}
+
+/// Whether `/var` or the physical root has less free space than the policy's floor: the
+/// condition under which `tilo-cache-gc-pressure.timer` starts the cleanups at once rather
+/// than at their daily run.
+///
+/// # Errors
+/// When the policy is unreadable.
+pub fn system_low_on_space() -> Result<bool> {
+    let policy = Policy::load(&[PathBuf::from(SYSTEM_POLICY)])?;
+    Ok(["/var", SYSROOT].into_iter().any(|path| {
+        Conditions {
+            now: SystemTime::now(),
+            free: free_space(Path::new(path)),
+        }
+        .low_on_space(&policy)
+    }))
 }
 
 /// The person's run: their test caches, recorded in [`user_record`].
@@ -1036,6 +1256,174 @@ mod tests {
         std::fs::remove_file(dir.path().join("calls")).unwrap();
         clean_flatpak(&mut Record::default(), &flatpak, &off);
         assert!(!dir.path().join("calls").exists());
+    }
+
+    /// A machine on bootc's composefs backend: deployments under `state/deploy`, boot
+    /// entries naming some of them, and a bootc whose collection removes, as bootc's
+    /// does, every deployment and repository object no boot entry names. It writes what it
+    /// was asked and whether the update and ESP locks were held while it ran.
+    fn fake_bootc(dir: &Path, deployments: &[&str], entries: &[&str]) -> Bootc {
+        let sysroot = dir.join("sysroot");
+        let esp = dir.join("esp");
+        std::fs::create_dir_all(esp.join("loader/entries")).unwrap();
+        for deployment in deployments {
+            file(
+                &sysroot
+                    .join("state/deploy")
+                    .join(deployment)
+                    .join("etc/os-release"),
+                64,
+                0,
+            );
+            file(&sysroot.join("composefs/images").join(deployment), 4096, 0);
+        }
+        for entry in entries {
+            std::fs::write(
+                esp.join("loader/entries").join(format!("{entry}.conf")),
+                format!("options composefs={entry}\n"),
+            )
+            .unwrap();
+        }
+        let update_lock = dir.join("run/update.lock");
+        let program = dir.join("bootc");
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\necho \"$@\" >> {calls}\n\
+                 for lock in {lock} {esp}; do\n\
+                   if flock -n \"$lock\" true; then echo free >> {calls}; else echo held >> {calls}; fi\n\
+                 done\n\
+                 for d in {sysroot}/state/deploy/*; do\n\
+                   id=${{d##*/}}\n\
+                   grep -qx \"options composefs=$id\" {esp}/loader/entries/*.conf || rm -rf \"$d\" {sysroot}/composefs/images/$id\n\
+                 done\n",
+                calls = dir.join("calls").display(),
+                lock = update_lock.display(),
+                esp = esp.display(),
+                sysroot = sysroot.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Bootc {
+            program,
+            sysroot,
+            update_lock,
+            esp: Some(esp),
+            boot_mount: None,
+        }
+    }
+
+    fn remaining(bootc: &Bootc) -> Vec<String> {
+        let mut left: Vec<String> = std::fs::read_dir(bootc.sysroot.join("state/deploy"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        left
+    }
+
+    #[test]
+    fn os_images_no_deployment_boots_go_and_the_current_and_previous_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        // The running generation, the rollback, and two older ones whose boot entries an
+        // update replaced, plus the half of an update that was cancelled.
+        let bootc = fake_bootc(
+            dir.path(),
+            &["current", "previous", "older", "oldest", "cancelled"],
+            &["current", "previous"],
+        );
+        let mut record = Record::default();
+        clean_os_images(&mut record, &bootc, &Policy::default());
+        assert_eq!(record.failed, []);
+        assert_eq!(remaining(&bootc), ["current", "previous"]);
+        assert!(bootc.sysroot.join("composefs/images/current").exists());
+        assert!(bootc.sysroot.join("composefs/images/previous").exists());
+        assert!(!bootc.sysroot.join("composefs/images/older").exists());
+        // bootc decides what no boot entry names, while no update and no boot entry
+        // rename can run.
+        let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
+        assert_eq!(
+            calls.lines().collect::<Vec<_>>(),
+            ["internals composefs-gc --prune-repo", "held", "held"]
+        );
+        // The lock is created as the update requires it: owner-only.
+        let mode = std::fs::metadata(&bootc.update_lock)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        // A second run finds nothing more to remove and keeps both.
+        clean_os_images(&mut Record::default(), &bootc, &Policy::default());
+        assert_eq!(remaining(&bootc), ["current", "previous"]);
+    }
+
+    #[test]
+    fn an_update_or_a_boot_entry_rename_in_progress_keeps_the_os_images_for_later() {
+        let dir = tempfile::tempdir().unwrap();
+        let bootc = fake_bootc(dir.path(), &["current", "older"], &["current"]);
+        let calls = dir.path().join("calls");
+
+        // An update holds its lock from download to activation.
+        let update = try_hold_update_lock(&bootc.update_lock).unwrap().unwrap();
+        let mut record = Record::default();
+        clean_os_images(&mut record, &bootc, &Policy::default());
+        assert!(!calls.exists(), "bootc ran during an update");
+        assert_eq!(record.kept.len(), 1);
+        assert_eq!(record.kept[0].because, KeptBecause::InUse);
+        assert_eq!(remaining(&bootc), ["current", "older"]);
+        drop(update);
+
+        // tilo-deployment renames boot entries under the ESP's lock.
+        let esp = try_hold_directory(bootc.esp.as_deref().unwrap())
+            .unwrap()
+            .unwrap();
+        let mut record = Record::default();
+        clean_os_images(&mut record, &bootc, &Policy::default());
+        assert!(!calls.exists(), "bootc ran while boot entries were renamed");
+        assert_eq!(record.kept[0].because, KeptBecause::InUse);
+        drop(esp);
+
+        // Turned off by policy: bootc is not asked.
+        let off = Policy::parse("[os_images]\nremove = false\n").unwrap();
+        let mut record = Record::default();
+        clean_os_images(&mut record, &bootc, &off);
+        assert!(!calls.exists());
+        assert_eq!(record.kept[0].because, KeptBecause::Disabled);
+
+        // Once nothing holds it, the next run collects.
+        clean_os_images(&mut Record::default(), &bootc, &Policy::default());
+        assert_eq!(remaining(&bootc), ["current"]);
+    }
+
+    #[test]
+    fn a_machine_without_a_composefs_repository_has_no_os_images_to_collect() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bootc = fake_bootc(dir.path(), &[], &[]);
+        bootc.sysroot = dir.path().join("elsewhere");
+        let mut record = Record::default();
+        clean_os_images(&mut record, &bootc, &Policy::default());
+        assert_eq!(record, Record::default());
+        assert!(!dir.path().join("calls").exists());
+    }
+
+    #[test]
+    fn a_failed_os_image_collection_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bootc = fake_bootc(dir.path(), &["current"], &["current"]);
+        let program = dir.path().join("failing-bootc");
+        std::fs::write(
+            &program,
+            "#!/bin/sh\necho 'error: repository is locked' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bootc.program = program;
+        let mut record = Record::default();
+        clean_os_images(&mut record, &bootc, &Policy::default());
+        assert_eq!(record.failed.len(), 1);
+        assert_eq!(record.failed[0].kind, Kind::OsImage);
+        assert_eq!(record.failed[0].error, "error: repository is locked");
     }
 
     #[test]

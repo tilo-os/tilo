@@ -322,6 +322,7 @@ answer:
 | **find something the app holds** (a message, a video, a note) | a `SearchProvider` per findable kind, rows that say what a hit is (`SearchRow`), scopes (`ScopeDecl`), facets (`Facet`) | the one platform palette, opened by Ctrl+K, `/`, or the app's magnifier button (`search::search_button`) |
 | **narrow the list already on screen** | `Filterable` on the list | `SearchField::filter()` in the navigation shell's filter slot (or `Filtered`), with a "3 of 120" count; Enter or "Search everywhere" escalates to the platform search |
 | **find in the document on screen** | `Findable` on the document view | the `FindBar` band at the top of the content region (`FindScope`), opened by Ctrl+F |
+| **narrow what the app holds** (a history, a library), as the app's own view | `Queryable` on the app widget, or `QueryView` around a view that is a function | the bar's field searches the app in place (“Search Activity”), with a “3 of 6” count; Enter or Down hands the keyboard to the results |
 
 - **In a Tilo window, the window bar searches in place.** The bar's search
   control, right after the window's place, expands into a field where it
@@ -338,6 +339,14 @@ answer:
   drops its own whole-app search button (`search::APP_SEARCH_BUTTON_ID`) while
   the bar presents search. The `FindBar` band and the filter slot stay for
   windows the shell does not frame.
+- **An app whose view is a function is a query view.** A framework
+  `ResourceApp` returns the view it draws rather than being a widget, so it
+  wraps that view in `widget::QueryView`: the bar offers the app's own search
+  in place, hands over what is typed as it changes (`""` when the search
+  closes), and shows the count the view kept, which is the count a
+  `Filterable` list reports. The query lives in the app's resource, written
+  through the same door as every other edit: the search writes no state of
+  its own, and the view draws no field.
 - **Typing in a focused list jumps.** A `TreeView` (and so a `NavList`) moves
   to the first row whose name begins with what was typed; a `VirtualList`
   does when its model names its rows (`ListModel::label`).
@@ -1784,22 +1793,22 @@ enforcement stay together.*
 
 ## 10. Truth: every value carries its measure and its as-of
 
-A number on screen is a claim. `ui::fact::Fact` keeps the claim and its
+A number on screen is a claim. `ui::fact::Measured` keeps the claim and its
 provenance together so a view cannot draw the number without answering
 "measured how?", "from where?" and "when?".
 
-- **Measure first.** A `Fact` has a `Measure` naming what the number counts
+- **Measure first.** A `Measured` has a `Measure` naming what the number counts
   (`Memory in use`, `Memory (RSS)`, `Packets dropped`) and its unit when it has
   one. Two values called "Memory" are two different claims; name them
   differently on screen as well as in the model.
 - **Provenance is the caption line under the value, always.** Use
-  `Fact::value_or_dash()` in the value position and `Fact::caption(now)` under
+  `Measured::value_or_dash()` in the value position and `Measured::caption(now)` under
   it. The caption carries the source and the age ("measured 2 s ago · this
   device"). It is never beside the value and never omitted.
-- **Age makes the claim honest.** `Fact::is_stale(now)` is true when the
+- **Age makes the claim honest.** `Measured::is_stale(now)` is true when the
   reading is older than the interval it was measured for. Dim the caption, not
   the value: dimming a good number teaches people to distrust good data.
-- **Unknown is a designed state.** `Fact::unknown(measure, reason)` renders an
+- **Unknown is a designed state.** `Measured::unknown(measure, reason)` renders an
   em dash (`—`) plus why, and the app offers the action that would resolve it.
   Zero is a measurement, not a stand-in for "we did not measure". Do not show
   a healthy state, a count or a rate you did not read.

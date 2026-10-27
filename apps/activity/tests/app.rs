@@ -290,3 +290,52 @@ fn mark_as_viewed_is_offered_only_while_there_is_something_new() {
     assert!(mark_viewed_offered("whats-new"));
     assert!(!mark_viewed_offered("caught-up"));
 }
+
+/// The name of the row the history lists for the `n`th change of the
+/// scenario's workspace.
+fn change(n: u8) -> String {
+    format!("activity-entry-{}", wire::entry_hex(&[n; 16]))
+}
+
+/// The window bar's search is History's: what is typed narrows the feed
+/// through the filter the app already keeps, and the bar counts what the
+/// filter left of the page it read. Closing it shows every change again.
+#[test]
+fn the_window_bars_search_narrows_history_and_the_bar_counts_what_it_kept() {
+    english();
+    let mut app = TestApp::<App>::capture(Some("history")).expect("capture");
+    app.harness().present_in_window_bar();
+    app.settle();
+    assert!(shows(&mut app, &change(6)), "every change before a search");
+
+    app.harness()
+        .search_in_window(ui::window_toolbar::SearchOpening::Find, "press");
+    app.settle();
+    assert_eq!(
+        app.harness().window_search_count(),
+        Some(ui::widget::FilterCount::new(3, 6)),
+        "the three changes to the press release, of the six it read"
+    );
+    for matched in [1, 2, 3] {
+        assert!(
+            shows(&mut app, &change(matched)),
+            "change {matched} says press"
+        );
+    }
+    for other in [4, 5, 6] {
+        assert!(
+            !shows(&mut app, &change(other)),
+            "change {other} does not say press"
+        );
+    }
+
+    app.harness()
+        .perform_named("window-search-close", &ui::a11y::Action::Activate)
+        .expect("the search closes");
+    app.settle();
+    assert_eq!(app.harness().window_search_count(), None);
+    assert!(
+        shows(&mut app, &change(6)),
+        "closing the search shows every change again"
+    );
+}

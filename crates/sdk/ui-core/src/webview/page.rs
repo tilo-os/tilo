@@ -18,6 +18,12 @@ use super::KeyModifiers;
 pub const MAX_OUTLINE_BYTES: usize = 256 * 1024;
 /// Upper bound on structured reply data (`PageReply::data`), serialised.
 pub const MAX_DATA_BYTES: usize = 256 * 1024;
+/// The widest picture a capture paints; a wider request is scaled down to
+/// it, so a picture is never larger than a person could look at.
+pub const MAX_CAPTURE_WIDTH: u16 = 1600;
+/// Upper bound on the pixels one capture may carry, as a PNG. What the engine
+/// paints is bounded the same way before it ever reaches this boundary.
+pub const MAX_CAPTURE_BYTES: usize = 8 << 20;
 /// Bounds of a settle wait, milliseconds.
 pub const MIN_SETTLE_QUIET_MS: u32 = 50;
 pub const MAX_SETTLE_MS: u32 = 20_000;
@@ -156,6 +162,16 @@ pub enum PageRequest {
     /// Show the document's article alone in a reading layout (`enabled`), or
     /// put the page back as it was. A page without an article is refused.
     Reader { enabled: bool },
+    /// A picture of the page as it is shown: the box of `element` when one is
+    /// named, the viewport otherwise, at most `max_width` pixels wide. A page
+    /// can say things no outline reaches, and this is how they are seen.
+    /// Captured by the engine itself, so the page cannot see or answer it.
+    /// What the picture shows is page content: never trusted as instructions.
+    Capture {
+        element: Option<String>,
+        max_width: Option<u32>,
+        frame: Option<FrameId>,
+    },
     /// Move the pointer over the page as a hand does: `steps` in order, a
     /// press and release of `button` where the page asks for one. A step
     /// naming `element` is placed in that element's box, every other step is
@@ -294,6 +310,7 @@ impl PageRequest {
             Self::Console { .. } => "console",
             Self::Network { .. } => "network",
             Self::Reader { .. } => "reader",
+            Self::Capture { .. } => "capture",
             Self::Pointer { .. } => "pointer",
             Self::Scroll { .. } => "scroll",
         }
@@ -339,6 +356,10 @@ impl PageRequest {
             } => format!("Waited for the page to settle ({quiet_ms} ms, up to {timeout_ms} ms)"),
             Self::Console { .. } => "Read the console".to_string(),
             Self::Network { .. } => "Read the network".to_string(),
+            Self::Capture { element, .. } => match element {
+                Some(element) => format!("Pictured element {element}"),
+                None => "Pictured the page".to_string(),
+            },
             Self::Reader { enabled: true } => "Showed the article alone".to_string(),
             Self::Reader { enabled: false } => "Put the page back as it was".to_string(),
             Self::Pointer { steps, .. } => format!("Moved the pointer ({} steps)", steps.len()),
@@ -368,6 +389,7 @@ impl PageRequest {
                 into_view: None,
                 ..
             }
+            | Self::Capture { element: None, .. }
             | Self::Hover { element: None, .. }
             | Self::Drag {
                 from: None,
@@ -408,6 +430,10 @@ impl PageRequest {
             | Self::Scroll {
                 into_view: Some(element),
                 ..
+            }
+            | Self::Capture {
+                element: Some(element),
+                ..
             } => Some(element),
         }
     }
@@ -425,7 +451,8 @@ impl PageRequest {
             | Self::Changes { frame }
             | Self::At { frame, .. }
             | Self::Settle { frame, .. }
-            | Self::Scroll { frame, .. } => frame.as_ref(),
+            | Self::Scroll { frame, .. }
+            | Self::Capture { frame, .. } => frame.as_ref(),
             Self::Console { .. }
             | Self::Network { .. }
             | Self::Reader { .. }
@@ -615,6 +642,9 @@ impl PageRequest {
                             })
                     })
             }
+            Self::Capture { max_width, .. } => {
+                max_width.is_none_or(|width| (1..=u32::from(MAX_CAPTURE_WIDTH)).contains(&width))
+            }
             Self::Outline { .. }
             | Self::Click { .. }
             | Self::Submit { .. }
@@ -801,6 +831,9 @@ pub struct PageReply {
     /// Structured findings: the element at a point, how a settle went, log
     /// entries. Always page content, so never trusted as instructions.
     pub data: Option<serde_json::Value>,
+    /// The picture a [`PageRequest::Capture`] painted, a PNG. What it shows
+    /// came from the page: a reader of it trusts none of the words in it.
+    pub image: Option<Vec<u8>>,
     /// Whether the request led the page away from its document.
     pub navigation: PageNavigation,
     /// The navigation it started had not finished loading when the engine
@@ -908,6 +941,10 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
             command["since"] = (*since).into();
         }
         PageRequest::Reader { enabled } => command["enabled"] = (*enabled).into(),
+        PageRequest::Capture { max_width, .. } => {
+            command["max_width"] =
+                u32::from(max_width.unwrap_or(u32::from(MAX_CAPTURE_WIDTH))).into();
+        }
         PageRequest::Pointer { steps, button } => {
             command["button"] = button.as_str().into();
             command["steps"] = steps
@@ -1019,13 +1056,18 @@ pub(crate) fn decode_result(
         if navigated != (navigation == PageNavigation::Started) {
             return None;
         }
+        // The picture travels as its own bytes, so the findings beside it are
+        // measured without it: a photograph of a page is never findings.
+        let mut picture = None;
+        capture_image(&value["data"], &mut picture)?;
         let data = match &value["data"] {
             serde_json::Value::Null => None,
             data @ serde_json::Value::Object(_) => {
-                if runtime_collab::wire_json_len(data) > MAX_DATA_BYTES {
+                let findings = without_image(data);
+                if runtime_collab::wire_json_len(&findings) > MAX_DATA_BYTES {
                     return None;
                 }
-                Some(data.clone())
+                Some(findings)
             }
             _ => return None,
         };
@@ -1034,6 +1076,7 @@ pub(crate) fn decode_result(
             message,
             outline,
             data,
+            image: picture,
             navigation,
             loading: navigated && value["loading"].as_bool()?,
         })
@@ -1044,6 +1087,48 @@ pub(crate) fn decode_result(
         })
     };
     Some((request_id, result))
+}
+
+/// The findings an answer carries, with the picture taken out of them: the
+/// picture's own bytes are the reply's image, never part of its findings.
+fn without_image(data: &serde_json::Value) -> serde_json::Value {
+    let mut findings = data.clone();
+    if let Some(object) = findings.as_object_mut() {
+        object.remove("capture");
+    }
+    findings
+}
+
+/// The picture an answer carries, decoded from its base64 PNG, bounded in
+/// both its encoding and its pixels. `None` refuses the whole answer: a
+/// picture it cannot take is not one it may quietly drop.
+fn capture_image(data: &serde_json::Value, image: &mut Option<Vec<u8>>) -> Option<()> {
+    let Some(capture) = data.get("capture") else {
+        return Some(());
+    };
+    let bytes = decode_png(capture.as_str()?)?;
+    *image = Some(bytes);
+    Some(())
+}
+
+/// The first bytes of every PNG file.
+const PNG_SIGNATURE: [u8; 4] = [0x89, b'P', b'N', b'G'];
+
+/// The PNG `encoded` stands for, refused if it is longer than a picture may
+/// be or is not a PNG at all.
+fn decode_png(encoded: &str) -> Option<Vec<u8>> {
+    if encoded.len() > MAX_CAPTURE_BYTES.div_ceil(3) * 4 {
+        return None;
+    }
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    // A PNG, and no other kind of file, whatever the page may have wanted.
+    if !bytes.starts_with(&PNG_SIGNATURE) || bytes.len() > MAX_CAPTURE_BYTES {
+        return None;
+    }
+    Some(bytes)
 }
 
 #[cfg(test)]
@@ -1729,6 +1814,122 @@ mod tests {
             let anonymous = serde_json::json!({"event":"page_result","request_id":0,"ok":false,
                 "code":"busy","message":""});
             assert!(decode_result(&anonymous).is_none());
+        }
+    }
+
+    /// A picture of the page is a request like any other, and its answer's
+    /// pixels travel as the reply's own image: a PNG, bounded, and never a
+    /// finding the caller has to decode.
+    #[test]
+    fn a_capture_asks_for_a_bounded_picture_and_answers_with_its_pixels() {
+        use base64::Engine as _;
+        let png: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 2, 0, 0, 0, 144, 119, 83, 222,
+        ];
+
+        // phase: the_viewport_when_no_element_is_named
+        let page = PageRequest::Capture {
+            element: None,
+            max_width: None,
+            frame: None,
+        };
+        assert!(page.valid());
+        assert_eq!(page.action(), "capture");
+        assert_eq!(page.described(), "Pictured the page");
+        assert_eq!(page.element(), None);
+        assert_eq!(
+            encode_request(7, &page),
+            serde_json::json!({
+                "op": "page",
+                "request_id": 7,
+                "action": "capture",
+                "max_width": u32::from(MAX_CAPTURE_WIDTH),
+            })
+        );
+
+        // phase: an_element_is_named_by_the_ref_the_outline_printed
+        let element = PageRequest::Capture {
+            element: Some("d1e5".into()),
+            max_width: Some(400),
+            frame: Some(FrameId::parse("1.2").unwrap()),
+        };
+        assert!(element.valid());
+        assert_eq!(element.described(), "Pictured element d1e5");
+        assert_eq!(
+            encode_request(8, &element),
+            serde_json::json!({
+                "op": "page",
+                "request_id": 8,
+                "action": "capture",
+                "element": "d1e5",
+                "frame": "1.2",
+                "max_width": 400,
+            })
+        );
+
+        // phase: a_width_no_engine_paints_or_a_ref_no_outline_printed_is_refused
+        for width in [0, u32::from(MAX_CAPTURE_WIDTH) + 1, 4000] {
+            assert!(
+                !PageRequest::Capture {
+                    element: None,
+                    max_width: Some(width),
+                    frame: None,
+                }
+                .valid(),
+                "{width}"
+            );
+        }
+        assert!(
+            PageRequest::Capture {
+                element: None,
+                max_width: Some(u32::from(MAX_CAPTURE_WIDTH)),
+                frame: None,
+            }
+            .valid()
+        );
+        assert!(
+            !PageRequest::Capture {
+                element: Some("not-a-ref".into()),
+                max_width: None,
+                frame: None,
+            }
+            .valid()
+        );
+
+        // phase: the_answer_carries_the_picture_as_its_own_pixels
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+        let answer = serde_json::json!({"event":"page_result","request_id":9,"ok":true,
+            "url":"https://letters.test/scan","message":"The view","outline":null,
+            "navigation":"none","navigated":false,"loading":false,
+            "data":{"x":0.0,"y":0.0,"width":800.0,"height":600.0,"format":"png","capture":encoded}});
+        let reply = decode_result(&answer)
+            .expect("a picture is a well-formed answer")
+            .1;
+        let reply = reply.expect("it succeeded");
+        assert_eq!(reply.image.as_deref(), Some(png));
+        assert!(
+            reply.data.unwrap().get("capture").is_none(),
+            "the pixels are the image, never a base64 finding beside it"
+        );
+
+        // phase: what_is_not_a_png_in_named_limits_is_not_a_picture
+        for (label, capture) in [
+            ("not base64", "!!!".to_string()),
+            (
+                "another file",
+                base64::engine::general_purpose::STANDARD.encode(b"%PDF-1.7 ..."),
+            ),
+            (
+                "larger than any engine paints",
+                base64::engine::general_purpose::STANDARD.encode(vec![0u8; MAX_CAPTURE_BYTES + 1]),
+            ),
+        ] {
+            let bad = serde_json::json!({"event":"page_result","request_id":9,"ok":true,
+                "url":"https://letters.test/scan","message":"The view","outline":null,
+                "navigation":"none","navigated":false,"loading":false,
+                "data":{"capture":capture}});
+            assert!(decode_result(&bad).is_none(), "{label}");
         }
     }
 }

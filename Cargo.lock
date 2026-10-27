@@ -1466,6 +1466,7 @@ dependencies = [
  "tilo-browser-import-engine",
  "tilo-browser-sessions",
  "tilo-clock",
+ "tilo-content",
  "tilo-files",
  "tilo-net",
  "tilo-paths",
@@ -2078,7 +2079,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-document",
- "tilo-emoji-catalogue",
  "tilo-emoji-engine",
  "tilo-files",
  "tilo-model-client",
@@ -20292,7 +20292,10 @@ dependencies = [
 name = "tilo-test-env"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "tempfile",
+ "tilo-automerge",
+ "tilo-automerge-fork",
  "tilo-lock",
  "workspace-hack",
 ]
@@ -20397,6 +20400,7 @@ dependencies = [
  "cosmic-text",
  "durable-store",
  "ed25519-dalek 3.0.0",
+ "emoji",
  "fluent",
  "fnv",
  "form_urlencoded",

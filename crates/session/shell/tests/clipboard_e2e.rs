@@ -2717,6 +2717,157 @@ fn x11_clipboard_pastes_into_x11_and_wayland_into_x11() {
     assert_eq!(x11_paste(&compositor), "wayland to x11");
 }
 
+/// The colour of the screen at logical point `at` in a fresh snapshot.
+fn screen_pixel(compositor: &Compositor, name: &str, at: (f64, f64)) -> [u8; 3] {
+    let path = compositor.runtime_dir.join(format!("{name}.png"));
+    compositor.snapshot(&path);
+    let image = image::open(&path).expect("read the snapshot").to_rgb8();
+    let scale = f64::from(image.width()) / f64::from(compositor.size.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a logical point on screen, scaled to the snapshot's pixels"
+    )]
+    let pixel = image.get_pixel((at.0 * scale) as u32, (at.1 * scale) as u32);
+    let _ = std::fs::remove_file(&path);
+    pixel.0
+}
+
+fn is_white([r, g, b]: [u8; 3]) -> bool {
+    r >= 240 && g >= 240 && b >= 240
+}
+
+/// A host program under Xwayland (a terminal such as Alacritty) is focused
+/// and the person presses Print: the capture bar comes up and the window
+/// keeps showing what it showed, held for the screenshot, never a greyed or
+/// blank window with no capture tool. Escape closes the tool and gives the
+/// window its keyboard focus back.
+#[test]
+fn print_over_a_focused_x11_window_opens_the_capture_bar_and_keeps_the_window_shown() {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{ConnectionExt as _, CreateGCAux, Rectangle};
+    assert!(
+        Path::new("/usr/bin/xwayland-satellite").is_file(),
+        "xwayland-satellite is not installed, so no X11 window can be tested"
+    );
+    let compositor = Compositor::start_host_desktop();
+    let mut native = TestClient::new(compositor.connect(), "org.tilo.test.x11-print-native");
+    native.map_window(&compositor);
+    let token = compositor.mint_host_launch_activation("org.example.x11-terminal", "X11 terminal");
+    let (conn, window) = x11_focused_window(&compositor, &mut native, &token);
+    let gc = conn.generate_id().unwrap();
+    conn.create_gc(
+        gc,
+        window,
+        &CreateGCAux::new().foreground(conn.setup().roots[0].white_pixel),
+    )
+    .unwrap();
+    let paint = || {
+        conn.poly_fill_rectangle(
+            window,
+            gc,
+            &[Rectangle {
+                x: 0,
+                y: 0,
+                width: 8192,
+                height: 8192,
+            }],
+        )
+        .unwrap();
+        conn.flush().unwrap();
+    };
+    // The X11 window fills its tile white; the native client's is grey.
+    // Find the tile showing white: that is the X11 window, as the person
+    // sees it before pressing Print.
+    let end = deadline_end();
+    let centre = loop {
+        assert!(
+            Instant::now() < end,
+            "the X11 window never showed its white content in any tile {:?}\n{}",
+            compositor.foreign_surface_rects(),
+            compositor.recent_log()
+        );
+        paint();
+        let shown = compositor
+            .foreign_surface_rects()
+            .into_iter()
+            .map(|[x, y, w, h]| (x + w / 2.0, y + h / 2.0))
+            .find(|&at| is_white(screen_pixel(&compositor, "before-print", at)));
+        if let Some(at) = shown {
+            break at;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    for (operation, key) in [("key_down", "PrintScreen"), ("key_up", "PrintScreen")] {
+        let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
+        assert!(
+            response.get("ok").is_some(),
+            "test control refused {operation} for Print Screen: {response:?}"
+        );
+    }
+    for name in ["capture.bar", "capture.shutter", "capture.canvas"] {
+        let _ = compositor.named_center(name);
+    }
+    compositor.wait_for_layout_to_settle(
+        |name| name.starts_with("capture."),
+        "the capture tool opening",
+    );
+    let screen = [
+        0.0,
+        0.0,
+        f64::from(compositor.size.0),
+        f64::from(compositor.size.1),
+    ];
+    for name in ["capture.bar", "capture.shutter"] {
+        let [x, y, w, h] = compositor
+            .named_rect(name)
+            .unwrap_or_else(|| panic!("{name} is laid out after Print"));
+        assert!(
+            w > 0.0
+                && h > 0.0
+                && x >= screen[0] - 0.5
+                && y >= screen[1] - 0.5
+                && x + w <= screen[2] + 0.5
+                && y + h <= screen[3] + 0.5,
+            "{name} [{x}, {y}, {w}, {h}] is wholly on the screen {screen:?}"
+        );
+    }
+    let held = screen_pixel(&compositor, "capture-open", centre);
+    assert!(
+        is_white(held),
+        "with the capture tool open the X11 window shows {held:?} at {centre:?}, \
+         not the white it showed when Print was pressed\n{}",
+        compositor.debug_state()
+    );
+
+    let response = compositor.control(&serde_json::json!({ "op": "key", "key": "Escape" }));
+    assert!(
+        response.get("ok").is_some(),
+        "test control refused Escape to close the capture tool: {response:?}"
+    );
+    compositor.wait_for("Escape closes the capture tool", |compositor| {
+        compositor.named_rect("capture.canvas").is_none()
+            && compositor.named_rect("capture.bar").is_none()
+    });
+    let probe = x11_connect(&compositor);
+    let end = deadline_end();
+    while probe.get_input_focus().unwrap().reply().unwrap().focus != window {
+        assert!(
+            Instant::now() < end,
+            "the X11 window never got its keyboard focus back after the capture tool closed\n{}",
+            compositor.recent_log()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    paint();
+    let after = screen_pixel(&compositor, "capture-closed", centre);
+    assert!(
+        is_white(after),
+        "after the capture tool closed the X11 window shows {after:?} at {centre:?}, not its white"
+    );
+}
+
 #[test]
 fn wayland_rich_clipboard_null_selection_clears_completed_offer() {
     let compositor = Compositor::start();

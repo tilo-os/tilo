@@ -1051,6 +1051,20 @@ globalThis.__tiloPage ||= (() => {
     return {ok: true, message: `Found ${summary(element)}`, data: {x: box.left, y: box.top, width: box.width, height: box.height}};
   }
 
+  // Where a picture of the page is taken: the named element's own box, or the
+  // view, both in the page's own CSS pixels. A box is scrolled into view first,
+  // so what the caller is told the picture holds is what it holds.
+  function captureRegion(ref) {
+    if (!ref) return {ok: true, message: 'The view', data: {x: scrollX, y: scrollY, width: innerWidth, height: innerHeight}};
+    const element = resolve(ref);
+    element.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
+    const box = element.getBoundingClientRect();
+    if (!(box.width > 0 && box.height > 0))
+      throw failure('not_visible', `${ref} has no box on the page`);
+    return {ok: true, message: `Found ${summary(element)}`,
+      data: {x: box.left + scrollX, y: box.top + scrollY, width: box.width, height: box.height}};
+  }
+
   function fill(ref, text, allowSecret) {
     const element = resolve(ref), tag = element.localName, kind = type(element);
     if (secret(element) && !allowSecret)
@@ -1823,6 +1837,7 @@ globalThis.__tiloPage ||= (() => {
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
           case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);
           case 'locate_box': return locateBox(command.element);
+          case 'capture': return captureRegion(command.element);
           case 'fill': { arm('script'); return fill(command.element, command.text, command.secret); }
           case 'fill_files': arm('script'); return fillFilesTarget(command.element, command.paths);
           case 'select': arm('script'); return select(command.element, command.values);

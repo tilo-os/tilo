@@ -57,11 +57,11 @@ impl ResourceApp for App {
         let title = cx
             .input(p.title)
             .with_id("document-title-input")
-            .with_placeholder("document-title-placeholder");
+            .with_placeholder(crate::locales::keys::DOCUMENT_TITLE_PLACEHOLDER);
         let body = cx
             .input(p.body)
             .with_id("document-body-input")
-            .with_placeholder("document-body-placeholder")
+            .with_placeholder(crate::locales::keys::DOCUMENT_BODY_PLACEHOLDER)
             .multiline(true);
         // The preview reads the fields the inputs edit, so it follows every
         // edit, local or remote, with no notification code.
@@ -73,8 +73,8 @@ impl ResourceApp for App {
             .text(|document| document.body.clone())
             .with_id("document-body-preview");
         Box::new(ui::column![
-            labeled_field("document-title-label", title),
-            labeled_field("document-body-label", body),
+            labeled_field(crate::locales::keys::DOCUMENT_TITLE_LABEL, title),
+            labeled_field(crate::locales::keys::DOCUMENT_BODY_LABEL, body),
             Text::new("document-preview-heading").with_role(TextRole::Caption),
             preview_title,
             preview_body,

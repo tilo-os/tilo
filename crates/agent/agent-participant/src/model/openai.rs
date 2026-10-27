@@ -391,7 +391,26 @@ pub enum ModelChoice {
         /// The config root whose vault adopts the key; `None` the user's.
         vault: Option<std::path::PathBuf>,
     },
+    /// Two models: the items of a coordinated task planned by `items`
+    /// ([`crate::profile::DECOMPOSE_ITEM_MODEL_ENV`]), everything else
+    /// (whole tasks, the coordinator's turns) by `coordinator`.
+    Decomposed {
+        /// The agent's own model.
+        coordinator: Box<ModelChoice>,
+        /// An [`Self::OpenAi`] or [`Self::Anthropic`] model.
+        items: Box<ModelChoice>,
+    },
 }
+
+/// How a model's profile is made of its id and the settings
+/// ([`crate::profile::Profile::resolve`] or `resolve_items`).
+type Resolve = fn(&str, &dyn Fn(&str) -> Option<String>) -> crate::profile::Profile;
+
+/// The Messages API a `claude-` item model is asked at, unless its endpoint
+/// is named.
+const ANTHROPIC_API: &str = "anthropic:https://api.anthropic.com";
+/// The API any other item model is asked at, unless its endpoint is named.
+const OPENAI_API: &str = "openai:https://api.openai.com/v1";
 
 impl ModelChoice {
     /// `settings`, `scripted`, `openai:<base url>`, `cloud:<base url>`
@@ -460,16 +479,92 @@ impl ModelChoice {
         }
     }
 
+    /// This choice, the items of its coordinated tasks planned by the model
+    /// [`crate::profile::DECOMPOSE_ITEM_MODEL_ENV`] names in `env`, when it
+    /// names one; unchanged otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the item model cannot be asked: no key where its
+    /// provider needs one, a key file that is not there, an endpoint that is
+    /// not one. Never the key.
+    pub fn with_items_from(self, env: &dyn Fn(&str) -> Option<String>) -> Result<Self, String> {
+        use crate::profile::{
+            DECOMPOSE_ITEM_API_KEY_ENV, DECOMPOSE_ITEM_API_KEY_FILE_ENV, DECOMPOSE_ITEM_MODEL_ENV,
+            DECOMPOSE_ITEM_URL_ENV,
+        };
+        let set = |name: &str| {
+            env(name)
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        };
+        let Some(model) = set(DECOMPOSE_ITEM_MODEL_ENV) else {
+            return Ok(self);
+        };
+        let named = set(DECOMPOSE_ITEM_URL_ENV);
+        let spec = named.clone().unwrap_or_else(|| {
+            if model.starts_with("claude") {
+                ANTHROPIC_API.to_owned()
+            } else {
+                OPENAI_API.to_owned()
+            }
+        });
+        let api_key = ApiKey::from_env(
+            set(DECOMPOSE_ITEM_API_KEY_ENV),
+            set(DECOMPOSE_ITEM_API_KEY_FILE_ENV),
+        );
+        // A provider's own API always wants a key; only an operator's own
+        // OpenAI-compatible endpoint (a local server) may take none.
+        let keyless = named
+            .as_deref()
+            .is_some_and(|spec| spec.starts_with("openai:"));
+        match &api_key {
+            ApiKey::None if !keyless => {
+                return Err(format!(
+                    "{DECOMPOSE_ITEM_MODEL_ENV} ({model}) needs its key in \
+                     {DECOMPOSE_ITEM_API_KEY_ENV} or {DECOMPOSE_ITEM_API_KEY_FILE_ENV}"
+                ));
+            }
+            ApiKey::File(path) if !path.is_file() => {
+                return Err(format!(
+                    "{DECOMPOSE_ITEM_API_KEY_FILE_ENV} names no file: the key of \
+                     {DECOMPOSE_ITEM_MODEL_ENV} ({model}) is missing"
+                ));
+            }
+            _ => {}
+        }
+        let items = Self::parse(&spec, Some(&model), api_key)
+            .map_err(|error| format!("{DECOMPOSE_ITEM_MODEL_ENV} ({model}): {error}"))?;
+        if !matches!(items, Self::OpenAi { .. } | Self::Anthropic { .. }) {
+            return Err(format!(
+                "{DECOMPOSE_ITEM_URL_ENV}: expected openai:<base url>, cloud:<base url> or \
+                 anthropic:<base url>"
+            ));
+        }
+        Ok(Self::Decomposed {
+            coordinator: Box::new(self),
+            items: Box::new(items),
+        })
+    }
+
     /// This choice adopting its key into the vault under the config root
     /// `root` rather than the user's: a run that keeps no credential past
     /// itself (a benchmark), or a session without the platform's secret
     /// store. The key never leaves the host's process for an agent's worker.
     #[must_use]
-    pub fn keeping_keys_in(mut self, root: std::path::PathBuf) -> Self {
-        if let Self::OpenAi { vault, .. } | Self::Anthropic { vault, .. } = &mut self {
-            *vault = Some(root);
+    pub fn keeping_keys_in(self, root: std::path::PathBuf) -> Self {
+        match self {
+            Self::Decomposed { coordinator, items } => Self::Decomposed {
+                coordinator: Box::new(coordinator.keeping_keys_in(root.clone())),
+                items: Box::new(items.keeping_keys_in(root)),
+            },
+            mut choice => {
+                if let Self::OpenAi { vault, .. } | Self::Anthropic { vault, .. } = &mut choice {
+                    *vault = Some(root);
+                }
+                choice
+            }
         }
-        self
     }
 
     /// A planner over this model, built on the agent's own thread. The
@@ -477,52 +572,28 @@ impl ModelChoice {
     /// checked once done, and whether they are coordinated.
     #[must_use]
     pub fn planner(&self) -> ModelPlanner {
-        let vision =
-            crate::vision::vision_setting(std::env::var(crate::vision::VISION_ENV).ok().as_deref());
+        let env = |name: &str| std::env::var(name).ok();
         match self {
             Self::Scripted => ModelPlanner::new(Box::new(ScriptedModel)),
-            Self::OpenAi {
-                base_url,
-                model,
-                api_key,
-                target,
-                vault,
-            } => {
-                let profile =
-                    crate::profile::Profile::resolve(model, &|name| std::env::var(name).ok());
-                let (checks_work, decomposes) = (profile.checks_work(), profile.decomposes());
-                ModelPlanner::new(Box::new(
-                    OpenAiModel::new(base_url, model, api_key.clone(), PLAN_TIMEOUT, *target)
-                        .with_profile(profile)
-                        .with_vision(vision)
-                        .with_vault(vault.clone()),
-                ))
-                .checking_work(checks_work)
-                .decomposing(decomposes)
+            Self::OpenAi { .. } | Self::Anthropic { .. } => {
+                let Some((model, profile)) = self.endpoint_model(crate::profile::Profile::resolve)
+                else {
+                    return ModelPlanner::new(Box::new(Unconfigured));
+                };
+                ModelPlanner::new(Box::new(model))
+                    .checking_work(profile.checks_work())
+                    .decomposing(profile.decomposes())
             }
-            Self::Anthropic {
-                base_url,
-                model,
-                api_key,
-                vault,
-            } => {
-                let profile =
-                    crate::profile::Profile::resolve(model, &|name| std::env::var(name).ok());
-                let (checks_work, decomposes) = (profile.checks_work(), profile.decomposes());
-                ModelPlanner::new(Box::new(
-                    OpenAiModel::anthropic(base_url, model, api_key.clone(), PLAN_TIMEOUT)
-                        .with_profile(profile)
-                        .with_vision(vision)
-                        .with_vault(vault.clone()),
-                ))
-                .checking_work(checks_work)
-                .decomposing(decomposes)
+            Self::Decomposed { coordinator, items } => {
+                let planner = coordinator.planner();
+                match items.endpoint_model(crate::profile::Profile::resolve_items) {
+                    Some((model, _)) => planner.with_item_model(Box::new(model)),
+                    None => planner,
+                }
             }
             Self::Settings => match tilo_agent::providers::default_selection() {
                 Some(selection) => {
-                    let profile = crate::profile::Profile::resolve(&selection.model.id, &|name| {
-                        std::env::var(name).ok()
-                    });
+                    let profile = crate::profile::Profile::resolve(&selection.model.id, &env);
                     ModelPlanner::new(Box::new(GatewayModel::new(selection, PLAN_TIMEOUT)))
                         .checking_work(profile.checks_work())
                         .decomposing(profile.decomposes())
@@ -530,6 +601,42 @@ impl ModelChoice {
                 None => ModelPlanner::new(Box::new(Unconfigured)),
             },
         }
+    }
+
+    /// The endpoint model this choice names, with the profile `resolve`
+    /// makes of the process's settings for it; `None` for a choice that
+    /// names no endpoint.
+    fn endpoint_model(&self, resolve: Resolve) -> Option<(OpenAiModel, crate::profile::Profile)> {
+        let env = |name: &str| std::env::var(name).ok();
+        let vision = crate::vision::vision_setting(env(crate::vision::VISION_ENV).as_deref());
+        let (model, profile) = match self {
+            Self::OpenAi {
+                base_url,
+                model,
+                api_key,
+                target,
+                vault,
+            } => (
+                OpenAiModel::new(base_url, model, api_key.clone(), PLAN_TIMEOUT, *target)
+                    .with_vault(vault.clone()),
+                resolve(model, &env),
+            ),
+            Self::Anthropic {
+                base_url,
+                model,
+                api_key,
+                vault,
+            } => (
+                OpenAiModel::anthropic(base_url, model, api_key.clone(), PLAN_TIMEOUT)
+                    .with_vault(vault.clone()),
+                resolve(model, &env),
+            ),
+            Self::Settings | Self::Scripted | Self::Decomposed { .. } => return None,
+        };
+        Some((
+            model.with_profile(profile.clone()).with_vision(vision),
+            profile,
+        ))
     }
 
     /// A short description for logs and status.
@@ -550,6 +657,11 @@ impl ModelChoice {
             | Self::Anthropic {
                 base_url, model, ..
             } => format!("{model} at {base_url}"),
+            Self::Decomposed { coordinator, items } => format!(
+                "{}, the items of coordinated tasks by {}",
+                coordinator.describe(),
+                items.describe()
+            ),
         }
     }
 }

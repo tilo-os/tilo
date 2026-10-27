@@ -4,7 +4,9 @@
 //! prompt — is a [`ShellLayer`]: it owns its state, paint, hit-testing,
 //! keyboard model and accessibility subtree, and asks the host for anything
 //! beyond itself by requesting a [`LayerIntent`]. It never reaches into the
-//! host.
+//! host. What kind of surface it is, what it covers, who may use it and who
+//! owns it are [`ShellLayer::surface`]'s description, not the host's
+//! knowledge; `docs/architecture/surfaces.md` is the contract.
 //!
 //! [`OverlayStack`] owns the decisions every overlay otherwise re-derives:
 //! the stacking order ([`LayerId`]), which open layer an event is offered to
@@ -103,6 +105,86 @@ impl LayerId {
             _ => None,
         }
     }
+
+    /// The kind of surface `self` is, for a layer whose state is not a
+    /// [`ShellLayer`] yet: the host still routes these itself (the migration
+    /// in `docs/architecture/surfaces.md`). A layer that implements
+    /// [`ShellLayer`] answers [`ShellLayer::surface`] instead, and the two
+    /// must agree — the stack's tests hold them to it.
+    pub(crate) const fn surface_kind(self) -> Surface {
+        match self {
+            Self::DisplayConfirmation => Surface::shell(
+                Role::Consent,
+                Anchor::Fill,
+                Modality::SystemModal,
+                Material::Floating,
+                false,
+            ),
+            Self::WindowSwitcher => Surface::shell(
+                Role::Overlay,
+                Anchor::Fill,
+                Modality::WindowModal,
+                Material::SeeThrough,
+                false,
+            ),
+            Self::Dictation => Surface::shell(
+                Role::Overlay,
+                Anchor::BottomCenter(None),
+                Modality::WindowModal,
+                Material::SeeThrough,
+                false,
+            ),
+            Self::EmojiPicker => Surface::shell(
+                Role::Overlay,
+                Anchor::Center,
+                Modality::WindowModal,
+                Material::Floating,
+                false,
+            ),
+            Self::DisplayLayouts | Self::WorkspaceSettings | Self::MemberSheet => Surface::shell(
+                Role::Dialog,
+                Anchor::Center,
+                Modality::SystemModal,
+                Material::Floating,
+                false,
+            ),
+            Self::TabContextMenu => Surface::shell(
+                Role::Popup,
+                Anchor::At(Point::ZERO),
+                Modality::WindowModal,
+                Material::Floating,
+                false,
+            ),
+            Self::PowerMenu => Surface::shell(
+                Role::Popup,
+                Anchor::TopTrailing(0.0),
+                Modality::WindowModal,
+                Material::Floating,
+                false,
+            ),
+            Self::CommandPalette | Self::Overview => Surface::shell(
+                Role::Overlay,
+                Anchor::Center,
+                Modality::WindowModal,
+                Material::Floating,
+                false,
+            ),
+            Self::Collaborators | Self::QuickSettings | Self::NowPlaying => Surface::shell(
+                Role::Dialog,
+                Anchor::TopTrailing(0.0),
+                Modality::Passive,
+                Material::Floating,
+                false,
+            ),
+            Self::ShortcutHelp => Surface::shell(
+                Role::Dialog,
+                Anchor::Center,
+                Modality::SystemModal,
+                Material::Floating,
+                false,
+            ),
+        }
+    }
 }
 
 /// A point in the host's dispatch where the stack is offered input, topmost
@@ -119,6 +201,24 @@ pub(crate) enum Band {
     Modal,
     /// Menus and flyouts, just above the windows.
     Popover,
+}
+
+impl Band {
+    /// The band a surface's input is offered in, from its modality alone:
+    /// a surface that absorbs the whole system answers before anything
+    /// else, one that holds a window above the pickers, and a popup above
+    /// the windows. `None` for a surface that is not on screen, which takes
+    /// no input at all.
+    pub(crate) const fn of(lifecycle: Lifecycle, modality: Modality) -> Option<Self> {
+        if !lifecycle.takes_input() {
+            return None;
+        }
+        Some(match modality {
+            Modality::SystemModal => Self::Session,
+            Modality::WindowModal => Self::Modal,
+            Modality::Passive => Self::Popover,
+        })
+    }
 }
 
 /// Where layers may place themselves, in desktop coordinates.
@@ -248,9 +348,220 @@ pub(crate) struct LayerPaint<'a> {
     pub thumbnails: &'a mut dyn WindowThumbnails,
 }
 
+/// The surface model's vocabulary. Every surface names its kind, placement,
+/// modality, owner and life, and the host derives the band its input is
+/// offered in ([`Band::of`]), whether and what it makes inert
+/// ([`Surface::scrim`]), the display it stands on ([`Surface::display`]) and
+/// the material it is painted on, instead of asking which overlay it is.
+/// The contract, and what each of the shell's surfaces says, is
+/// `docs/architecture/surfaces.md`.
+///
+/// What a surface is for: the kind of thing the person sees standing over
+/// the desktop. The kind decides the band its input is offered in
+/// ([`Band::of`]), the material it is painted on, how assistive technology
+/// hears it, and whether it covers the whole display — so the same role
+/// behaves the same way whichever component implements it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Role {
+    /// A menu, flyout or context menu hanging beside the thing it acts on.
+    Popup,
+    /// A picker or mode the person is held in until they answer it: the
+    /// emoji picker, a dictation session, the Alt+Tab switcher.
+    Overlay,
+    /// A sheet a person asked for and works in, possibly while the rest of
+    /// the desktop stays visible: Quick Settings, the workspace sheet.
+    Dialog,
+    /// A picker on another process's behalf, asked through the portal; the
+    /// app that asked is waiting on the answer.
+    Picker,
+    /// A question that *is* the grant: it asks the person, who alone may
+    /// answer it, and it is never opened on an app's or an agent's word.
+    Consent,
+    /// A short, self-dismissing message. It takes no input.
+    Toast,
+}
+
+/// The material a surface's body is painted on. Never a raw colour: the
+/// theme resolves it (`ui::floating_surface::Material`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Material {
+    /// Floating chrome over the blurred backdrop: menus, panels, sheets.
+    Floating,
+    /// Always opaque, for a surface whose backdrop must not show through —
+    /// a prompt for a secret over content the person does not own.
+    Opaque,
+    /// Chrome that must leave the pixels under it visible: the capture bar
+    /// over what is being chosen, the presence markers.
+    SeeThrough,
+}
+
+/// Who may work a surface while it is open.
+///
+/// This is not who may *answer* it: a [`Role::Consent`] surface is answered
+/// by a person on this device however open it is, and this enum only says
+/// who the keyboard and pointer reach.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Modality {
+    /// Shares the desktop with everything else; what it does not use goes
+    /// on to the layer below. Presence markers, readouts.
+    Passive,
+    /// Everything behind it is inert so nothing can be clicked into
+    /// agreeing, while what it shows belongs to a window or an app: the
+    /// Alt+Tab switcher, a picker raised for one app.
+    WindowModal,
+    /// Nothing behind it is reachable at all, and the person cannot leave
+    /// the surface by accident: a consent question, first-use setup.
+    SystemModal,
+}
+
+/// Whose content a surface shows: where a surface closes, whose frame it is
+/// counted in, and who hears about its outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Owner {
+    /// The compositor's own chrome: the session menu, Quick Settings.
+    Shell,
+    /// One app's surface, which is that app's public way of asking.
+    App(String),
+    /// A portal request from `caller`, which waits for the answer.
+    Portal(String),
+}
+
+/// Where a surface is placed horizontally: the display, and the edge it
+/// hangs against within that display. The display itself is
+/// [`LayerGeometry::display_for`]'s answer for [`Self::display_of`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Anchor {
+    /// Centred on the display, inset from every display edge: a sheet or a
+    /// question.
+    Center,
+    /// Hanging from the display's top bar, against its trailing edge.
+    TopTrailing(f64),
+    /// Hanging from the display's top bar, against its leading edge.
+    TopLeading(f64),
+    /// Bottom centre, unless that would cover `caret`.
+    BottomCenter(Option<Rect>),
+    /// Beside `at`: `gap` clear of it, on the side with room.
+    Beside { at: Rect, gap: f64 },
+    /// Over the thing it acts on.
+    At(Point),
+    /// The whole display, or the whole desktop when the surface is drawn
+    /// once for every display at once.
+    Fill,
+}
+
+impl Anchor {
+    /// The point [`LayerGeometry::display_for`] resolves this anchor's
+    /// display from; `None` for a surface that takes the focused display.
+    pub(crate) const fn display_of(&self) -> Option<Rect> {
+        match *self {
+            Self::Beside { at, .. } => Some(at),
+            Self::At(point) => Some(Rect::new(point.x, point.y, point.x, point.y)),
+            Self::Center
+            | Self::TopTrailing(_)
+            | Self::TopLeading(_)
+            | Self::BottomCenter(_)
+            | Self::Fill => None,
+        }
+    }
+}
+
+/// Where a surface is in its life: it is asked for, it is on screen, it is
+/// on its way out and still animating, or it has closed and returns focus
+/// to whatever opened it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lifecycle {
+    /// Asked for. A consent question waits here while the thing that asked
+    /// for it is told what is being asked, and it never shows content
+    /// before it is [`Self::Shown`].
+    Requested,
+    Shown,
+    /// Out on its motion; it keeps no input.
+    Closing,
+    /// Closed. What opened it takes focus back.
+    Closed,
+}
+
+impl Lifecycle {
+    /// The state a surface that is on screen is in; the state a surface
+    /// that is not is on its way to.
+    pub(crate) const fn of(open: bool) -> Self {
+        if open { Self::Shown } else { Self::Closed }
+    }
+
+    /// Whether a surface in this state takes input.
+    pub(crate) const fn takes_input(self) -> bool {
+        matches!(self, Self::Shown)
+    }
+}
+
+/// What a surface *is*, as one value: its kind, placement, modality, owner
+/// and where it is in its life. A surface answers [`ShellLayer::surface`]
+/// with this, or `None` for the parts of it that are not a surface at all —
+/// the overview's grid and the Alt+Tab switcher are whole-desktop modes
+/// drawn in layer order rather than standing over it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Surface {
+    pub kind: Role,
+    pub anchor: Anchor,
+    pub modality: Modality,
+    pub owner: Owner,
+    pub material: Material,
+    pub lifecycle: Lifecycle,
+    /// The region of the display the surface covers, when it computes one.
+    /// The host falls back to the display for a modal surface and to the
+    /// layer's own accessibility rect otherwise.
+    pub bounds: Option<Rect>,
+}
+
+impl Surface {
+    /// A surface this compositor owns, in the band its kind is offered in.
+    pub(crate) const fn shell(
+        kind: Role,
+        anchor: Anchor,
+        modality: Modality,
+        material: Material,
+        open: bool,
+    ) -> Self {
+        Self {
+            kind,
+            anchor,
+            modality,
+            owner: Owner::Shell,
+            material,
+            lifecycle: Lifecycle::of(open),
+            bounds: None,
+        }
+    }
+
+    /// The display this surface is placed on, from `geometry`: the one
+    /// holding its anchor, else the focused display, else the primary.
+    pub(crate) fn display(&self, geometry: LayerGeometry<'_>) -> Rect {
+        geometry.display_for(self.anchor.display_of())
+    }
+
+    /// Whether the surface absorbs everything behind it until it closes.
+    pub(crate) const fn is_modal(&self) -> bool {
+        matches!(self.modality, Modality::WindowModal | Modality::SystemModal)
+    }
+
+    /// The region that is inert while this surface is up and modal: its own
+    /// bounds, else the whole display it is placed on.
+    pub(crate) fn scrim(&self, geometry: LayerGeometry<'_>) -> Option<Rect> {
+        if !self.is_modal() {
+            return None;
+        }
+        Some(self.bounds.unwrap_or_else(|| self.display(geometry)))
+    }
+}
+
 /// One self-contained shell overlay.
 pub(crate) trait ShellLayer {
     fn id(&self) -> LayerId;
+
+    /// What kind of surface this is, where it stands, whether it is modal,
+    /// who owns it and where it is in its life; `None` when this layer is a
+    /// whole-desktop mode rather than a surface over it.
+    fn surface(&self) -> Option<Surface>;
 
     fn is_open(&self) -> bool;
 
@@ -341,6 +652,42 @@ impl OverlayStack {
 
     pub(crate) fn layer_mut(&mut self, id: LayerId) -> Option<&mut dyn ShellLayer> {
         self.layers_mut().into_iter().find(|layer| layer.id() == id)
+    }
+
+    /// What kind of surface `id` is, stacked or not: the layer's own answer
+    /// while it is stacked, else the kind the host still gives the overlay
+    /// it routes itself.
+    pub(crate) fn surface(&self, id: LayerId) -> Surface {
+        let kind = self
+            .layer(id)
+            .and_then(ShellLayer::surface)
+            .unwrap_or_else(|| id.surface_kind());
+        Surface {
+            lifecycle: Lifecycle::of(self.is_open(id)),
+            ..kind
+        }
+    }
+
+    /// Whether overlay `id` is on screen, by the same answer assistive
+    /// technology gets ([`ShellLayer::is_shown`]).
+    pub(crate) fn is_open(&self, id: LayerId) -> bool {
+        self.layer(id).map_or(false, ShellLayer::is_shown)
+    }
+
+    /// Every open surface, topmost first in [`LayerId`] order.
+    pub(crate) fn surfaces(&self) -> impl Iterator<Item = (LayerId, Surface)> + '_ {
+        LayerId::ALL
+            .into_iter()
+            .filter(|&id| self.is_open(id))
+            .map(|id| (id, self.surface(id)))
+    }
+
+    /// The region that is inert while a modal surface is up: the topmost
+    /// open one, and what it covers. A consent question about a display
+    /// covers that display; the switcher covers everything.
+    pub(crate) fn scrim(&self, geometry: LayerGeometry<'_>) -> Option<Rect> {
+        self.surfaces()
+            .find_map(|(_, surface)| surface.scrim(geometry))
     }
 
     /// Whether [`Self::route`] could resolve anything in `band`: a layer in
@@ -491,6 +838,172 @@ mod tests {
 
     fn route(stack: &mut OverlayStack, event: &WindowEvent, cursor: Point) -> (bool, bool) {
         route_band(stack, Band::Popover, event, cursor)
+    }
+
+    #[test]
+    fn a_stacked_layer_describes_the_surface_it_is() {
+        let mut stack = OverlayStack::default();
+        stack.power_menu.open();
+        let surface = stack.surface(LayerId::PowerMenu);
+        assert_eq!(surface.kind, Role::Popup);
+        assert_eq!(surface.modality, Modality::WindowModal);
+        assert_eq!(surface.owner, Owner::Shell);
+        assert_eq!(surface.lifecycle, Lifecycle::Shown);
+        assert_eq!(
+            surface.anchor,
+            Anchor::TopTrailing(stack.power_menu.metrics().margin),
+            "the menu hangs from the top bar by the floating margin"
+        );
+        // Closed, the same surface still says what it is; it just is not
+        // in the life of taking input any more.
+        assert!(stack.power_menu.close());
+        let closed = stack.surface(LayerId::PowerMenu);
+        assert_eq!(closed.lifecycle, Lifecycle::Closed);
+        assert_eq!(closed.kind, Role::Popup);
+    }
+
+    #[test]
+    fn an_overlay_the_host_still_routes_has_its_kind_and_its_band() {
+        let stack = OverlayStack::default();
+        for id in LayerId::ALL {
+            let surface = stack.surface(id);
+            assert_eq!(surface.lifecycle, Lifecycle::Closed, "{id:?}");
+            assert_eq!(surface.owner, Owner::Shell, "{id:?}");
+            if stack.layer(id).is_some() {
+                continue;
+            }
+            // A layer that joins the stack answers for itself; until then
+            // the declaration is the only answer, and it has to say what
+            // the host's own routing already does.
+            let band = id.band();
+            assert_eq!(
+                Band::of(surface.lifecycle, surface.modality),
+                None,
+                "{id:?} is closed"
+            );
+            assert!(
+                band.is_some(),
+                "{id:?} has a band, so it is routed as a surface"
+            );
+            let shown = Lifecycle::Shown;
+            assert_eq!(
+                Band::of(shown, surface.modality),
+                Some(band.unwrap()),
+                "{id:?}: its modality decides the band its input is offered in"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_modal_surface_holds_down_what_is_behind_it() {
+        let mut stack = OverlayStack::default();
+        assert_eq!(stack.scrim(geometry()), None, "nothing is up");
+        stack.power_menu.open();
+        let scrim = stack
+            .scrim(geometry())
+            .expect("the menu is modal over its display");
+        assert_eq!(scrim, VIEWPORT);
+        // Its own panel is not the area it makes inert: the press outside
+        // the panel still reaches the menu first, and closes it.
+        assert!(
+            stack.power_menu.panel_rect(VIEWPORT) != scrim,
+            "the panel is not the whole display"
+        );
+        let bridge = Surface::shell(
+            Role::Dialog,
+            Anchor::Center,
+            Modality::Passive,
+            Material::Floating,
+            true,
+        );
+        assert_eq!(bridge.scrim(geometry()), None);
+        assert_eq!(
+            Band::of(bridge.lifecycle, bridge.modality),
+            Some(Band::Popover),
+            "a passive surface shares the desktop"
+        );
+        assert!(
+            !Surface {
+                modality: Modality::SystemModal,
+                ..bridge
+            }
+            .scrim(geometry())
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_surface_is_placed_on_the_display_holding_its_anchor() {
+        let left = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let right = Rect::new(1280.0, 0.0, 3840.0, 1440.0);
+        let outputs = [left, right];
+        let geometry = LayerGeometry {
+            viewport: left.union(right),
+            outputs: &outputs,
+            focused_output: None,
+        };
+        let caret = Rect::new(2000.0, 100.0, 2002.0, 120.0);
+        let beside = Surface::shell(
+            Role::Overlay,
+            Anchor::Beside {
+                at: caret,
+                gap: 0.0,
+            },
+            Modality::WindowModal,
+            Material::Floating,
+            true,
+        );
+        assert_eq!(beside.display(geometry), right);
+        assert_eq!(
+            beside.scrim(geometry),
+            Some(right),
+            "a modal surface makes inert the display it stands on, not every display"
+        );
+        let centered = Surface::shell(
+            Role::Dialog,
+            Anchor::Center,
+            Modality::SystemModal,
+            Material::Floating,
+            true,
+        );
+        assert_eq!(centered.display(geometry), right, "the focused display");
+    }
+
+    #[test]
+    fn a_modal_surface_makes_inert_the_display_it_covers_alone() {
+        let left = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let right = Rect::new(1280.0, 0.0, 3840.0, 1440.0);
+        let outputs = [left, right];
+        let geometry = LayerGeometry {
+            viewport: left.union(right),
+            outputs: &outputs,
+            focused_output: Some(left),
+        };
+        // A dialog the person opened on the other display does not freeze
+        // this one, so its scrim stops at its own display's edge.
+        let sheet = Surface {
+            bounds: Some(left.inflate(-100.0, -80.0)),
+            ..Surface::shell(
+                Role::Dialog,
+                Anchor::Center,
+                Modality::WindowModal,
+                Material::Floating,
+                true,
+            )
+        };
+        assert_eq!(sheet.scrim(geometry), Some(left.inflate(-100.0, -80.0)));
+        // The question the whole session waits on covers every display.
+        let question = Surface {
+            bounds: Some(left),
+            ..Surface::shell(
+                Role::Consent,
+                Anchor::Fill,
+                Modality::SystemModal,
+                Material::Floating,
+                true,
+            )
+        };
+        assert_eq!(question.scrim(geometry), Some(left));
     }
 
     #[test]

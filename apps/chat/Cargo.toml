@@ -35,8 +35,10 @@ video = ["ui/realtime-video"]
 
 [dependencies]
 fnv.workspace = true
+# Chat's own reading of the catalogue, to name an emoji and its group in the
+# accessibility tree. The picker and reaction strip take the catalogue from
+# the toolkit, which provides it.
 emoji = { path = "../../crates/text/emoji" }
-tilo-emoji-catalogue = { path = "../../crates/text/emoji-catalogue" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-emoji-engine = { path = "../../crates/runtime/engines/emoji", optional = true }

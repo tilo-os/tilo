@@ -15,9 +15,9 @@ use tilo_agent_models::OfferedModels;
 use tilo_rich_text::RichTextFieldViews;
 use ui::prelude::*;
 use ui::presence::ParticipantKind;
-use ui::widget::{Badge, ChipStyle, Dropdown, Tone};
+use ui::widget::{Badge, ChipStyle, Dropdown, Fact, Facts, Tone};
 
-use crate::{Nav, reference, tr};
+use crate::{Nav, reference, tr, tr_with};
 
 pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id, nav: &Nav) -> Element {
     let exists = cx.value({
@@ -183,12 +183,82 @@ fn facts(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     );
     let model = model_picker(cx, id);
     Box::new(
-        Row::new()
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Related)
-            .push(Box::new(labeled_field("tasks-field-status", status)))
-            .push(assignee)
-            .push(model),
+            .push(Box::new(
+                Row::new()
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .push(Box::new(labeled_field("tasks-field-status", status)))
+                    .push(assignee)
+                    .push(model),
+            ))
+            .push(plan(cx, id)),
     )
+}
+
+/// What the issue works towards, how urgent it is, when it is wanted and
+/// what it may cost and has: each a fact a person reads, never a control.
+fn plan(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+    let planned = cx.value({
+        let id = id.clone();
+        move |tracker: &Tracker| tracker.issues.get(&id).map(Plan::of).unwrap_or_default()
+    });
+    cx.switch(&planned, |_cx, planned| {
+        let mut facts = Vec::new();
+        if let Some(label) = &planned.goal {
+            facts.push(Fact::text(tr_with("tasks-fact-goal", &[("goal", label)])));
+        }
+        if let Some(priority) = planned.priority {
+            facts.push(Fact::text(tr_with(
+                "tasks-fact-priority",
+                &[("priority", &priority.to_string())],
+            )));
+        }
+        if let Some(due) = &planned.due {
+            facts.push(Fact::text(tr_with("tasks-fact-due", &[("date", due)])));
+        }
+        if let (Some(budget), spent) = (planned.cost_budget, planned.spend.unwrap_or_default()) {
+            facts.push(Fact::text(tr_with(
+                "tasks-fact-cost",
+                &[
+                    ("spent", &spent.to_string()),
+                    ("budget", &budget.to_string()),
+                ],
+            )));
+        }
+        if facts.is_empty() {
+            return Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element;
+        }
+        Box::new(Facts::new(facts)) as Element
+    })
+}
+
+/// How a issue is planned, as its page reads it.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Plan {
+    /// How its goal reads: the resource it works towards.
+    goal: Option<String>,
+    priority: Option<u8>,
+    /// When it is wanted, as a person reads a date.
+    due: Option<String>,
+    cost_budget: Option<u64>,
+    spend: Option<u64>,
+}
+
+impl Plan {
+    fn of(issue: &Issue) -> Self {
+        Self {
+            goal: issue.area.as_ref().map(|area| area.label.clone()),
+            priority: issue.priority,
+            due: issue
+                .due_ms
+                .map(|due_ms| ui::format::date_of(&ui::format::UnixSecs(due_ms / 1_000))),
+            cost_budget: issue.cost_budget,
+            spend: issue.spend,
+        }
+    }
 }
 
 /// The model the issue's runs plan with, picked among those the person's
