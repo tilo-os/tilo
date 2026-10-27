@@ -125,6 +125,11 @@ pub enum PreservedOnCreate {
 #[derive(Debug)]
 pub struct HistoryRestoreSchema {
     pub id: &'static str,
+    /// The stored schema version this registration's selectors, validators
+    /// and restore writer read. A version written at another one is refused
+    /// loudly rather than read through a shape meant for this one: an older
+    /// version is restored only after the document has been brought up to it
+    /// (the resource's migration), never by this restore.
     pub version: u32,
     /// Convenience exact whole-node selectors; checked together with `selectors`.
     pub roots: &'static [HistoryRestoreRoot],
@@ -172,6 +177,11 @@ pub enum RestoreOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RestoreError {
     InvalidSchema(String),
+    /// The document is stored at a version this registration does not read.
+    SchemaVersion {
+        expected: u32,
+        stored: u32,
+    },
     PendingEdits,
     StaleReview,
     InvalidTargetHeads,
@@ -186,6 +196,10 @@ impl std::fmt::Display for RestoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidSchema(reason) => write!(f, "invalid History restore schema: {reason}"),
+            Self::SchemaVersion { expected, stored } => write!(
+                f,
+                "the record is stored at version {stored}; this restore reads version {expected}"
+            ),
             Self::PendingEdits => f.write_str("finish pending edits before restoring a version"),
             Self::StaleReview => f.write_str("the live record changed after the restore review"),
             Self::InvalidTargetHeads => {
@@ -239,6 +253,7 @@ pub fn prepare_content_restore(
     target_heads: &[ChangeHash],
 ) -> Result<PreparedContentRestore, RestoreError> {
     schema::validate(schema)?;
+    schema::check_version(doc, schema)?;
     require_committed(doc)?;
     let mut source = doc.clone();
     refuse_tables(&mut source)?;
