@@ -133,7 +133,7 @@ impl Interchange {
             Self::Csv => FileFilter::new("CSV").glob("*.csv"),
             Self::Xlsx => FileFilter::new("Excel workbook").glob("*.xlsx"),
             Self::Ods => FileFilter::new("Calc spreadsheet").glob("*.ods"),
-            Self::Notion => FileFilter::new(ui::i18n!("sheets-notion-files"))
+            Self::Notion => FileFilter::new(&ui::i18n!("sheets-notion-files"))
                 .glob("*.zip")
                 .glob("*.json"),
         }
@@ -142,10 +142,8 @@ impl Interchange {
 
 fn spreadsheet_import_request(format: Interchange) -> PickRequest {
     let request = if format == Interchange::Notion {
-        PickRequest::open(
-            ui::i18n!("sheets-notion-import-title"),
-            ui::i18n!("sheets-notion-import-title"),
-        )
+        let title = ui::i18n!("sheets-notion-import-title");
+        PickRequest::open(&title, &title)
     } else {
         PickRequest::open("Import spreadsheet", "Import")
     };

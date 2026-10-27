@@ -2399,12 +2399,14 @@ fn a_notion_export_with_no_table_fails_its_import() {
 
     let mut app = sample_app();
     let before = app.state().sheets.len();
-    app.effect(&SheetsEffect::ImportNotion {
-        path: Some(path.display().to_string()),
-    })
-    .unwrap();
-    app.settle();
+    let error = app
+        .effect(&SheetsEffect::ImportNotion {
+            path: Some(path.display().to_string()),
+        })
+        .expect_err("an export with no table fails");
+    assert!(
+        matches!(error, tilo_actions::DoorError::Failed(_)),
+        "{error:?}"
+    );
     assert_eq!(app.state().sheets.len(), before, "nothing was added");
-    let (_, status) = shown(&mut app);
-    assert!(status.contains("No table"), "{status}");
 }

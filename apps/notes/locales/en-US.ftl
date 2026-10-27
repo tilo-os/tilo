@@ -144,6 +144,7 @@ notes-import-not-utf8 = The file isn't UTF-8 text
 notes-imported = Imported { $title }
 notes-import-failed = Not imported: { $error }
 notes-notion-import-title = Import Notion export
+notes-notion-menu-import = Import from Notion
 notes-notion-files = Notion export
 notes-notion-json-files = Notion page listing
 notes-notion-imported =

@@ -68,9 +68,11 @@ fn tables_from_archive(bytes: &[u8]) -> Result<Vec<ImportedTable>, String> {
         .map_err(|_| ui::i18n!("sheets-notion-archive-invalid"))?;
     let names: Vec<String> = archive
         .file_names()
-        .map(str::to_owned)
         .filter(|name| has_extension(name, "csv"))
+        .map(std::borrow::Cow::into_owned)
         .collect();
+    let mut names = names;
+    names.sort();
     let mut tables = Vec::new();
     for name in names {
         let cap = MAX_EXPORT_BYTES;
@@ -171,7 +173,10 @@ fn table_of(block: &Value) -> Option<ImportedTable> {
     let mut csv = String::new();
     for row in rows {
         let cells = row.get("table_row")?.get("cells")?.as_array()?;
-        let fields: Vec<String> = cells.iter().map(|cell| csv_field(cell)).collect();
+        let fields: Vec<String> = cells
+            .iter()
+            .map(|cell| csv_field_of(&rich_text(cell).unwrap_or_default()))
+            .collect();
         csv.push_str(&fields.join(","));
         csv.push('\n');
     }
@@ -196,9 +201,9 @@ fn database_of(block: &Value) -> Option<ImportedTable> {
     // columns are every property any row fills, in first-seen order.
     let mut columns: Vec<String> = Vec::new();
     for row in rows {
-        for property in properties_of(row).keys() {
-            if !columns.contains(property) {
-                columns.push(property.clone());
+        for property in property_names(row) {
+            if !columns.contains(&property) {
+                columns.push(property);
             }
         }
     }
@@ -219,9 +224,9 @@ fn database_of(block: &Value) -> Option<ImportedTable> {
         let fields: Vec<String> = columns
             .iter()
             .map(|column| {
-                properties
-                    .get(column)
-                    .map_or_else(String::new, |value| csv_field(value))
+                properties.get(column).map_or_else(String::new, |property| {
+                    csv_field_of(&property_text(property))
+                })
             })
             .collect();
         csv.push_str(&fields.join(","));
@@ -250,6 +255,14 @@ fn table_name_of(block: &Value) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+/// The properties of `row`'s record, in the order the export wrote them.
+fn property_names(row: &Value) -> Vec<String> {
+    row.get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| properties.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
 /// A row's properties, keyed by name.
 fn properties_of(row: &Value) -> BTreeMap<String, Value> {
     row.get("properties")
@@ -264,7 +277,9 @@ fn properties_of(row: &Value) -> BTreeMap<String, Value> {
 }
 
 fn rich_text(value: &Value) -> Option<String> {
-    let entries = value.get("rich_text")?.as_array()?;
+    let entries = value
+        .as_array()
+        .or_else(|| value.get("rich_text")?.as_array())?;
     let mut out = String::new();
     for entry in entries {
         out.push_str(
@@ -364,11 +379,6 @@ fn property_text(property: &Value) -> String {
             })
             .unwrap_or_default(),
     }
-}
-
-/// One rich-text cell as a CSV field.
-fn csv_field(cell: &Value) -> String {
-    csv_field_of(&rich_text(cell).unwrap_or_default())
 }
 
 /// `text` as a CSV field: quoted when it holds a comma, a quote or a line
