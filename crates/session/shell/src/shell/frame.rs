@@ -10358,6 +10358,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_saved_maximize_fills_the_work_area_on_the_first_frame() {
+        for forget_focus in [false, true] {
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            let (strip, group) = {
+                let workspace = tree.desktop.active_workspace_mut().expect("workspace");
+                let strip = workspace.strips.first_mut().expect("strip");
+                let group = strip.window_groups.first_mut().expect("group");
+                group.maximized = true;
+                (strip.id, group.id)
+            };
+            if forget_focus {
+                tree.desktop.active_strip.clear();
+                tree.desktop.active_group.clear();
+            } else {
+                let workspace = tree.desktop.active;
+                tree.desktop.active_strip.insert(workspace, strip);
+                tree.desktop.set_active_group(strip, group);
+            }
+            let mut frame = FrameBuilder::with_tree(tree, (1472, 920));
+            let _ = frame.paint_settled();
+            let bar = rect_named(&frame.widget_registry(), "TopBarChrome");
+            let rect = frame
+                .host_mut()
+                .group_at_for_tests(strip, 0)
+                .expect("restored group widget")
+                .get_rect();
+            assert_eq!(
+                frame.chrome().maximized_group(),
+                Some(group),
+                "forget_focus={forget_focus}"
+            );
+            assert!(bar.height() > 0.0, "a maximized window keeps the top bar");
+            assert!(
+                (rect.y0 - bar.y1).abs() < 0.5
+                    && (rect.y1 - 920.0).abs() < 0.5
+                    && (rect.x1 - 1472.0).abs() < 0.5,
+                "forget_focus={forget_focus}: restored maximize must fill the work area: {rect:?} vs bar {bar:?}"
+            );
+        }
+    }
+
     /// Look up a widget's rect by its *last* path segment
     /// (`.../TopBarChrome[0]` → `TopBarChrome`) — registry keys are full
     /// paths, so an exact-key lookup on a nested widget would miss. The
