@@ -214,81 +214,76 @@ else:
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
 
-    def test_build_inputs_are_checked_before_pack_and_failures_name_the_app(self):
-        with self.subTest(phase='pack failure preserves status and names the app'):
-            self.doCleanups()
-            self.setUp()
-            self.env["FIXTURE_ARCH"] = "x86_64"
-            self.write("target/release/tilo-app-package", """#!/bin/sh
+    # Build inputs are checked before pack, and a failure names the app: one test per way it
+    # can go wrong, each on a fresh fixture tree.
+    def test_a_pack_failure_keeps_its_status_and_names_the_app(self):
+        self.env["FIXTURE_ARCH"] = "x86_64"
+        self.write("target/release/tilo-app-package", """#!/bin/sh
 if [ "$1" = pack ]; then
-    echo 'application tapp is too large' >&2
-    exit 37
+echo 'application tapp is too large' >&2
+exit 37
 fi
 echo 'verify must not run' >&2
 exit 99
 """)
-            result = subprocess.run(["bash", "dist/apps/package-apps.sh"],
-                                    cwd=self.root, env=self.env, text=True,
-                                    capture_output=True, timeout=HANG_BOUND)
-            self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
-            self.assertIn("packing app=calculator binary=", result.stdout)
-            self.assertIn("application tapp is too large", result.stderr)
-            self.assertIn("pack failed: app=calculator output=", result.stderr)
-            self.assertIn("calculator-0.1.0-x86_64.tapp", result.stderr)
-            self.assertIn("exit_status=37 binary_bytes=64 limit=8388608", result.stderr)
-            self.assertNotIn("verify must not run", result.stderr)
-            self.assertNotIn("packed app=", result.stdout)
-        with self.subTest(phase='missing source isa is staged before pack on both architectures'):
-            self.doCleanups()
-            self.setUp()
-            manifest = self.root / "apps/calculator/tilo-app.toml"
-            manifest.write_text(re.sub(r'\[package\.isa\]\s*x86_64 = "v3"\s*',
-                                       '', manifest.read_text()))
-            for architecture in ("x86_64", "aarch64"):
-                self.env["FIXTURE_ARCH"] = architecture
-                self.command("bash", "dist/apps/package-apps.sh")
-        with self.subTest(phase='wrong arch payload is rejected before pack'):
-            self.doCleanups()
-            self.setUp()
-            self.env["FIXTURE_ARCH"] = "aarch64"
-            self.write("os/scripts/build-thin-apps.sh",
-                       (self.root / "os/scripts/build-thin-apps.sh").read_text().replace(
-                           "62 if os.environ['FIXTURE_ARCH'] == 'x86_64' else 183", "62"))
-            result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
-                                    env=self.env, text=True, capture_output=True, timeout=HANG_BOUND)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("expected a 64-bit little-endian aarch64 ELF", result.stderr)
-            self.assertFalse(list((self.root / "dist/app-release/tapp").glob("*.tapp")))
-        with self.subTest(phase='unrecorded compiler override fails before build'):
-            self.doCleanups()
-            self.setUp()
-            for key, value in (("RUSTFLAGS", "-C target-cpu=native"),
-                               ("CARGO_ENCODED_RUSTFLAGS", "-C\x1ftarget-cpu=native"),
-                               ("CARGO_BUILD_TARGET", "aarch64-unknown-linux-gnu")):
-                with self.subTest(key=key):
-                    env = dict(self.env, FIXTURE_ARCH="x86_64", **{key: value})
-                    result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
-                                            env=env, text=True, capture_output=True, timeout=HANG_BOUND)
+        result = subprocess.run(["bash", "dist/apps/package-apps.sh"],
+                                cwd=self.root, env=self.env, text=True,
+                                capture_output=True, timeout=HANG_BOUND)
+        self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
+        self.assertIn("packing app=calculator binary=", result.stdout)
+        self.assertIn("application tapp is too large", result.stderr)
+        self.assertIn("pack failed: app=calculator output=", result.stderr)
+        self.assertIn("calculator-0.1.0-x86_64.tapp", result.stderr)
+        self.assertIn("exit_status=37 binary_bytes=64 limit=8388608", result.stderr)
+        self.assertNotIn("verify must not run", result.stderr)
+        self.assertNotIn("packed app=", result.stdout)
+
+    def test_a_missing_source_isa_is_staged_before_pack_on_both_architectures(self):
+        manifest = self.root / "apps/calculator/tilo-app.toml"
+        manifest.write_text(re.sub(r'\[package\.isa\]\s*x86_64 = "v3"\s*',
+                                   '', manifest.read_text()))
+        for architecture in ("x86_64", "aarch64"):
+            self.env["FIXTURE_ARCH"] = architecture
+            self.command("bash", "dist/apps/package-apps.sh")
+
+    def test_a_wrong_architecture_payload_is_rejected_before_pack(self):
+        self.env["FIXTURE_ARCH"] = "aarch64"
+        self.write("os/scripts/build-thin-apps.sh",
+                   (self.root / "os/scripts/build-thin-apps.sh").read_text().replace(
+                       "62 if os.environ['FIXTURE_ARCH'] == 'x86_64' else 183", "62"))
+        result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
+                                env=self.env, text=True, capture_output=True, timeout=HANG_BOUND)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("expected a 64-bit little-endian aarch64 ELF", result.stderr)
+        self.assertFalse(list((self.root / "dist/app-release/tapp").glob("*.tapp")))
+
+    def test_an_unrecorded_compiler_override_fails_before_the_build(self):
+        for key, value in (("RUSTFLAGS", "-C target-cpu=native"),
+                           ("CARGO_ENCODED_RUSTFLAGS", "-C\x1ftarget-cpu=native"),
+                           ("CARGO_BUILD_TARGET", "aarch64-unknown-linux-gnu")):
+            with self.subTest(key=key):
+                env = dict(self.env, FIXTURE_ARCH="x86_64", **{key: value})
+                result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
+                                        env=env, text=True, capture_output=True, timeout=HANG_BOUND)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"{key} overrides", result.stderr)
+                self.assertFalse((self.root / "cargo.log").exists())
+
+    def test_an_edited_cpu_or_feature_policy_is_rejected_by_the_helper(self):
+        config = self.root / ".cargo/config.toml"
+        original = config.read_text()
+        for arch, cpu in (("x86_64", "x86-64-v3"), ("aarch64", "generic")):
+            for replacement in ('"-C", "target-cpu=native",',
+                                f'"-C", "target-cpu={cpu}", "-C", "target-feature=+aes",'):
+                with self.subTest(arch=arch, replacement=replacement):
+                    config.write_text(original.replace(f'"-C", "target-cpu={cpu}",', replacement))
+                    result = subprocess.run([
+                        "python3", "tools/apps/app_package_isa.py", "flags", "--root", str(self.root),
+                        "--arch", arch], cwd=self.root, env=self.env,
+                        text=True, capture_output=True, timeout=HANG_BOUND)
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertIn(f"{key} overrides", result.stderr)
-                    self.assertFalse((self.root / "cargo.log").exists())
-        with self.subTest(phase='edited cpu and feature policy is rejected by actual helper'):
-            self.doCleanups()
-            self.setUp()
-            config = self.root / ".cargo/config.toml"
-            original = config.read_text()
-            for arch, cpu in (("x86_64", "x86-64-v3"), ("aarch64", "generic")):
-                for replacement in ('"-C", "target-cpu=native",',
-                                    f'"-C", "target-cpu={cpu}", "-C", "target-feature=+aes",'):
-                    with self.subTest(arch=arch, replacement=replacement):
-                        config.write_text(original.replace(f'"-C", "target-cpu={cpu}",', replacement))
-                        result = subprocess.run([
-                            "python3", "tools/apps/app_package_isa.py", "flags", "--root", str(self.root),
-                            "--arch", arch], cwd=self.root, env=self.env,
-                            text=True, capture_output=True, timeout=HANG_BOUND)
-                        self.assertNotEqual(result.returncode, 0)
-                        self.assertIn("unaudited", result.stderr)
-                        self.assertEqual(result.stdout, "")
+                    self.assertIn("unaudited", result.stderr)
+                    self.assertEqual(result.stdout, "")
 
     def test_a_release_tapp_carries_the_apps_committed_surface(self):
         self.env["FIXTURE_ARCH"] = "x86_64"
