@@ -177,6 +177,11 @@ pub struct RunRequest<'a> {
     /// stamped with it instead of this run's own group, so the run reads as
     /// part of what asked for it and is undone with it.
     pub parent: Option<tilo_actions::context::ActionGroup>,
+    /// The shortcuts already running above this one, outermost first: its own
+    /// id when it is a triggered run, or the other shortcuts that called it.
+    /// A step that would run one of them is not run, so two shortcuts that
+    /// call each other spin once and stop.
+    pub chain: Vec<String>,
 }
 
 /// An action that needs the person's confirmation before it runs.
@@ -631,6 +636,7 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         inputs,
         caused_by,
         parent,
+        chain,
     } = request;
     let mut report = RunReport {
         run,
@@ -672,6 +678,7 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         records: Vec::new(),
         caused_by,
         parent,
+        chain,
         timeout: shortcut
             .step_timeout_secs
             .map_or(DEFAULT_STEP_TIMEOUT, |secs| {
@@ -722,6 +729,8 @@ struct Runner<'a, H, K> {
     records: Vec<StepRecord>,
     caused_by: Option<tilo_actions::context::Cause>,
     parent: Option<tilo_actions::context::ActionGroup>,
+    /// The shortcuts running above this one (see [`RunRequest::chain`]).
+    chain: Vec<String>,
     /// How long each step of the run may take.
     timeout: std::time::Duration,
     /// The steps that failed and the run carried on past, with why.
@@ -1533,14 +1542,18 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 }
             },
         };
-        if app_id == SHORTCUTS_APP_ID
-            && action == SHORTCUT_RUN_ACTION
-            && resource
-                .as_deref()
-                .and_then(shortcut_id_of)
-                .is_none_or(|id| id == self.shortcut.id)
-        {
-            return Err(StepFailure::Recursion);
+        if app_id == SHORTCUTS_APP_ID && action == SHORTCUT_RUN_ACTION {
+            let called = resource.as_deref().and_then(shortcut_id_of);
+            if called.as_deref() == Some(self.shortcut.id.as_str()) {
+                return Err(StepFailure::Recursion);
+            }
+            // A shortcut already running above this one is not run again: the
+            // check that reads the saved library caught the chains it could
+            // see, and this is what stops a loop between two shortcuts saved
+            // before one of them learned to call the other.
+            if called.is_some_and(|id| self.chain.iter().any(|running| *running == id)) {
+                return Err(StepFailure::Recursion);
+            }
         }
         let target = match (&resource, selector) {
             (Some(id), _) => ResourceTarget::Id(id),
