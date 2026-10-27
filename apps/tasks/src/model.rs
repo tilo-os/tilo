@@ -29,7 +29,7 @@ pub use issue::{
 pub use record::{Tracker, tracker};
 pub use run::{
     Area, Budget, Confirmation, ConfirmationState, ModelChoice, PausedRun, Question, Run,
-    RunOutcome, RunPhase, Spend, SpendLimits, StepSpend,
+    RunOutcome, RunPhase, Spend, SpendLimits, StepSpend, money,
 };
 pub use tracker_area::{Kind, Person, TrackerArea};
 
