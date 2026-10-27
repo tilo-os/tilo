@@ -516,7 +516,8 @@ fn an_effect_declared_immediate_cannot_answer_later() {
 fn an_action_needing_what_the_host_lacks_is_published_unavailable() {
     let declared = || {
         let mut spec = Work::specs().remove(0);
-        spec.contract
+        spec.type_mut()
+            .contract
             .tags
             .push(tilo_actions::REQUIRES_NATIVE_PATHS_TAG.to_owned());
         spec
