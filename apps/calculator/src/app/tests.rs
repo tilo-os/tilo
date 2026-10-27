@@ -1237,3 +1237,59 @@ fn the_keypad_types_the_expression_without_a_soft_keyboard() {
         "formulas are typed on the keyboard"
     );
 }
+
+/// A phone-sized window showing `mode`, driven through the toolkit's touch
+/// translation.
+fn touch_harness(mode: Mode) -> ui::headless::FrameHarness {
+    let mut app = CalculatorApp::new();
+    app.set_mode(mode);
+    ui::headless::FrameHarness::for_root(ui::State::new(), app, (412, 800), ui::Theme::dark())
+}
+
+#[test]
+fn a_finger_drag_pans_the_plane_without_zooming() {
+    let mut h = touch_harness(Mode::Graph2d);
+    let before = h.root::<CalculatorApp>().model.view2d;
+    h.swipe_at((300.0, 500.0), (100.0, 600.0));
+    let panned = h.root::<CalculatorApp>().model.view2d;
+    assert!(panned.cx > before.cx, "{before:?} → {panned:?}");
+    assert!(panned.cy > before.cy, "{before:?} → {panned:?}");
+    assert_eq!(panned.scale, before.scale, "a drag is not a zoom");
+}
+
+#[test]
+fn a_finger_drag_orbits_the_surface_and_a_pinch_zooms_it() {
+    use winit::event::TouchPhase;
+    let mut h = touch_harness(Mode::Graph3d);
+    let before = h.root::<CalculatorApp>().model.view3d;
+    h.swipe_at((300.0, 500.0), (100.0, 420.0));
+    let orbited = h.root::<CalculatorApp>().model.view3d;
+    assert!(orbited.yaw < before.yaw, "{before:?} → {orbited:?}");
+    assert!(orbited.pitch < before.pitch, "{before:?} → {orbited:?}");
+    assert_eq!(orbited.zoom, before.zoom, "a drag is not a zoom");
+
+    h.touch(0, TouchPhase::Started, 180.0, 500.0);
+    h.touch(1, TouchPhase::Started, 230.0, 500.0);
+    for step in 1..=4 {
+        let spread = 12.0 * f64::from(step);
+        h.touch(0, TouchPhase::Moved, 180.0 - spread, 500.0);
+        h.touch(1, TouchPhase::Moved, 230.0 + spread, 500.0);
+    }
+    h.touch(0, TouchPhase::Ended, 132.0, 500.0);
+    h.touch(1, TouchPhase::Ended, 278.0, 500.0);
+    let pinched = h.root::<CalculatorApp>().model.view3d;
+    assert!(pinched.zoom > orbited.zoom, "{orbited:?} → {pinched:?}");
+}
+
+#[test]
+fn orbiting_round_and_round_keeps_the_yaw_within_one_turn() {
+    let mut h = touch_harness(Mode::Graph3d);
+    for _ in 0..12 {
+        h.swipe_at((380.0, 500.0), (20.0, 500.0));
+    }
+    let yaw = h.root::<CalculatorApp>().model.view3d.yaw;
+    assert!(
+        yaw.abs() <= std::f64::consts::PI,
+        "yaw {yaw} ran past half a turn"
+    );
+}
