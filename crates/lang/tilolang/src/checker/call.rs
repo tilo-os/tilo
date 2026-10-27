@@ -15,6 +15,18 @@ impl Checker<'_> {
         match &callee.kind {
             ExprKind::Ident(name) => self.call_named(name, callee.span, args, span),
             ExprKind::Field { base, name } => {
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == crate::stdlib::NS)
+                    && name.name == "Identifier"
+                    && self.lookup(crate::stdlib::NS).is_none()
+                {
+                    return match crate::resolve::identifier_value(args) {
+                        Ok(text) => Ex::str(&text).typed(Ty::Identifier),
+                        Err(msg) => {
+                            self.err("E099", span, msg);
+                            Ex::error()
+                        }
+                    };
+                }
                 if let Some(key) = self.enum_path(base) {
                     let ty = Ty::Enum(key);
                     return match super::enums::Shape::of(self, &ty) {
@@ -84,6 +96,8 @@ impl Checker<'_> {
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
+            "query" => return self.builtin_query(args, span),
+            "filters" => return self.builtin_filters(args, span),
             _ => {}
         }
         if prims::prim(name).is_some() {
@@ -805,11 +819,12 @@ impl Checker<'_> {
                     | "sort_by"
                     | "first"
                     | "last"
+                    | "matching"
             )
         {
             let t = self.show(&f.ty);
             let ops = match &f.ty {
-                Ty::Collection(_) => "insert, remove, move, len and the list methods",
+                Ty::Collection(_) => "insert, remove, move, len, matching and the list methods",
                 Ty::Set(_) => "add, remove, len and the list methods",
                 _ => "put, remove, get (an Option of the value) and keys",
             };
@@ -989,6 +1004,10 @@ impl Checker<'_> {
             (Ty::List(t) | Ty::Set(t) | Ty::Collection(t), "first" | "last") if args.is_empty() => {
                 let elem = (**t).clone();
                 Self::end_item(r, &elem, m == "last")
+            }
+            (Ty::List(t) | Ty::Collection(t), "matching") => {
+                let elem = (**t).clone();
+                self.matching(r, &elem, args, span)
             }
             (Ty::List(t) | Ty::Set(t) | Ty::Collection(t), "sort_by") => {
                 let elem = (**t).clone();

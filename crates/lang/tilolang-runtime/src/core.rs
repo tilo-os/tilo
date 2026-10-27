@@ -237,16 +237,16 @@ impl Core {
         use Imp::{
             Abort, ActOpen, ActRef, ActSet, Actions, CollInsert, CollMove, CollRemove, CollWhere,
             EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI,
-            EventValue, FloatToStr, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError,
-            IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF,
-            ListPushH, ListPushI, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MetaOf,
-            ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalName, PrincipalNamed,
-            QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefLit, ResAddF, ResAddI,
-            ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, SetAdd, SetRemove,
-            SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp, StrConcat, StrEq, StrLen,
-            StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
-            TupleSetI, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
-            UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+            EventValue, Filters, FloatToStr, IdentPart, IntToStr, Invoke, Invoker, InvokerPop,
+            InvokerPush, IsError, IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListLen,
+            ListNew, ListPushF, ListPushH, ListPushI, ListSortByKey, MapGetH, MapKeys, MapPut,
+            MapRemove, MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalName,
+            PrincipalNamed, Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
+            RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
+            ResTextSet, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp,
+            StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
+            TupleSetF, TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn,
+            UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -259,6 +259,18 @@ impl Core {
             CollWhere => {
                 let found = self.coll_where(a.h(0)?, a.h(1)?)?;
                 self.ret_h(found)
+            }
+            Query => {
+                let found = self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?;
+                self.ret_h(found)
+            }
+            Filters => {
+                let filters = self.filters_import(a.h(0)?)?;
+                self.ret_h(filters)
+            }
+            IdentPart => {
+                let part = self.ident_part(a.h(0)?, a.h(1)?)?;
+                self.ret_h(part)
             }
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),

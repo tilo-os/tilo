@@ -59,7 +59,7 @@ impl Checker<'_> {
     }
 
     /// The value view state of type `ty` starts with when it declares no default.
-    fn zero_of(&mut self, ty: &Ty, span: Span) -> Ex {
+    pub(super) fn zero_of(&mut self, ty: &Ty, span: Span) -> Ex {
         match ty {
             Ty::Int => Ex::int(0),
             Ty::Float => Ex::new(Ek::Float(0.0), Ty::Float),

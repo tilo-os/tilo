@@ -103,6 +103,144 @@ pub struct TypeMeta {
     pub name: String,
     pub doc: String,
     pub fields: Vec<FieldMeta>,
+    /// What search, a list's filters and agents offer of the type: its `search` block, or the
+    /// defaults when it has none.
+    #[serde(default, skip_serializing_if = "SearchMeta::is_empty")]
+    pub search: SearchMeta,
+}
+
+/// What search, a list's filters and agents offer of a type (search.md section 2.2): its
+/// filters in order (the first are the visible chips), its default order and the fields kept
+/// out of filters.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SearchMeta {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<FilterMeta>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<SortMeta>,
+    /// The fields kept out of filters, by id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<String>,
+    /// Whether the type declares these (a `search` block) rather than having the defaults.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub declared: bool,
+}
+
+impl SearchMeta {
+    pub fn is_empty(&self) -> bool {
+        self.filters.is_empty() && self.sort.is_none() && self.hidden.is_empty() && !self.declared
+    }
+
+    /// The filter a query names `key`.
+    pub fn filter(&self, key: &str) -> Option<&FilterMeta> {
+        self.filters.iter().find(|f| f.key == key)
+    }
+}
+
+/// One filter of a type.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FilterMeta {
+    /// What a query names it by: the field's name (`done`), or a named filter's label in snake
+    /// case (`has_attachment`).
+    pub key: String,
+    /// What a control shows: the label written, or the field's name in sentence case.
+    pub label: String,
+    /// What it is, for agents: the field's doc comment's first line.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub doc: String,
+    pub kind: FilterKind,
+    /// The field it is on, by id; none for a named filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// The field's type as metadata writes it (`Option<Date>`, `Set<Text>`, `enum Status`).
+    #[serde(rename = "type", default, skip_serializing_if = "String::is_empty")]
+    pub ty: String,
+    /// A named filter's predicate over the resource's own fields, by field id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pred: Option<crate::pred::Pred<String>>,
+    /// Whether it may hold no value, an option or a set: `none` and `any` apply.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
+    /// Whether it holds several values, a set: a value asks whether it holds that one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub many: bool,
+}
+
+/// What a filter compares, and so the control it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilterKind {
+    /// A toggle: `is:unread`.
+    Bool,
+    /// Chips of the cases: `status:open`.
+    Enum,
+    /// Presets and a range: `due:today`, `due:-7d`.
+    Date,
+    Time,
+    /// A range: `size:>10`.
+    Number,
+    /// A picker of the resources of a type: `label:<ref>`.
+    Reference,
+    /// A picker of the identifiers that occur, and patterns: `from:*@x.com`.
+    Identifier,
+    /// Tags: `tag:urgent`.
+    Text,
+    /// A named filter, a toggle.
+    Predicate,
+}
+
+impl FilterKind {
+    /// Whether the filter is a toggle, on or off, as a list's places and the palette's chips
+    /// show it.
+    pub const fn is_toggle(self) -> bool {
+        matches!(self, Self::Bool | Self::Predicate)
+    }
+}
+
+/// A type's default order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SortMeta {
+    /// The field's name.
+    pub key: String,
+    /// The field, by id.
+    pub field: String,
+    pub order: SortOrder,
+}
+
+/// Which way an order runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortOrder {
+    /// The latest (or largest) first.
+    Newest,
+    Oldest,
+    #[serde(rename = "a_z")]
+    AZ,
+    #[serde(rename = "z_a")]
+    ZA,
+}
+
+impl SortOrder {
+    pub const ALL: [Self; 4] = [Self::Newest, Self::Oldest, Self::AZ, Self::ZA];
+
+    /// The word a `sort` line and a query write it as.
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Newest => "newest",
+            Self::Oldest => "oldest",
+            Self::AZ => "a_z",
+            Self::ZA => "z_a",
+        }
+    }
+
+    pub fn from_word(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|o| o.word() == word)
+    }
+
+    /// Whether the order runs from the largest, the latest or the last in the alphabet.
+    pub const fn descending(self) -> bool {
+        matches!(self, Self::Newest | Self::ZA)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

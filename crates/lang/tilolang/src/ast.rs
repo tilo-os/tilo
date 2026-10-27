@@ -63,7 +63,41 @@ pub struct TypeDecl {
     pub doc: Vec<String>,
     pub name: Ident,
     pub fields: Vec<FieldDecl>,
+    /// `search { ... }`: what search, a list's filters and agents offer of the type.
+    pub search: Option<SearchBlock>,
     pub span: Span,
+}
+
+/// `search { filter done; sort due oldest; hide notes }` in a type (search.md section 2.2):
+/// the filters people and agents find its resources by, in order, its default order, and
+/// fields kept out of filters.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SearchBlock {
+    pub entries: Vec<SearchEntry>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SearchEntry {
+    pub kind: SearchEntryKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SearchEntryKind {
+    /// `filter unread "Unread"`: a filter on a field, its control derived from the field's type.
+    Field { field: Ident, label: Option<String> },
+    /// `filter "Has attachment" = not attachments.is_empty()`: a named predicate over the
+    /// resource's own fields, shown as a toggle.
+    Named {
+        label: String,
+        label_span: Span,
+        expr: Expr,
+    },
+    /// `sort received newest`: the default order, and an order offered.
+    Sort { field: Ident, order: Ident },
+    /// `hide to`: a field kept out of filters.
+    Hide { field: Ident },
 }
 
 /// `enum Name { a, b(x: T, y: U), c }`: a sum type. Values are written `.a`, `.b(x: 1, y: 2)`.
@@ -409,6 +443,13 @@ pub enum ExprKind {
     Float(f64),
     /// `11rem`, `4dp`, `1fr`.
     Length(f64, crate::types::LengthUnit),
+    /// `7d`, `5m`: a length of time, the value of a filter (`received: -7d`).
+    Duration(i64, &'static str),
+    /// `a..b`, `a..`, `..b`: a range, the value of a filter (`due: today()..today() + 7d`).
+    Range {
+        lo: Option<Box<Expr>>,
+        hi: Option<Box<Expr>>,
+    },
     Bool(bool),
     Str(Vec<StrPart>),
     Ref(RefLit),

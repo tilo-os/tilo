@@ -218,8 +218,7 @@ view note_row(n: Note) {
 }
 
 view notebook(nb: Notebook) {
-    window filter: NoteFilter = .all
-    std.list(nb, nb.notes, filter: filter, empty: "No notes yet") { n ->
+    std.list(nb, nb.notes, empty: "No notes yet") { n ->
         row(n.title, checkbox: n.pinned)
     }
 }

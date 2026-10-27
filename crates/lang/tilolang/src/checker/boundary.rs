@@ -719,9 +719,15 @@ fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
         ExprKind::Int(_)
         | ExprKind::Float(_)
         | ExprKind::Length(..)
+        | ExprKind::Duration(..)
         | ExprKind::Bool(_)
         | ExprKind::Ref(_)
         | ExprKind::Root(_) => {}
+        ExprKind::Range { lo, hi } => {
+            for end in [lo, hi].into_iter().flatten() {
+                names_in(end, out);
+            }
+        }
         ExprKind::Ident(name) => {
             out.insert(name.clone());
         }

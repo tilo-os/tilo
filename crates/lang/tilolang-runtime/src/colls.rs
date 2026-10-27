@@ -15,8 +15,8 @@ use std::rc::Rc;
 
 use crate::core::{Core, HResult, trap};
 use crate::handles::FrameKind;
-use crate::meta::{FieldKind, Ty};
-use crate::store::{FieldRead, FieldSpec, Listing, Lit, Store, StoreError};
+use crate::meta::FieldKind;
+use crate::store::{FieldRead, FieldSpec, Listing, Store, StoreError};
 use crate::value::{CollRef, Value};
 
 /// What a view saw of one collection: its length, its first and last item, and the item at
@@ -65,6 +65,7 @@ impl CollSeen {
         self.coll.field == coll.field
             && self.coll.target == coll.target
             && self.coll.filter == coll.filter
+            && self.coll.order == coll.order
     }
 
     /// Whether everything seen is still so in `listing`.
@@ -140,10 +141,25 @@ pub(crate) fn listing_of(store: &dyn Store, coll: &CollRef) -> Result<Rc<Listing
         id: coll.field.clone(),
         kind: FieldKind::Collection,
     };
-    match coll.filter.as_deref() {
-        None => store.listing(&coll.target, &spec),
-        Some(pred) => store.listing_where(&coll.target, &spec, &coll.item, pred),
+    match (coll.filter.as_deref(), &coll.order) {
+        (None, None) => store.listing(&coll.target, &spec),
+        (Some(pred), None) => store.listing_where(&coll.target, &spec, &coll.item, pred),
+        (pred, Some(order)) => {
+            store.listing_query(&coll.target, &spec, &coll.item, pred, Some(order))
+        }
     }
+}
+
+/// `pred`, its fields (by id) resolved to what the store reads of items of the type `item`:
+/// `None` when it reads a field the type lacks or one no filter reads.
+pub(crate) fn field_reads(
+    pred: &tilolang::pred::Pred<String>,
+    item: &crate::registry::TypeInfo,
+) -> Option<crate::store::Pred> {
+    pred.resolve(&mut |id: &String| {
+        let field = item.fields.iter().find(|f| f.id == *id)?;
+        FieldRead::of(&field.id, field.kind, &field.ty, field.default.as_ref())
+    })
 }
 
 /// One read of a collection, recorded as what it saw.
@@ -240,30 +256,7 @@ impl Core {
         let Some((_, item)) = self.registry.borrow().type_info(&coll.item) else {
             return Ok(Value::none());
         };
-        let resolved = written.resolve(&mut |id: &String| {
-            let field = item.fields.iter().find(|f| f.id == *id)?;
-            let absent = match (field.kind, &field.ty) {
-                (FieldKind::Register, Ty::Bool | Ty::Int | Ty::Text) => {
-                    crate::host_res::declared_default(&field.ty, field.default.as_ref()).ok()?
-                }
-                (FieldKind::Counter, Ty::Int) => Value::Int(0),
-                (FieldKind::Text, Ty::Text) => Value::text(""),
-                _ => return None,
-            };
-            let absent = match absent {
-                Value::Bool(b) => Lit::Bool(b),
-                Value::Int(i) => Lit::Int(i),
-                Value::Text(t) => Lit::Text(t),
-                _ => return None,
-            };
-            Some(FieldRead {
-                spec: FieldSpec {
-                    id: field.id.clone(),
-                    kind: field.kind,
-                },
-                absent,
-            })
-        });
+        let resolved = field_reads(&written, &item);
         Ok(resolved.map_or_else(Value::none, |pred| {
             Value::some(Value::Coll(Rc::new(coll.filtered(pred))))
         }))

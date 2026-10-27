@@ -75,6 +75,15 @@ impl Checker<'_> {
             ExprKind::Int(v) => Ex::int(*v),
             ExprKind::Float(v) => Ex::new(Ek::Float(*v), Ty::Float),
             ExprKind::Length(v, u) => Ex::new(Ek::Float(*v), Ty::Length(*u)),
+            ExprKind::Duration(..) | ExprKind::Range { .. } => {
+                let what = if matches!(e.kind, ExprKind::Range { .. }) {
+                    "a range"
+                } else {
+                    "a duration"
+                };
+                self.err("E105", e.span, format!("{what} is the value of a filter, resolved when the query is answered: `query(T, received: -7d)`, `query(T, due: today..today + 7d)`"));
+                Ex::error()
+            }
             ExprKind::Bool(b) => Ex::new(Ek::Bool(*b), Ty::Bool),
             ExprKind::Str(parts) => self.string(parts),
             ExprKind::Ref(r) => self.ref_lit(r, e.span),
@@ -319,8 +328,8 @@ impl Checker<'_> {
     pub(super) fn text_of(&mut self, v: Ex, span: Span) -> Ex {
         match &v.ty {
             Ty::Text | Ty::Error => v,
-            // Its ISO text.
-            Ty::Date | Ty::Time => v.typed(Ty::Text),
+            // Its ISO text, or its URI.
+            Ty::Date | Ty::Time | Ty::Identifier => v.typed(Ty::Text),
             Ty::Int => Ex::host(Imp::IntToStr, vec![v], Ty::Text),
             Ty::Float => Ex::host(Imp::FloatToStr, vec![v], Ty::Text),
             Ty::Bool => Ex::new(
@@ -569,7 +578,7 @@ impl Checker<'_> {
                 let e = Ex::host(Imp::ValueEq, vec![l, r], Ty::Bool);
                 if eq { e } else { negate(e) }
             }
-            Ty::Text | Ty::Date | Ty::Time => {
+            Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => {
                 let e = Ex::host(Imp::StrEq, vec![l, r], Ty::Bool);
                 if eq { e } else { negate(e) }
             }
@@ -655,6 +664,7 @@ impl Checker<'_> {
     pub(super) fn field_read(&mut self, b: Ex, name: &ast::Ident) -> Ex {
         match b.ty.clone() {
             Ty::Error => Ex::error(),
+            Ty::Identifier => self.identifier_part(b, name),
             Ty::Record(key) => {
                 if crate::host::value_type(&key.name).is_some() && key.app == crate::host::HOST_APP
                 {

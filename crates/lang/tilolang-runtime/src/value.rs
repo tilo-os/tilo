@@ -192,6 +192,10 @@ pub struct CollRef {
         with = "shared_filter"
     )]
     pub filter: Option<Rc<crate::store::Pred>>,
+    /// The order its items are listed in (`query(T, in: x, sort: .due_oldest)`); the
+    /// collection's own when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<crate::query::Order>,
 }
 
 impl CollRef {
@@ -206,6 +210,17 @@ impl CollRef {
             filter: Some(Rc::new(pred)),
             ..self.clone()
         }
+    }
+
+    /// The same collection, only the items `pred` holds of (and the ones it held of before),
+    /// in the order `order` when there is one.
+    #[must_use]
+    pub fn queried(&self, pred: crate::store::Pred, order: Option<crate::query::Order>) -> Self {
+        let mut out = self.filtered(pred);
+        if order.is_some() {
+            out.order = order;
+        }
+        out
     }
 
     /// A reference to the item `id` of the collection.

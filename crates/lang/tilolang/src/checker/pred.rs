@@ -3,23 +3,14 @@
 
 use super::{Checker, Ex};
 use crate::abi::Imp;
-use crate::ast::{self, BinOp, ExprKind, StrPart, UnOp};
+use crate::ast;
 use crate::ir::{Ek, Stmt};
-use crate::pred::{CmpOp, Lit, Operand, Pred};
-use crate::resolve::TypeInfo;
-use crate::types::{MergeKind, Ty};
-
-/// What a predicate operand holds.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Bool,
-    Int,
-    Text,
-}
+use crate::pred::Pred;
+use crate::types::Ty;
 
 impl Checker<'_> {
     /// The predicate `param -> body` is over items of the type `elem`, when it reads nothing
-    /// but scalar fields of the item (registers, counters and texts) and literals.
+    /// but fields of the item and literals ([`crate::search::lambda_pred`]).
     pub(super) fn native_pred(
         &self,
         elem: &Ty,
@@ -30,7 +21,7 @@ impl Checker<'_> {
             return None;
         };
         let info = self.env.type_info(key)?;
-        pred_of(info, param, body)
+        crate::search::lambda_pred(info, self.env, param, body)
     }
 
     /// `looped`, the loop of a `filter` or `count` over the collection `held` (kept in the local
@@ -84,86 +75,5 @@ impl Checker<'_> {
             ty.clone(),
         );
         Ex::new(Ek::Seq(vec![hold, ask], Box::new(chosen)), ty)
-    }
-}
-
-fn pred_of(info: &TypeInfo, param: &str, e: &ast::Expr) -> Option<Pred<String>> {
-    match &e.kind {
-        ExprKind::Bool(b) => Some(Pred::Const(*b)),
-        ExprKind::Unary {
-            op: UnOp::Not,
-            operand,
-        } => Some(Pred::Not(Box::new(pred_of(info, param, operand)?))),
-        ExprKind::Binary {
-            op: op @ (BinOp::And | BinOp::Or),
-            lhs,
-            rhs,
-        } => {
-            let both = vec![pred_of(info, param, lhs)?, pred_of(info, param, rhs)?];
-            Some(if *op == BinOp::And {
-                Pred::And(both)
-            } else {
-                Pred::Or(both)
-            })
-        }
-        ExprKind::Binary { op, lhs, rhs } => {
-            let op = match op {
-                BinOp::Eq => CmpOp::Eq,
-                BinOp::Ne => CmpOp::Ne,
-                BinOp::Lt => CmpOp::Lt,
-                BinOp::Le => CmpOp::Le,
-                BinOp::Gt => CmpOp::Gt,
-                BinOp::Ge => CmpOp::Ge,
-                _ => return None,
-            };
-            let (a, ka) = operand(info, param, lhs)?;
-            let (b, kb) = operand(info, param, rhs)?;
-            let ordered = !matches!(op, CmpOp::Eq | CmpOp::Ne);
-            (ka == kb && (!ordered || ka == Kind::Int)).then_some(Pred::Cmp(op, a, b))
-        }
-        _ => match operand(info, param, e)? {
-            (field @ Operand::Field(_), Kind::Bool) => {
-                Some(Pred::Cmp(CmpOp::Eq, field, Operand::Lit(Lit::Bool(true))))
-            }
-            _ => None,
-        },
-    }
-}
-
-fn operand(info: &TypeInfo, param: &str, e: &ast::Expr) -> Option<(Operand<String>, Kind)> {
-    match &e.kind {
-        ExprKind::Bool(b) => Some((Operand::Lit(Lit::Bool(*b)), Kind::Bool)),
-        ExprKind::Int(i) => Some((Operand::Lit(Lit::Int(*i)), Kind::Int)),
-        ExprKind::Unary {
-            op: UnOp::Neg,
-            operand: inner,
-        } => match &inner.kind {
-            ExprKind::Int(i) => Some((Operand::Lit(Lit::Int(i.checked_neg()?)), Kind::Int)),
-            _ => None,
-        },
-        ExprKind::Str(parts) => {
-            let mut text = String::new();
-            for part in parts {
-                match part {
-                    StrPart::Lit(s) => text.push_str(s),
-                    StrPart::Interp(_) => return None,
-                }
-            }
-            Some((Operand::Lit(Lit::Text(text)), Kind::Text))
-        }
-        ExprKind::Field { base, name } => {
-            if !matches!(&base.kind, ExprKind::Ident(p) if p == param) {
-                return None;
-            }
-            let field = info.field(&name.name)?;
-            let kind = match (field.merge, &field.ty) {
-                (MergeKind::Register, Ty::Bool) => Kind::Bool,
-                (MergeKind::Register | MergeKind::Counter, Ty::Int) => Kind::Int,
-                (MergeKind::Register | MergeKind::Text, Ty::Text) => Kind::Text,
-                _ => return None,
-            };
-            Some((Operand::Field(field.id.clone()), kind))
-        }
-        _ => None,
     }
 }

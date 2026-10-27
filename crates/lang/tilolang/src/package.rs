@@ -248,7 +248,7 @@ pub fn check_package(
 
 fn emit_package(a: Analysis) -> Compiled {
     let fx = effects::analyze(&a.ir, &a.env.app);
-    let mut meta = build_meta(&a.module, &a.env, &fx);
+    let mut meta = build_meta(&a.module, &a.env, &fx, &a.ir.states);
     meta.views.extend(row_views(&a.ir, &a.env.app, &fx));
     let bare = codegen::emit(&a.ir, None);
     meta.module_hash = sha256_hex(&bare);
@@ -339,7 +339,12 @@ fn row_views(ir: &crate::ir::Module, app: &str, fx: &Effects) -> Vec<ViewMeta> {
         .collect()
 }
 
-fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
+fn build_meta(
+    module: &ast::Module,
+    env: &Env,
+    fx: &Effects,
+    template_states: &[(String, crate::resolve::StateInfo)],
+) -> PackageMeta {
     let app = env.app.as_str();
     let mut meta = PackageMeta {
         app: app.to_string(),
@@ -433,6 +438,7 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                     name: info.key.name.clone(),
                     doc: doc(&t.doc),
                     fields,
+                    search: info.search.clone(),
                 });
             }
             Item::Action(a) => {
@@ -530,6 +536,12 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                         .states
                         .iter()
                         .filter(|s| s.view == v.name.name)
+                        .chain(
+                            template_states
+                                .iter()
+                                .filter(|(view, _)| *view == c.id)
+                                .map(|(_, s)| s),
+                        )
                         .map(|s| StateMeta {
                             id: s.id.clone(),
                             name: s.name.clone(),

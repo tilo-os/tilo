@@ -7,55 +7,50 @@
 /// A window that lists resources: the header holds its owner's actions, the primary one as
 /// the Primary button; each item is a row whose actions are on its context menu and its swipe,
 /// a destructive one undone rather than confirmed; with no items it says `empty` and offers
-/// the primary action. A `sort` view state is the header's sort menu, a `filter` view state the
-/// places in the sidebar, each with how many items it holds when `count` says. Items whose type
-/// has a window of their own open in the next column; the list follows which one is open.
-view list<R, T, S, F>(
+/// the primary action. The places in the sidebar are the item type's filters that are on or
+/// off (`filters(T)`), after all of the items, each with how many it holds; the one chosen is
+/// the window's query, as people type it in search (`is:done`), so everyone looking sees the
+/// same list. A `sort` view state is the header's sort menu. Items whose type has a window of
+/// their own open in the next column; the list follows which one is open.
+view list<R, T, S>(
     of: R,
     items: List<T>,
     sort: Option<State<S>> = .none,
-    filter: Option<State<F>> = .none,
-    count: Option<(F) -> Int> = .none,
     empty: Text = phrase("tilolang-empty"),
     row: (T) -> View
 ) {
+    window query: Text = ""
     let kind = meta(T)
     let offered = actions(of)
-    let title = match filter {
-        .some(f) => f.label(),
-        .none => meta(of).title,
+    let places = filters(T).filter(f -> f.toggle)
+    let shown = items.matching(query)
+    let title = match places.find(p -> p.query == query) {
+        .some(p) => p.label,
+        .none => if places.is_empty() { meta(of).title } else { phrase("tilolang-all") },
     }
     // An empty list offers the primary action while nothing was made yet; one a filter emptied
     // says only that.
-    let unfiltered = match filter {
-        .some(f) => match cases(F).first() {
-            .some(first) => f == first,
-            .none => true,
-        },
-        .none => true,
-    }
-    let primary = if unfiltered { offered.find(a -> a.primary) } else { .none }
+    let primary = if query == "" { offered.find(a -> a.primary) } else { .none }
     ui.NavShell(
         content_kind: if kind.opens { .document } else { .list },
-        sidebar_title: match filter { .some(f) => .some(meta(of).title), .none => .none },
+        sidebar_title: if places.is_empty() { .none } else { .some(meta(of).title) },
         overview_title: if kind.opens { .some(title) } else { .none },
-        overview_count: if kind.opens { .some(items.len()) } else { .none },
+        overview_count: if kind.opens { .some(shown.len()) } else { .none },
         title: if kind.opens { .none } else { .some(title) },
-        count: if kind.opens { .none } else { .some(items.len()) }
+        count: if kind.opens { .none } else { .some(shown.len()) }
     ) {
         sidebar: {
-            match filter {
-                .some(f) => ui.NavList(selected: f.name()) {
-                    for c in cases(F) {
-                        ui.NavItem(c.name(), c.label(), icon: c.icon(), count: match count {
-                            .some(n) => .some(n(c)),
-                            .none => .none,
-                        }) {
-                            on select: set(f, c)
+            if not places.is_empty() {
+                ui.NavList(selected: if query == "" { "all" } else { query }) {
+                    ui.NavItem("all", phrase("tilolang-all"), icon: kind.icon, count: .some(items.len())) {
+                        on select: set(query, "")
+                    }
+                    for p in places {
+                        ui.NavItem(p.query, p.label, icon: p.icon, count: .some(items.matching(p.query).len())) {
+                            on select: set(query, p.query)
                         }
                     }
-                },
-                .none => {}
+                }
             }
         }
         overview_actions: {
@@ -70,14 +65,14 @@ view list<R, T, S, F>(
         }
         overview: {
             if kind.opens {
-                std.rows(items, empty, primary, kind.icon) { x -> row(x) }
+                std.rows(shown, empty, primary, kind.icon) { x -> row(x) }
             }
         }
         content: {
             if kind.opens {
                 ui.EmptyState(phrase("tilolang-none-selected", kind: kind.noun), icon: kind.icon)
             } else {
-                std.rows(items, empty, primary, kind.icon) { x -> row(x) }
+                std.rows(shown, empty, primary, kind.icon) { x -> row(x) }
             }
         }
     }
