@@ -149,6 +149,7 @@ impl Ctx<'_> {
             pred: None,
             optional,
             many,
+            icon: None,
         })
     }
 
@@ -178,6 +179,7 @@ impl Ctx<'_> {
                 pred: Some(pred),
                 optional: false,
                 many: false,
+                icon: None,
             }),
             Err((at, why)) => {
                 let msg = format!(
@@ -375,6 +377,7 @@ pub fn defaults(info: &TypeInfo, env: &Env) -> SearchMeta {
             pred: None,
             optional,
             many,
+            icon: None,
         });
     }
     out.sort = info

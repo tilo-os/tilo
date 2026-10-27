@@ -1021,21 +1021,20 @@ mod cases {
         let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
         assert_eq!(row_titles(v.tree()), ["milk", "eggs"]);
         let before = w.rt.history(&list.doc).unwrap().len();
-        choose(&v, "is:open");
+        choose(&v, "is:done");
         v.poll_patches().unwrap();
-        assert_eq!(row_titles(v.tree()), ["eggs"]);
+        assert_eq!(row_titles(v.tree()), ["milk"]);
         let tree = v.tree();
         assert_eq!(
             text_prop(of_kind(tree, "ui.NavList")[0], "selected"),
-            "is:open"
+            "is:done"
         );
         assert_eq!(
             (
                 &node_with(tree, "ui.NavItem", "key", "all").props["count"],
-                &node_with(tree, "ui.NavItem", "key", "is:open").props["count"],
                 &node_with(tree, "ui.NavItem", "key", "is:done").props["count"]
             ),
-            (&Value::Int(2), &Value::Int(1), &Value::Int(1))
+            (&Value::Int(2), &Value::Int(1))
         );
         assert_eq!(
             w.rt.history(&list.doc).unwrap().len(),

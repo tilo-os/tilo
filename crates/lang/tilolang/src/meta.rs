@@ -164,6 +164,10 @@ pub struct FilterMeta {
     /// Whether it holds several values, a set: a value asks whether it holds that one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub many: bool,
+    /// What a toggle on a Bool field shows beside its label: the icon of the action whose
+    /// state (`on:`) is that field, when the type has one (`pin` with `on: n.pinned`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// What a filter compares, and so the control it is.

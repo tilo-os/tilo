@@ -8,12 +8,6 @@ type Todo {
     due: Option<Date> = .none
     /// Anything worth remembering about it.
     notes: Text (body)
-
-    search {
-        filter "Open" = not done
-        filter done
-        filter due
-    }
 }
 
 /// A list of things to do, with the text of the item being typed.
@@ -82,7 +76,7 @@ action rename(list: TodoList, name: Text) {
     list.name = name
 }
 
-/// The list's window: its items, open and done ones apart as the item's filters say.
+/// The list's window: its items, and those done apart, as the item's `done` filter says.
 view todo_list(todos: TodoList) {
     std.list(todos, todos.items, empty: "Nothing to do")
 }
