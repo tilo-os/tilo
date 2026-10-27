@@ -56,7 +56,7 @@ fn share_contract() -> tilo_actions::ActionContract {
 /// state lives only here) in a workspace whose layout is each person's own.
 /// Elsewhere every window is shared with the layout already, or is
 /// another device's to share.
-fn sharing(
+pub(crate) fn sharing(
     tree: &crate::shell::state::WorkspaceTree,
     workspace: &crate::shell::state::Workspace,
     tab: &crate::shell::state::Tab,
@@ -67,6 +67,59 @@ fn sharing(
         && tilo_desktop_model::peer_salt_of(tab.id) == tree.local_salt()
         && tree.room_layout(room).is_personal())
     .then(|| tree.is_window_shared(room, tab.id, now_ms))
+}
+
+/// The window `tab` this device can share with its workspace's people, with
+/// that workspace and whether the window is shared now
+/// ([`sharing`]): `None` for any other tab.
+pub(crate) fn shareable_window(
+    tree: &crate::shell::state::WorkspaceTree,
+    tab: TabId,
+    now_ms: u64,
+) -> Option<(&crate::shell::state::Workspace, bool)> {
+    tree.desktop.workspaces.iter().find_map(|workspace| {
+        let shown = workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|candidate| candidate.id == tab)?;
+        sharing(tree, workspace, shown, now_ms).map(|shared| (workspace, shared))
+    })
+}
+
+/// What sharing the window `tab` with its workspace's people (`share`), or
+/// stopping, asks of the network, in the workspace it asks it in: the one
+/// request `tab.share` / `tab.unshare`, the window menu and the window
+/// bar's menu all make. `None` when the tab is no window this device can
+/// share ([`sharing`]).
+pub(crate) fn share_request(
+    tree: &crate::shell::state::WorkspaceTree,
+    tab: TabId,
+    share: bool,
+) -> Option<(
+    crate::shell::state::WorkspaceId,
+    crate::shell::peer_sync_overlay::PeerSyncRequest,
+)> {
+    let (workspace, _) = shareable_window(tree, tab, tilo_clock::unix_now_ms())?;
+    let app_id = workspace
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .find_map(|candidate| match &candidate.tile {
+            TileContent::Foreign { app_id, .. } if candidate.id == tab => Some(app_id.clone()),
+            _ => None,
+        })?;
+    Some((
+        workspace.id,
+        crate::shell::peer_sync_overlay::PeerSyncRequest::ShareWindow {
+            room: workspace.room(),
+            tab,
+            app_id,
+            share,
+        },
+    ))
 }
 
 /// Share the window `tab` with its workspace's people, or stop: the room's
@@ -80,35 +133,15 @@ fn begin_share(
     tab_in_group(chrome, group, tab)?;
     let request_id = {
         let mut state = chrome.borrow_mut();
-        let tree = state.tree();
-        let now_ms = tilo_clock::unix_now_ms();
-        let found = tree.desktop.workspaces.iter().find_map(|workspace| {
-            let shown = workspace
-                .strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .find(|candidate| candidate.id == tab)?;
-            let TileContent::Foreign { app_id, .. } = &shown.tile else {
-                return None;
-            };
-            sharing(&tree, workspace, shown, now_ms)
-                .map(|_| (workspace.id, workspace.room(), app_id.clone()))
-        });
-        drop(tree);
-        let (workspace, room, app_id) = found.ok_or_else(|| {
+        let found = share_request(&state.tree(), tab, share);
+        let (workspace, request) = found.ok_or_else(|| {
             ActionError::Refused(format!(
                 "tab {tab} is no window of this computer's in a workspace each person lays out"
             ))
         })?;
         state.begin_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::Network {
             workspace,
-            request: crate::shell::peer_sync_overlay::PeerSyncRequest::ShareWindow {
-                room,
-                tab,
-                app_id,
-                share,
-            },
+            request,
         })
     };
     Ok(crate::shell::search::InvocationDisposition::Pending(
