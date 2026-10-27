@@ -226,6 +226,7 @@ history-sync-finish-edit = Finish the current edit before receiving remote chang
 history-sync-queue-full = Remote document queue is full. Synchronization needs a fresh snapshot after the current edit finishes.
 history-sync-owner-changed = Document connection or owner changed while remote updates were pending. Reconnect and synchronize before continuing.
 history-sync-offline = Working offline. Changes will sync when you're back.
+history-sync-reconnecting = Connecting. Changes will sync once you're connected.
 room-sync-connecting = Connecting to { $workspace }…
 room-sync-connecting-unnamed = Connecting…
 room-sync-host-needs-update = This workspace’s host needs to update

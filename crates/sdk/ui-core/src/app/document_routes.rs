@@ -192,13 +192,18 @@ impl App {
             // A change the workspace refused stops sync just as a lost
             // connection does, but reconnecting will not resume it, and the
             // person is not offline: say which one happened.
-            (self.native_document_chrome && manager.sync_lost()).then_some(
-                if manager.document_change_refused() {
-                    "history-sync-refused"
-                } else {
-                    "history-sync-offline"
-                },
-            )
+            if self.native_document_chrome && manager.joining_late_route() {
+                // Opened on the local replica while the route is joined.
+                Some("history-sync-reconnecting")
+            } else {
+                (self.native_document_chrome && manager.sync_lost()).then_some(
+                    if manager.document_change_refused() {
+                        "history-sync-refused"
+                    } else {
+                        "history-sync-offline"
+                    },
+                )
+            }
         } else if !self.document_routes.primary.is_empty()
             || self
                 .document_routes
