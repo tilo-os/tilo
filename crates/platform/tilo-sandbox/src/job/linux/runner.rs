@@ -1761,3 +1761,20 @@ fn memfd() -> io::Result<std::fs::File> {
     // SAFETY: the descriptor is new and ours alone.
     Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_kernel_whose_clone3_cannot_start_a_job_in_its_cgroup_is_named() {
+        // Linux 5.3 to 5.6 have clone3 but not CLONE_INTO_CGROUP, and refuse the flag with
+        // EINVAL rather than the ENOSYS that would fall back to clone.
+        let einval = std::io::Error::from_raw_os_error(libc::EINVAL);
+        let e = super::clone_error("clone3", &einval, true).to_string();
+        assert!(
+            e.contains("CLONE_INTO_CGROUP, which needs Linux 5.7"),
+            "{e}"
+        );
+        let e = super::clone_error("clone3", &einval, false).to_string();
+        assert!(!e.contains("CLONE_INTO_CGROUP"), "{e}");
+    }
+}

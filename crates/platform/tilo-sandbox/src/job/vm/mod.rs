@@ -769,6 +769,19 @@ mod tests {
     }
 
     #[test]
+    fn the_guests_log_holds_an_oom_report_and_the_mark_before_it() {
+        // An OOM report lists every process: one from a build of thousands overran the
+        // default 128-256 KiB log and took the init's mark with it.
+        let argv = qemu_argv(&spec());
+        let append = argv.iter().position(|a| a == "-append").unwrap();
+        let cmdline = argv[append.saturating_add(1)].to_str().unwrap();
+        assert!(
+            cmdline.split(' ').any(|a| a == "log_buf_len=1M"),
+            "{cmdline}"
+        );
+    }
+
+    #[test]
     fn commas_in_paths_are_doubled_for_qemu() {
         assert_eq!(
             escape_option(OsStr::new("/a,b/c")),
@@ -883,8 +896,30 @@ mod tests {
                 "t-vm: a process of the command was killed for memory {mem}, and it ended with status 125: Memory cgroup out of memory: Killed process 44 (podman) total-vm:300000kB, UID:0 oom_score_adj:0\n"
             )
         );
+        // The command's own kill among others after it: the command was killed, whichever
+        // kill came last.
+        assert_eq!(
+            run("137", &[starts, command, child]),
+            format!(
+                "t-vm: the command was killed for memory {mem}: Out of memory: Killed process 42 (awk) total-vm:300000kB, UID:0 oom_score_adj:0\n"
+            )
+        );
         // A kill from before the command started is none of its own.
         assert_eq!(run("137", &[command, starts, "[   13.0] later"]), "");
+        // Where the mark is gone, written over by an OOM report as long as the kernel's log, every
+        // kill in the log is taken for one of the command's: nothing else ran.
+        assert_eq!(
+            run("137", &[child, command]),
+            format!(
+                "t-vm: the command was killed for memory {mem}: Out of memory: Killed process 42 (awk) total-vm:300000kB, UID:0 oom_score_adj:0\n"
+            )
+        );
+        assert_eq!(
+            run("2", &[child]),
+            format!(
+                "t-vm: a process of the command was killed for memory {mem}, and it ended with status 2: Out of memory: Killed process 43 (cc1plus) total-vm:300000kB, UID:0 oom_score_adj:0\n"
+            )
+        );
         // A command that passed, or failed with no kill for memory, is left to say why itself.
         assert_eq!(run("0", &[starts, command]), "");
         assert_eq!(run("137", &[starts, "[   13.0] later"]), "");

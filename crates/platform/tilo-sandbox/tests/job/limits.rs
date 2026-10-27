@@ -243,10 +243,14 @@ fn a_daemon_the_job_left_dies_with_it() {
         }
     };
     let mut spec = JobSpec::new(Root::Host { extra: vec![] }, ["/bin/sh"]);
+    // The command returns once the daemon is in a session of its own (setsid
+    // execs sh in the same process: it is no group leader to fork for).
     spec.argv = [
         "/bin/sh",
         "-c",
-        "setsid sh -c 'sleep 300' </dev/null >/dev/null 2>&1 & echo started",
+        "setsid sh -c 'sleep 300' </dev/null >/dev/null 2>&1 & d=$!
+         until [ \"$(cut -d' ' -f6 /proc/$d/stat)\" = $d ]; do :; done
+         echo \"daemon $d in its session\"",
     ]
     .map(Into::into)
     .to_vec();
@@ -259,7 +263,10 @@ fn a_daemon_the_job_left_dies_with_it() {
     assert!(job.wait().unwrap().success());
     let mut out = String::new();
     let _ = out_r.read_to_string(&mut out);
-    assert!(out.contains("started"), "{out}");
+    assert!(
+        out.contains("in its session"),
+        "the daemon never ran: {out}"
+    );
     // The init's exit ends the job's PID namespace, and the kernel kills the
     // daemon with it: nothing of the job is left once it has been waited for.
     let left = await_pids(&cg, 0);
