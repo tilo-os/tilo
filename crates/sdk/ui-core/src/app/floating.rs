@@ -721,7 +721,9 @@ impl App {
     }
 
     /// What the desktop said of windows shared live changed what the app
-    /// shows: it syncs and lays out again.
+    /// shows: it syncs and lays out again. Only a window that talks to a
+    /// shell hears it.
+    #[cfg(feature = "native")]
     fn window_share_changed(&mut self) {
         self.needs_sync = true;
         self.layout.layout_dirty = true;
