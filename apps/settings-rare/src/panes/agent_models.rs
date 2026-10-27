@@ -83,7 +83,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&AgentModelsArea> 
     app.areas().find()
 }
 
-pub use provider_settings_ui::AgentProviders;
+pub use provider_settings_ui::{AgentProviders, AgentProvidersAction};
 
 /// Local models on this device and the person's model providers.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -447,10 +447,10 @@ pub(crate) fn answer(
                 location,
                 model: chosen,
             },
-            cx.reply(),
+            cx,
         ),
         AgentModelsEffect::SetGeminiProvider { provider, project } => {
-            model.answer_vertex_change(&VertexChange::Gemini { provider, project }, cx.reply())
+            model.answer_vertex_change(&VertexChange::Gemini { provider, project }, cx)
         }
     }
 }
@@ -526,7 +526,10 @@ impl AgentModelsArea {
         // same typed action any other provider edit uses.
         if let ProviderEffect::RemoveProvider { provider } = effect
             && model
-                .provider_config()
+                .providers
+                .settings()
+                .get()
+                .config
                 .profiles
                 .iter()
                 .any(|profile| profile.id == *provider && profile.sign_in.is_some())
@@ -545,28 +548,44 @@ impl AgentModelsArea {
                 .cloned(),
             _ => None,
         };
-        let Some(action) = effect.agent_action(listed.as_ref()) else {
-            let result = model.change_providers(effect.clone());
-            model.provider_notice(result.as_ref().map(|()| t("agent-provider-offline-saved")));
-            return result.map(|()| Effected::done());
-        };
-        let action = ui::tilo_resource::Stamped {
-            operation: action,
-            now_ms: i64::try_from(ui::time::unix_now_ms()).unwrap_or(i64::MAX),
-        };
-        if model
-            .cx
-            .apply_section::<provider_settings_ui::AgentProviders>(&action)
-            .is_err()
-        {
-            // A pane detached from a window (a screenshot, a pane test) has
-            // no record to run the action on; it stores the metadata itself.
-            let result = model.change_providers(effect.clone());
-            model.provider_notice(result.as_ref().map(|()| t("agent-provider-offline-saved")));
-            return result.map(|()| Effected::done());
+        let action = effect
+            .agent_action(listed.as_ref())
+            .ok_or_else(|| "this provider effect changes no stored profile".to_owned())?;
+        let limits_ack = model.remember_limits(effect);
+        let message = t("agent-provider-offline-saved");
+        let answer =
+            model
+                .cx
+                .apply_section::<AgentProviders>(&stamped(action), cx, move |app, _| {
+                    notice_offline_saved(app, message);
+                    if let Some(acknowledgement) = limits_ack
+                        && let Some(area) = area(app)
+                    {
+                        area.model()
+                            .borrow_mut()
+                            .acknowledge_limits(&acknowledgement);
+                    }
+                    Ok(Effected::done())
+                });
+        if let Err(error) = &answer {
+            model.provider_notice(Err(error));
         }
-        model.provider_notice(Ok(t("agent-provider-offline-saved")));
-        Ok(Effected::done())
+        answer
+    }
+}
+
+/// Timestamp one typed provider record change at the moment it is made.
+fn stamped(action: AgentProvidersAction) -> ui::tilo_resource::Stamped<AgentProvidersAction> {
+    ui::tilo_resource::Stamped {
+        operation: action,
+        now_ms: i64::try_from(ui::time::unix_now_ms()).unwrap_or(i64::MAX),
+    }
+}
+
+/// Say an offline metadata change was stored, once its record kept it.
+fn notice_offline_saved(app: &SettingsApp, message: String) {
+    if let Some(area) = area(app) {
+        area.model().borrow_mut().provider_notice(Ok(message));
     }
 }
 
@@ -956,6 +975,21 @@ pub struct AgentModelsModel {
     hub: hub::HubBrowser,
     /// A sign-in to `ChatGPT`, Copilot or `OpenRouter` under way.
     sign_in: Option<SignInSetup>,
+    /// A finished sign-in whose new provider is waiting for its typed
+    /// record change to land.
+    sign_in_save: Option<PendingSignInSave>,
+}
+
+/// A provider a finished sign-in added, waiting for the record's receipt
+/// before the sign-in's effect answers.
+struct PendingSignInSave {
+    /// The provider id its grant was sealed for.
+    id: String,
+    /// The service's name, for saying the sign-in is done.
+    label: String,
+    existing: bool,
+    reply: Option<ui::framework::EffectReply>,
+    receipt: std::sync::mpsc::Receiver<Result<ui::framework::Landed, String>>,
 }
 
 impl std::ops::Deref for AgentModelsModel {
@@ -1019,6 +1053,7 @@ impl AgentModelsModel {
             vertex_commit: None,
             hub: hub::HubBrowser::new(read.hub_token),
             sign_in: None,
+            sign_in_save: None,
         };
         model.notice = notice;
         model.sync_local_profile();
@@ -1156,26 +1191,55 @@ impl AgentModelsModel {
         self.changed = true;
     }
 
-    /// Keep the local provider profile on what the manager serves.
+    /// Keep the local provider profile's service-owned fields on what the
+    /// manager serves. The fields are recomputed against the document's
+    /// value as it is when the change is made, not the cached copy this
+    /// model last read, so a name or request limit edited meanwhile stays
+    /// that person's. A refused write is shown, never dropped.
     fn sync_local_profile(&mut self) {
         if self.cx.provider_admin.is_available() || !self.follow_local_profile {
             return;
         }
-        let config = &self.providers.get().config;
-        let existing = config
-            .profiles
-            .iter()
-            .find(|profile| profile.is_local_vllm_candidate())
-            .cloned();
-        let Some(profile) = synced_local_profile(existing.clone(), &self.snapshot.models) else {
-            return;
-        };
-        if existing.as_ref() != Some(&profile) {
-            let _ = self.providers.settings().update(|providers| {
-                providers.config.upsert(profile);
-            });
-            self.providers.refresh();
-            self.panel.offline_config = self.providers.get().config.clone();
+        let models = self.snapshot.models.clone();
+        let result = self.providers.settings().update(|providers| {
+            let existing = providers
+                .config
+                .profiles
+                .iter()
+                .find(|profile| profile.is_local_vllm_candidate())
+                .cloned();
+            let Some(synced) = synced_local_profile(existing, &models) else {
+                return;
+            };
+            if let Some(profile) = providers
+                .config
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id == synced.id)
+            {
+                // The manager owns the endpoint, enabled state, model list
+                // and default; the person owns the profile name and each
+                // model's request policy, which `synced` carries over.
+                profile.endpoint = synced.endpoint;
+                profile.enabled = synced.enabled;
+                profile.models = synced.models;
+                profile.default_model = synced.default_model;
+            } else {
+                providers.config.upsert(synced);
+            }
+        });
+        match result {
+            Ok(_) => {
+                self.providers.refresh();
+                self.panel.offline_config = self.providers.get().config.clone();
+            }
+            Err(error) => {
+                self.notice = Some(t_args(
+                    "agent-provider-save-err",
+                    &[("error", error.to_string().into())],
+                ));
+                self.changed = true;
+            }
         }
     }
 
@@ -1303,25 +1367,6 @@ impl AgentModelsModel {
             }
             _ => Err("not a model manager effect".into()),
         }
-    }
-
-    /// Forget a signed-in provider locally. API-key providers are removed through
-    /// the shared administration capability, never through a UI-thread socket.
-    fn remove_vertex_provider(
-        &mut self,
-        config: &mut ProviderConfig,
-        provider: &str,
-    ) -> Result<(), String> {
-        let profile = config
-            .profiles
-            .iter()
-            .find(|profile| profile.id == provider)
-            .ok_or_else(|| t("agent-provider-gone"))?;
-        if profile.sign_in.is_none() {
-            return Err(t("agent-provider-offline"));
-        }
-        let _ = config.remove(provider);
-        self.forget_signed_in_grant(provider)
     }
 
     /// Forget the grant kept on this device for signed-in `provider`.
@@ -1469,87 +1514,113 @@ impl AgentModelsModel {
     }
 
     /// Save a Google provider: through the host's borrowed administration
-    /// capability when it lends one, else in this person's offline metadata.
+    /// capability when it lends one, else as the one profile's typed record
+    /// change, so another provider edited meanwhile keeps its own fields.
     fn answer_vertex_change(
         &mut self,
         change: &VertexChange,
-        reply: ui::framework::EffectReply,
+        cx: &mut EffectCx<Settings, SettingsApp>,
     ) -> EffectAnswer {
         if self.cx.provider_admin.is_available() {
-            self.submit_vertex_change(change, reply)?;
+            self.submit_vertex_change(change, cx.reply())?;
             return Ok(Effected::Pending);
         }
-        let result = self.change_vertex(change);
-        self.provider_notice(result.as_ref().map(|()| t("agent-provider-offline-saved")));
-        result.map(|()| Effected::done())
+        let (action, id) = self.vertex_action(change)?;
+        // Removing a signed-in provider forgets its grant here, which only
+        // this area can do; the record changes the profile by the same typed
+        // action every other provider edit uses.
+        if matches!(change, VertexChange::Remove { .. }) {
+            self.forget_signed_in_grant(&id)?;
+        }
+        let message = t("agent-provider-offline-saved");
+        let answer =
+            self.cx
+                .apply_section::<AgentProviders>(&stamped(action), cx, move |app, _| {
+                    if let Some(area) = area(app) {
+                        let mut model = area.model().borrow_mut();
+                        model.vertex_saved(&id);
+                        model.provider_notice(Ok(message));
+                    }
+                    Ok(Effected::done())
+                });
+        if let Err(error) = &answer {
+            self.provider_notice(Err(error));
+        }
+        answer
     }
 
-    /// Save a Google provider in this person's offline metadata, where the
-    /// grant kept for it here is this device's to forget.
-    fn change_vertex(&mut self, change: &VertexChange) -> Result<(), String> {
-        self.panel.offline_config = self.providers.get().config.clone();
-        let mut config = self.providers.get().config.clone();
-        let saved = match change {
+    /// The typed record change `change` makes, and the provider it is for:
+    /// only the Google-owned fields of that one profile.
+    fn vertex_action(
+        &self,
+        change: &VertexChange,
+    ) -> Result<(AgentProvidersAction, String), String> {
+        use provider_settings_ui::agent_providers as action;
+        match change {
             VertexChange::Vertex {
                 provider,
                 project,
                 location,
                 model,
-            } => self.set_vertex_provider(
-                &mut config,
-                provider.clone(),
-                (project, location.as_deref(), model.as_deref()),
-            )?,
+            } => {
+                let (id, existing) = self.google_provider(provider.clone(), false)?;
+                // The person-facing validation and messages stay the area's;
+                // the record action checks them again for every caller.
+                let mut probe = self.providers.settings().get().config;
+                agent_vertex::apply(
+                    &mut probe,
+                    &id,
+                    existing,
+                    (project, location.as_deref(), model.as_deref()),
+                )?;
+                Ok((
+                    AgentProvidersAction::SetGoogleProvider(action::SetGoogleProvider {
+                        provider: id.clone(),
+                        create: !existing,
+                        gemini: false,
+                        project: project.clone(),
+                        location: location.clone(),
+                        model: model.clone(),
+                    }),
+                    id,
+                ))
+            }
             VertexChange::Gemini { provider, project } => {
-                self.set_gemini_provider(&mut config, provider.clone(), project)?
+                let (id, existing) = self.google_provider(provider.clone(), true)?;
+                let mut probe = self.providers.settings().get().config;
+                agent_vertex::apply_gemini(&mut probe, &id, existing, project)?;
+                Ok((
+                    AgentProvidersAction::SetGoogleProvider(action::SetGoogleProvider {
+                        provider: id.clone(),
+                        create: !existing,
+                        gemini: true,
+                        project: project.clone(),
+                        location: None,
+                        model: None,
+                    }),
+                    id,
+                ))
             }
             VertexChange::Remove { provider } => {
-                self.remove_vertex_provider(&mut config, provider)?;
-                provider.clone()
-            }
-        };
-        self.store_providers(config.sanitised())?;
-        self.vertex_saved(&saved);
-        Ok(())
-    }
-
-    fn change_providers(&mut self, effect: ProviderEffect) -> Result<(), String> {
-        // Offline metadata remains usable, but API-key custody is never simulated.
-        self.panel.offline_config = self.providers.get().config.clone();
-        let limits_ack = self.remember_limits(&effect);
-        let config = match effect {
-            ProviderEffect::RemoveProvider { provider }
-                if self
+                if !self
                     .providers
+                    .settings()
                     .get()
                     .config
                     .profiles
                     .iter()
-                    .any(|profile| profile.id == provider && profile.sign_in.is_some()) =>
-            {
-                let mut config = self.providers.get().config.clone();
-                self.remove_vertex_provider(&mut config, &provider)?;
-                config.sanitised()
+                    .any(|profile| profile.id == *provider && profile.sign_in.is_some())
+                {
+                    return Err(t("agent-provider-gone"));
+                }
+                Ok((
+                    AgentProvidersAction::RemoveProvider(action::RemoveProvider {
+                        provider: provider.clone(),
+                    }),
+                    provider.clone(),
+                ))
             }
-            effect => self.config_after(effect)?,
-        };
-        self.store_providers(config)?;
-        if let Some(acknowledgement) = limits_ack {
-            self.acknowledge_limits(&acknowledgement);
         }
-        Ok(())
-    }
-
-    /// Keep `config` as this person's providers, and show what was stored.
-    fn store_providers(&mut self, config: ProviderConfig) -> Result<(), String> {
-        self.providers
-            .settings()
-            .update(|providers| providers.config = config)
-            .map_err(|error| error.to_string())?;
-        self.providers.refresh();
-        self.panel.offline_config = self.providers.get().config.clone();
-        self.changed = true;
-        Ok(())
     }
 
     fn accelerator_card(&self) -> Option<SettingsSection> {

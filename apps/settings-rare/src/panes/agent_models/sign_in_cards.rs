@@ -7,7 +7,7 @@ use ui::framework::LiveRow;
 use ui::tilo_resource::Effect as _;
 use ui::widget::{Button, Row, Text};
 
-use super::{AgentModelsEffect, AgentModelsModel};
+use super::{AgentModelsEffect, AgentModelsModel, AgentProviders, AgentProvidersAction, stamped};
 use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args};
 use crate::panes::agent_sign_in::{self, SignInSetup, SignedIn};
@@ -124,6 +124,7 @@ impl AgentModelsModel {
 
     /// Take the sign-in's news; save the provider once it is signed in.
     pub(super) fn poll_sign_in(&mut self) {
+        self.poll_sign_in_save();
         let Some(setup) = self.sign_in.as_mut() else {
             return;
         };
@@ -158,6 +159,47 @@ impl AgentModelsModel {
                 self.changed = true;
             }
         }
+    }
+
+    /// Answer a sign-in once the record kept the provider it added, or say
+    /// why it did not; a failed save leaves no grant behind.
+    fn poll_sign_in_save(&mut self) {
+        let Some(save) = self.sign_in_save.as_mut() else {
+            return;
+        };
+        let outcome = match save.receipt.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(error)) => Err(error),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(t("agent-sign-in-stopped")),
+        };
+        let save = self.sign_in_save.take().expect("the pending save was read");
+        match outcome {
+            Ok(()) => {
+                self.providers.refresh();
+                self.panel.offline_config = self.providers.get().config.clone();
+                self.read_vertex_keys();
+                self.notice = Some(t_args(
+                    "agent-sign-in-done",
+                    &[("service", save.label.into())],
+                ));
+                if let Some(reply) = save.reply {
+                    reply.finish(Ok(ui::tilo_actions::ActionOutput::default()));
+                }
+            }
+            Err(error) => {
+                if !save.existing {
+                    let _ = self
+                        .custodian
+                        .forget_oauth(&agent_vertex::grant_id(&save.id));
+                }
+                self.notice = Some(error.clone());
+                if let Some(reply) = save.reply {
+                    reply.finish(Err(error));
+                }
+            }
+        }
+        self.changed = true;
     }
 
     /// Save what a finished sign-in brought: a new provider with its grant
@@ -202,18 +244,23 @@ impl AgentModelsModel {
                 Ok(())
             }
             (SignedIn::Grant, false, reply) => {
-                let profile = agent_sign_in::new_profile(setup.service, &id);
-                self.providers
-                    .settings()
-                    .update(|providers| providers.config.upsert(profile))
-                    .map_err(|error| error.to_string())?;
-                self.providers.refresh();
-                self.panel.offline_config = self.providers.get().config.clone();
-                self.read_vertex_keys();
-                self.notice = Some(t_args("agent-sign-in-done", &[("service", label.into())]));
-                if let Some(reply) = reply {
-                    reply.finish(Ok(done()));
-                }
+                // The provider a sign-in added is one typed record change,
+                // its credential origin named by the service's preset. The
+                // answer waits for the record's receipt.
+                let action = AgentProvidersAction::AddSignedInProvider(
+                    provider_settings_ui::agent_providers::AddSignedInProvider {
+                        provider: id.clone(),
+                        preset: setup.service.slug().to_owned(),
+                    },
+                );
+                let receipt = self.cx.submit_section::<AgentProviders>(&stamped(action))?;
+                self.sign_in_save = Some(super::PendingSignInSave {
+                    id,
+                    label: label.to_owned(),
+                    existing: false,
+                    reply,
+                    receipt,
+                });
                 Ok(())
             }
             (SignedIn::Key(_), _, reply) => {
@@ -424,7 +471,7 @@ impl AgentModelsModel {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{mock, model_over, snapshot};
+    use super::super::tests::{mock, model_over, provider_app, snapshot, with_provider_model};
     use super::*;
     use crate::panes::model::PaneModel as _;
     use account_custody::{Capability, Custodian, GrantState, OAuthIssuer, OAuthUse};
@@ -449,29 +496,40 @@ mod tests {
     fn a_chatgpt_sign_in_adds_a_provider_with_its_own_grant() {
         let server = tilo_oauth::fake::FakeAuthorizationServer::start();
         let vault = tempfile::tempdir().unwrap();
-        let mut pane = model_over(mock(snapshot(None)));
-        pane.custodian = Custodian::for_root(Some(vault.path().to_path_buf())).with_use(
-            OAuthUse::new(OAuthIssuer::OpenAi, Capability::Models),
-            server.provider(),
-            "fake-client",
-        );
-        pane.opener = Arc::new(Browser);
-        pane.sign_in_to("chatgpt", None, None).unwrap();
-        let id = pane.sign_in.as_ref().unwrap().profile_id.clone();
+        let mut app = provider_app();
+        let id = with_provider_model(&mut app, |pane| {
+            pane.custodian = Custodian::for_root(Some(vault.path().to_path_buf())).with_use(
+                OAuthUse::new(OAuthIssuer::OpenAi, Capability::Models),
+                server.provider(),
+                "fake-client",
+            );
+            pane.opener = Arc::new(Browser);
+            pane.sign_in_to("chatgpt", None, None).unwrap();
+            pane.sign_in.as_ref().unwrap().profile_id.clone()
+        })
+        .unwrap();
         let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
-        while pane.sign_in.is_some() {
+        while with_provider_model(&mut app, |pane| {
+            pane.poll_sign_in();
+            pane.sign_in.is_some() || pane.sign_in_save.is_some()
+        })
+        .unwrap()
+        {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the sign-in never finished"
             );
-            pane.poll_sign_in();
+            app.settle();
             std::thread::yield_now();
         }
-        assert_eq!(
-            pane.notice.as_deref(),
-            Some(t_args("agent-sign-in-done", &[("service", "ChatGPT".into())]).as_str())
-        );
-        let stored = pane.providers.get().config.clone();
+        with_provider_model(&mut app, |pane| {
+            assert_eq!(
+                pane.notice.as_deref(),
+                Some(t_args("agent-sign-in-done", &[("service", "ChatGPT".into())]).as_str())
+            );
+        })
+        .unwrap();
+        let stored = app.settings::<AgentProviders>().get().config;
         let profile = stored
             .profiles
             .iter()
@@ -487,32 +545,43 @@ mod tests {
             agent_provider_config::presets::CHATGPT_ENDPOINT
         );
         assert!(stored.validation_errors().is_empty());
-        assert_eq!(
-            pane.custodian
-                .oauth_grant_state(&agent_vertex::grant_id(&id))
-                .unwrap(),
-            GrantState::Usable
-        );
+        with_provider_model(&mut app, |pane| {
+            assert_eq!(
+                pane.custodian
+                    .oauth_grant_state(&agent_vertex::grant_id(&id))
+                    .unwrap(),
+                GrantState::Usable
+            );
+            let text = crate::widgets::announced_text(pane.compose().as_ref());
+            assert!(
+                text.iter()
+                    .any(|line| line.contains("OpenAI doesn't offer ChatGPT sign-in")),
+                "{text:#?}"
+            );
+        })
+        .unwrap();
         assert_eq!(server.verifiers().len(), 1, "one PKCE exchange");
-        let text = crate::widgets::announced_text(pane.compose().as_ref());
-        assert!(
-            text.iter()
-                .any(|line| line.contains("OpenAI doesn't offer ChatGPT sign-in")),
-            "{text:#?}"
-        );
 
         // A sign-in cancelled before it finished saves nothing.
-        pane.sign_in_to("chatgpt", None, None).unwrap();
-        let cancelled = pane.sign_in.as_ref().unwrap().profile_id.clone();
-        pane.cancel_sign_in();
-        assert!(pane.sign_in.is_none());
+        let cancelled = with_provider_model(&mut app, |pane| {
+            pane.sign_in_to("chatgpt", None, None).unwrap();
+            let cancelled = pane.sign_in.as_ref().unwrap().profile_id.clone();
+            pane.cancel_sign_in();
+            assert!(pane.sign_in.is_none());
+            assert_eq!(
+                pane.custodian
+                    .oauth_grant_state(&agent_vertex::grant_id(&cancelled))
+                    .unwrap(),
+                GrantState::Missing
+            );
+            cancelled
+        })
+        .unwrap();
+        assert!(!cancelled.is_empty());
         assert_eq!(
-            pane.custodian
-                .oauth_grant_state(&agent_vertex::grant_id(&cancelled))
-                .unwrap(),
-            GrantState::Missing
+            app.settings::<AgentProviders>().get().config.profiles.len(),
+            1
         );
-        assert_eq!(pane.providers.get().config.profiles.len(), 1);
     }
 
     /// `OpenRouter` hands back a key, and a key is stored only through

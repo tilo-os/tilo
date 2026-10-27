@@ -9,7 +9,9 @@ use agent_provider_config::presets::{Authentication, Preset};
 use agent_provider_config::protocol::{ErrorKind, ModelError};
 use agent_provider_config::{
     AgentModel, EndpointLocation, ModelDescriptor, ModelRequestLimits, ProviderConfig,
-    ProviderProfile, ProviderProtocol,
+    ProviderProfile, ProviderProtocol, SignInCredential, VERTEX_DEFAULT_LOCATION,
+    VERTEX_DEFAULT_MODEL, is_cloud_project_id, is_vertex_location, vertex_endpoint,
+    vertex_model_id, vertex_target,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -232,17 +234,134 @@ impl AgentProviders {
         Ok(())
     }
 
-    /// Add a provider this area set up itself (a Google sign-in), or replace
-    /// the fields of the one already there. Only the profile that changed is
-    /// written, field by field.
-    #[action(label = "Set a signed-in provider")]
-    pub fn set_provider_profile(
+    /// Add the provider a signed-in setup made (`ChatGPT`, `GitHub Copilot`
+    /// or `OpenRouter`) under the id its grant was sealed for. The preset
+    /// names
+    /// the credential origin; the caller never supplies a credential.
+    #[action(label = "Add a signed-in provider")]
+    pub fn add_signed_in_provider(
         &mut self,
-        profile: String,
+        provider: String,
+        preset: String,
     ) -> Result<(), ui::tilo_resource::Refusal> {
-        let profile = serde_json::from_str::<ProviderProfile>(&profile)
-            .map_err(|error| ui::tilo_resource::Refusal::new(error.to_string()))?;
-        self.config.upsert(profile);
+        let preset = Preset::from_slug(&preset)
+            .filter(|preset| {
+                matches!(
+                    preset,
+                    Preset::ChatGpt | Preset::Copilot | Preset::OpenRouter
+                )
+            })
+            .ok_or_else(|| ui::tilo_resource::Refusal::new(t("agent-preset-unknown")))?;
+        if provider.trim().is_empty() {
+            return Err(ui::tilo_resource::Refusal::new(t("agent-provider-gone")));
+        }
+        if self
+            .config
+            .profiles
+            .iter()
+            .any(|profile| profile.id == provider)
+        {
+            return Err(ui::tilo_resource::Refusal::new(t("agent-provider-exists")));
+        }
+        self.config.upsert(preset.profile_with_id(provider));
+        Ok(())
+    }
+
+    /// Add (`create`) the Google provider whose grant was sealed for
+    /// `provider`, or change only the fields Google owns: its sign-in and
+    /// billing project, and for Vertex AI its endpoint and default model.
+    /// Its name, enabled state, other models and request limits stay as they
+    /// are, as do every other profile's.
+    #[action(label = "Set a Google provider")]
+    pub fn set_google_provider(
+        &mut self,
+        provider: String,
+        create: bool,
+        gemini: bool,
+        project: String,
+        location: Option<String>,
+        model: Option<String>,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let project = project.trim();
+        if !is_cloud_project_id(project) {
+            return Err(ui::tilo_resource::Refusal::new(t(
+                "agent-google-project-invalid",
+            )));
+        }
+        let location = location
+            .as_deref()
+            .map(str::trim)
+            .filter(|location| !location.is_empty())
+            .unwrap_or(VERTEX_DEFAULT_LOCATION);
+        if !is_vertex_location(location) {
+            return Err(ui::tilo_resource::Refusal::new(t(
+                "agent-google-location-invalid",
+            )));
+        }
+        let model = model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .unwrap_or(VERTEX_DEFAULT_MODEL);
+        if model.contains(char::is_whitespace) {
+            return Err(ui::tilo_resource::Refusal::new(t(
+                "agent-google-model-invalid",
+            )));
+        }
+        if provider.trim().is_empty() {
+            return Err(ui::tilo_resource::Refusal::new(t("agent-provider-gone")));
+        }
+        let exists = self
+            .config
+            .profiles
+            .iter()
+            .any(|profile| profile.id == provider);
+        if create {
+            if exists {
+                return Err(ui::tilo_resource::Refusal::new(t("agent-provider-exists")));
+            }
+            let mut profile = if gemini {
+                ProviderProfile::google_gemini(project)
+            } else {
+                ProviderProfile::google_vertex(project, location, model)
+            };
+            profile.id = provider;
+            self.config.upsert(profile);
+            return Ok(());
+        }
+        let profile = self
+            .config
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == provider)
+            .ok_or_else(|| ui::tilo_resource::Refusal::new(t("agent-provider-gone")))?;
+        if !profile.signs_in_with_google() {
+            return Err(ui::tilo_resource::Refusal::new(t("agent-provider-gone")));
+        }
+        // A Google grant replaces any key reference: the two credential
+        // origins never coexist on one profile.
+        profile.credential = None;
+        profile.sign_in = Some(SignInCredential::google(project));
+        if gemini {
+            if profile.endpoint.trim_end_matches('/')
+                != agent_provider_config::presets::GEMINI_ENDPOINT
+            {
+                return Err(ui::tilo_resource::Refusal::new(t("agent-provider-gone")));
+            }
+            return Ok(());
+        }
+        if vertex_target(&profile.endpoint).is_none() {
+            return Err(ui::tilo_resource::Refusal::new(t("agent-provider-gone")));
+        }
+        profile.endpoint = vertex_endpoint(project, location);
+        let id = vertex_model_id(model);
+        if !profile.models.iter().any(|candidate| candidate.id == id) {
+            profile.models.push(ModelDescriptor {
+                label: model.to_string(),
+                ..ModelDescriptor::new(id.clone())
+            });
+        }
+        profile.default_model = Some(id);
         Ok(())
     }
 }

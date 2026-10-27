@@ -44,6 +44,16 @@ fn change(doc: &mut Doc, effect: ProviderEffect, listed: Option<ModelDescriptor>
     doc.commit();
 }
 
+fn apply(doc: &mut Doc, action: AgentProvidersAction) {
+    ui::tilo_resource::Stamped {
+        operation: action,
+        now_ms: 0,
+    }
+    .apply(doc)
+    .expect("the typed change applies");
+    doc.commit();
+}
+
 fn two_profiles() -> ProviderConfig {
     let mut anthropic = ProviderProfile::hosted(ProviderProtocol::Anthropic);
     anthropic.label = "Anthropic".into();
@@ -297,4 +307,92 @@ fn a_keyed_profile_is_stored_as_its_fields() {
         panic!("a provider is a map of its fields");
     };
     assert!(doc.get(&profile, "label").unwrap().is_some());
+}
+
+/// A Google provider's sign-in change writes only its own fields, keeps
+/// another provider's edit made meanwhile, and never carries a key.
+#[test]
+fn a_google_change_keeps_another_profile_and_its_credential_origin() {
+    let mut google = ProviderProfile::google_vertex("project-a", "global", "gemini-2.5-pro");
+    google.label = "Google".into();
+    let google_id = google.id.clone();
+    let local = ProviderProfile::local_vllm();
+    let local_id = local.id.clone();
+    let base = providers(ProviderConfig {
+        profiles: vec![google, local],
+        ..Default::default()
+    });
+    let mut ours = stored(&base);
+    let mut theirs = ours.fork();
+
+    apply(
+        &mut ours,
+        AgentProvidersAction::SetGoogleProvider(agent_providers::SetGoogleProvider {
+            provider: google_id.clone(),
+            create: false,
+            gemini: false,
+            project: "project-b".into(),
+            location: Some("europe-west4".into()),
+            model: Some("gemini-2.5-flash".into()),
+        }),
+    );
+    change(
+        &mut theirs,
+        ProviderEffect::SetProviderDetails {
+            provider: local_id.clone(),
+            label: "Local (mine)".into(),
+            endpoint: "http://127.0.0.1:9000/v1".into(),
+            model: None,
+        },
+        None,
+    );
+    ours.merge_incoming(&mut theirs).expect("the changes merge");
+
+    let merged = held(&ours);
+    let google = profile(&merged, "Google");
+    assert_eq!(google.id, google_id);
+    assert_eq!(
+        google.endpoint,
+        "https://europe-west4-aiplatform.googleapis.com/v1/projects/project-b/locations/europe-west4/endpoints/openapi"
+    );
+    assert_eq!(
+        google.sign_in.as_ref().unwrap().billing_project.as_deref(),
+        Some("project-b")
+    );
+    assert!(google.credential.is_none(), "a sign-in never carries a key");
+    assert_eq!(profile(&merged, "Local (mine)").id, local_id);
+}
+
+/// A finished subscription sign-in adds its own profile by preset, leaving
+/// every other provider and the sign-in credential's origin intact.
+#[test]
+fn a_signed_in_provider_add_keeps_other_profiles_and_sets_its_origin() {
+    let local = ProviderProfile::local_vllm();
+    let local_id = local.id.clone();
+    let base = providers(ProviderConfig {
+        profiles: vec![local],
+        ..Default::default()
+    });
+    let mut doc = stored(&base);
+    apply(
+        &mut doc,
+        AgentProvidersAction::AddSignedInProvider(agent_providers::AddSignedInProvider {
+            provider: "chatgpt-provider".into(),
+            preset: "chatgpt".into(),
+        }),
+    );
+    let merged = held(&doc);
+    assert_eq!(merged.config.profiles.len(), 2);
+    assert_eq!(profile(&merged, "Local vLLM").id, local_id);
+    let added = merged
+        .config
+        .profiles
+        .iter()
+        .find(|profile| profile.id == "chatgpt-provider")
+        .expect("the signed-in provider was added");
+    assert_eq!(
+        added.sign_in_issuer(),
+        Some(agent_provider_config::SignInIssuer::ChatGpt)
+    );
+    assert!(added.credential.is_none());
 }
