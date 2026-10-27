@@ -3328,6 +3328,10 @@ pub struct CapnpBrokerState {
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
     /// Broker-owned governed membership surface per native room.
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
+    /// Opens waiting for a room's membership actions to be published, each
+    /// told after the next refresh of the membership surfaces whether they
+    /// are ([`Self::await_membership_surface`]).
+    membership_surface_waiters: Mutex<Vec<(String, std::sync::mpsc::Sender<bool>)>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     /// Host steps whose result stays current, while they are open.
     live_views: live_views::LiveViews,
@@ -4083,6 +4087,7 @@ impl CapnpBrokerState {
                 local_report_receipts: Mutex::default(),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 workspace_membership_peers: Mutex::new(HashMap::new()),
+                membership_surface_waiters: Mutex::new(Vec::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 live_views: live_views::LiveViews::default(),
                 checkpoint_jobs: Mutex::new(HashMap::new()),
@@ -7928,9 +7933,13 @@ impl CapnpBrokerState {
         // A room's verified agents change with its governance, which every
         // host announces; apps' history follows on the same turn.
         self.refresh_history_agents();
+        // Only the opens waiting before this refresh reads the rooms are
+        // told its outcome; a later one waits for the next.
+        let waiting = self.take_membership_surface_waiters();
         if self.services.workspace_memberships.is_none() || self.membership.is_none() {
             // No membership surface, and no native context subscriber can
             // be admitted: nothing here changes with policy.
+            self.answer_membership_surface_waiters(waiting);
             return false;
         }
         // Sampled before anything is read: an expiry between this sample
@@ -7942,6 +7951,7 @@ impl CapnpBrokerState {
                 tracing::debug!(%error, "native membership surface could not be refreshed");
             })
             .is_err();
+        self.answer_membership_surface_waiters(waiting);
         let context_failed = self
             .refresh_workspace_context_services()
             .inspect_err(|error| {

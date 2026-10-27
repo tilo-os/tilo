@@ -90,13 +90,17 @@ pub struct PersistentConfig {
     pub roles_file: Option<std::path::PathBuf>,
     /// Bot directory entries, with their inputs, installed at first start.
     pub bots: Vec<String>,
-    /// Apps authored into the room at first start.
+    /// Apps whose records the host makes at first start
+    /// (`TILO_ROOMS_SEED_APPS`): unset, the room's Chat, which the room's
+    /// chat settings fill. Every other app's record is made by the member
+    /// who first opens it.
     pub seed_apps: Vec<String>,
-    /// Apps the room's members write through (`TILO_ROOMS_AUTHOR_APPS`,
-    /// comma-separated): each authors the room's content, so a guest, an
-    /// Editor, can talk in its Chat. Unset, every seeded app: they are what
-    /// the room offers its visitors. `none`, none, and the room is
-    /// read-only to its guests whatever their role.
+    /// The room's apps: those its members write through
+    /// (`TILO_ROOMS_AUTHOR_APPS`, comma-separated), which is what the room
+    /// lists for them. Unset, every first-party app (and any seeded one): a
+    /// workspace's app list is its policy, so a public room offers its
+    /// members every app, and a host that wants fewer lists fewer. `none`,
+    /// none, and the room is read-only to its guests whatever their role.
     pub author_apps: Vec<String>,
     /// Whether the room shares its members' windows and strips
     /// (`TILO_ROOMS_LAYOUT`): `personal` unless set (everyone comes in
@@ -226,8 +230,11 @@ fn live_listener(
     }))
 }
 
-/// What a persistent room seeds when `TILO_ROOMS_SEED_APPS` is unset.
-pub const DEFAULT_SEED_APPS: [&str; 3] = ["so.tilo.chat", "so.tilo.notes", "so.tilo.canvas"];
+/// The app whose record a persistent room makes at first start when
+/// `TILO_ROOMS_SEED_APPS` is unset: its Chat, which the room's chat
+/// settings (`TILO_ROOMS_CHAT_CHANNELS`, the feedback channel, its
+/// discussions) fill.
+pub const ROOM_CHAT_APP: &str = "so.tilo.chat";
 
 /// Offset of a local room's plain HTTP port from its TLS port.
 pub const LOCAL_PLAIN_OFFSET: u16 = 64;
@@ -515,10 +522,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
     let seed_apps = if var("TILO_ROOMS_SEED_APPS").is_some() {
         list("TILO_ROOMS_SEED_APPS", ',')
     } else {
-        DEFAULT_SEED_APPS
-            .iter()
-            .map(|app| (*app).to_owned())
-            .collect()
+        vec![ROOM_CHAT_APP.to_owned()]
     };
     Ok(Some(PersistentConfig {
         name,
@@ -855,12 +859,23 @@ fn description(var: &impl Fn(&str) -> Option<String>) -> Result<String> {
 }
 
 /// `TILO_ROOMS_AUTHOR_APPS`: the apps the room's members write through,
-/// comma-separated app ids. Unset, `seed_apps`: a public room's apps are
-/// there for its visitors to use, and its Chat for them to talk in. `none`,
-/// none (an empty variable counts as unset here, as everywhere).
+/// comma-separated app ids. Unset, every first-party app
+/// ([`tilo_desktop_model::first_party::FIRST_PARTY_APPS`], from the apps'
+/// manifests) and every seeded one: a workspace's app list is its policy,
+/// and a public room offers its visitors every app. `none`, none (an empty
+/// variable counts as unset here, as everywhere).
 fn author_apps(var: &impl Fn(&str) -> Option<String>, seed_apps: &[String]) -> Result<Vec<String>> {
     let Some(apps) = var("TILO_ROOMS_AUTHOR_APPS") else {
-        return Ok(seed_apps.to_vec());
+        let mut apps: Vec<String> = tilo_desktop_model::first_party::FIRST_PARTY_APPS
+            .iter()
+            .map(|app| (*app).to_owned())
+            .collect();
+        for app in seed_apps {
+            if !apps.contains(app) {
+                apps.push(app.clone());
+            }
+        }
+        return Ok(apps);
     };
     if apps.trim() == "none" {
         return Ok(Vec::new());
@@ -1139,17 +1154,35 @@ mod tests {
             ("TILO_ROOMS_LOCAL", "1"),
         ];
         let defaults = config(&base).unwrap().persistent.unwrap();
-        assert!(
-            defaults.author_apps.iter().any(|app| app == "so.tilo.chat"),
-            "{:?}",
-            defaults.author_apps
+        // Every first-party app the manifests declare, not a chosen few.
+        assert_eq!(
+            defaults.author_apps,
+            tilo_desktop_model::first_party::FIRST_PARTY_APPS
         );
-        assert_eq!(defaults.author_apps, defaults.seed_apps);
-        let chat_only = config(&[base[0], base[1], ("TILO_ROOMS_SEED_APPS", "so.tilo.chat")])
-            .unwrap()
-            .persistent
-            .unwrap();
-        assert_eq!(chat_only.author_apps, ["so.tilo.chat"]);
+        for app in [
+            "so.tilo.chat",
+            "so.tilo.browser",
+            "so.tilo.tasks",
+            "so.tilo.word-processor",
+        ] {
+            assert!(
+                defaults.author_apps.iter().any(|listed| listed == app),
+                "{app}"
+            );
+        }
+        let seeded_elsewhere = config(&[
+            base[0],
+            base[1],
+            ("TILO_ROOMS_SEED_APPS", "com.example.board"),
+        ])
+        .unwrap()
+        .persistent
+        .unwrap();
+        assert_eq!(
+            seeded_elsewhere.author_apps.last().map(String::as_str),
+            Some("com.example.board"),
+            "a seeded app is one of the room's apps"
+        );
         let configured = config(&[
             base[0],
             base[1],
@@ -1173,13 +1206,13 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_room_has_chat_notes_and_canvas_by_default() {
+    fn a_persistent_room_makes_its_chat_at_first_start_by_default() {
         let base = [
             ("TILO_ROOMS_PERSISTENT", "plaza"),
             ("TILO_ROOMS_LOCAL", "1"),
         ];
         let defaults = config(&base).unwrap().persistent.unwrap();
-        assert_eq!(defaults.seed_apps, DEFAULT_SEED_APPS);
+        assert_eq!(defaults.seed_apps, [ROOM_CHAT_APP]);
         assert_eq!(defaults.shown_name, None);
         let named = config(&[base[0], base[1], ("TILO_ROOMS_NAME", " Town Square ")]).unwrap();
         assert_eq!(
