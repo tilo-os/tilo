@@ -1193,9 +1193,10 @@ const PEER_INVITE_NAMED_PARAMS: &[ActionParam] = &[
 mod membership_actions;
 // Its ids, parameters and its two decoders travel with it.
 use membership_actions::{
-    CANCEL_ACTION as INVITATION_CANCEL_ID, INVITATION_ACTION_IDS, INVITATION_LIST_ID,
-    ISSUE_ACTION as INVITATION_ISSUE_ID, MEMBER_REMOVE_ID, MEMBER_ROLE_SET_ID,
-    RESEND_ACTION as INVITATION_RESEND_ID, collaboration_contract, collaboration_operation,
+    CANCEL_ACTION as INVITATION_CANCEL_ID, INVITATION_ACTION_IDS,
+    ISSUE_ACTION as INVITATION_ISSUE_ID, LIST_ACTION as INVITATION_LIST_ID,
+    REMOVE_ACTION as MEMBER_REMOVE_ID, RESEND_ACTION as INVITATION_RESEND_ID,
+    SET_ROLE_ACTION as MEMBER_ROLE_SET_ID, collaboration_contract, collaboration_operation,
 };
 
 fn participant(id: &str) -> Result<crate::shell::state::UserId, ActionError> {
