@@ -15,8 +15,10 @@
 //! section's field edit, the edit its switch in Settings and in Settings'
 //! own search makes. A setting the palette changes to a typed value (a
 //! timer, the display scale, the keyboard layout) says its value and takes
-//! the new one (`values`). This is the one settings search: every row
-//! comes from the index.
+//! the new one (`values`). A setting that holds one of a few values
+//! ([`index::Choice`]) offers each value as a row, found by its name and
+//! setting it. This is the one settings search: every row comes from the
+//! index.
 
 mod values;
 
@@ -91,6 +93,8 @@ struct Built {
     switches: Vec<Option<index::Switch>>,
     /// The typed setting each row changes or reads, in row order.
     typed: Vec<Option<Typed>>,
+    /// The value of a choice each row sets, in row order.
+    options: Vec<Option<(index::Choice, index::ChoiceOption)>>,
 }
 
 impl Built {
@@ -107,6 +111,58 @@ impl Built {
         self.setting_pages.push(page);
         self.switches.push(switch);
         self.typed.push(typed);
+        self.options.push(None);
+        self.rows.push(row);
+    }
+
+    /// Adds a row for each value of `setting`'s choice, found by the value's
+    /// name and the setting's words (`setting_field`) and setting it: "hide
+    /// message previews".
+    fn push_options(
+        &mut self,
+        kind: &ResourceKind,
+        setting: &index::Setting,
+        choice: index::Choice,
+        setting_field: &[(String, FieldWeight)],
+        page: usize,
+        facts: &[String],
+    ) {
+        for option in choice.options {
+            let key = setting.option_key(*option);
+            let mut found = vec![(t(&key).to_lowercase(), FieldWeight::TITLE)];
+            found.extend(
+                index::names_in_every_locale(&key)
+                    .into_iter()
+                    .map(|word| (word, FieldWeight::KEYWORD)),
+            );
+            found.extend(setting_field.iter().cloned());
+            let shown = choosing(
+                kind,
+                format!("setting:{}{CHOOSES}{}", setting.id, option.name),
+                t(&key),
+                facts.to_vec(),
+                choice,
+                *option,
+            );
+            self.push_option(found, page, choice, *option, shown);
+        }
+    }
+
+    /// Adds the row setting `choice` to `option`, found by `field`, on the
+    /// page at `page`.
+    fn push_option(
+        &mut self,
+        field: Vec<(String, FieldWeight)>,
+        page: usize,
+        choice: index::Choice,
+        option: index::ChoiceOption,
+        row: SearchResult,
+    ) {
+        self.fields.push(field);
+        self.setting_pages.push(page);
+        self.switches.push(None);
+        self.typed.push(None);
+        self.options.push(Some((choice, option)));
         self.rows.push(row);
     }
 }
@@ -218,6 +274,55 @@ fn switching(
 /// The argument carrying the person's confirmation of a flip.
 const CONFIRM: &str = "confirm";
 
+/// A row setting the choice `choice` to its value `option`; listed, it says
+/// whether that value is the current one ([`live`]).
+fn choosing(
+    kind: &ResourceKind,
+    id: String,
+    title: String,
+    facts: Vec<String>,
+    choice: index::Choice,
+    option: index::ChoiceOption,
+) -> SearchResult {
+    let invoked_by = settings_store::InvokingAction::action(format!("{PROVIDER_ID}:{id}"));
+    let set = move |args: &crate::shell::search::action_api::ActionArgs| {
+        let confirmed = args.boolean(CONFIRM) == Some(true);
+        crate::shell::settings_records::choose(choice, option, confirmed, &invoked_by)
+    };
+    let invoke = set.clone();
+    SearchResult {
+        operation_kind: tilo_actions::OperationKind::Effect,
+        on_open: std::rc::Rc::new(
+            move |_doc: &mut ui::widget::Edits<'_>,
+                  _root: &automerge::ObjId,
+                  _chrome: &crate::shell::chrome_state::Chrome,
+                  args: &crate::shell::search::action_api::ActionArgs| set(args),
+        ),
+        on_invoke: Some(std::rc::Rc::new(
+            move |_doc: &mut ui::widget::Edits<'_>,
+                  _root: &automerge::ObjId,
+                  _chrome: &crate::shell::chrome_state::Chrome,
+                  args: &crate::shell::search::action_api::ActionArgs| {
+                invoke(args).map(|()| {
+                    crate::shell::search::ActionReceipt::completed_with(
+                        serde_json::json!({ "value": option.json() }),
+                    )
+                })
+            },
+        )),
+        params: vec![
+            crate::shell::search::action_api::ActionParam::optional_owned(
+                CONFIRM,
+                crate::shell::search::action_api::ParamType::Boolean,
+                "Confirm a change that makes the device less safe.",
+            )
+            .with_labelled_choices([("true", t("setting-confirm-weaker"))]),
+        ],
+        ..SearchResult::nullary(kind.clone(), PROVIDER_ID, id, title, None, 0, |_, _, _| {})
+    }
+    .with_facts(facts)
+}
+
 /// A row opening `uri` in Settings.
 fn opening(
     kind: &ResourceKind,
@@ -251,6 +356,10 @@ impl SettingsPagesProvider {
         let kept = crate::shell::settings_records::switches_on(
             index::SETTINGS.iter().map(|setting| setting.switch),
         );
+        // A choice is offered by its values where the session keeps it.
+        let chosen = crate::shell::settings_records::chosen(
+            index::SETTINGS.iter().map(|setting| setting.choice),
+        );
         let mut built = Built {
             locale,
             rows: Vec::new(),
@@ -259,6 +368,7 @@ impl SettingsPagesProvider {
             setting_pages: Vec::new(),
             switches: Vec::new(),
             typed: Vec::new(),
+            options: Vec::new(),
         };
         for page in index::PAGES {
             let title = t(&page.title_key());
@@ -276,6 +386,7 @@ impl SettingsPagesProvider {
             built.fields.push(row);
             built.switches.push(None);
             built.typed.push(None);
+            built.options.push(None);
             built.rows.push(opening(
                 kind,
                 format!("page:{}", page.slug),
@@ -284,7 +395,7 @@ impl SettingsPagesProvider {
                 page.link(),
             ));
         }
-        for (setting, kept) in index::SETTINGS.iter().zip(&kept) {
+        for ((setting, kept), chosen) in index::SETTINGS.iter().zip(&kept).zip(&chosen) {
             if QUICK_ACTION_SETTINGS.contains(&setting.id) {
                 continue;
             }
@@ -335,6 +446,9 @@ impl SettingsPagesProvider {
                 built.push_setting(row.clone(), page_row, None, Some(typed(false)), changing);
                 built.push_setting(row, page_row, None, Some(typed(true)), reading);
                 continue;
+            }
+            if let Some(choice) = setting.choice.filter(|_| chosen.is_some()) {
+                built.push_options(kind, setting, choice, &row, page_row, &facts);
             }
             let switch = setting.switch.filter(|_| kept.is_some());
             let shown = match switch {
@@ -434,6 +548,10 @@ impl SettingsPagesProvider {
 /// The suffix of the address of a typed setting's reading row.
 const READS: &str = ".get";
 
+/// What separates a choice's setting from its value in a row's address
+/// (`setting:notifications.previews=hidden`).
+const CHOOSES: char = '=';
+
 /// Row `at` of `built`, a page or a setting that is no typed one, as it
 /// reads now.
 fn switch_live(
@@ -442,6 +560,16 @@ fn switch_live(
     row: &SearchResult,
     kept: &std::cell::OnceCell<Vec<Option<bool>>>,
 ) -> SearchResult {
+    if let Some((choice, option)) = built.options.get(at).copied().flatten() {
+        let current = crate::shell::settings_records::chosen([Some(choice)])
+            .pop()
+            .flatten()
+            .is_some_and(|value| value == option.json());
+        return SearchResult {
+            badge: current.then(|| t("search-badge-state-current")),
+            ..row.clone()
+        };
+    }
     let badge = built.switches.get(at).copied().flatten().and_then(|_| {
         kept.get_or_init(|| {
             crate::shell::settings_records::switches_on(built.switches.iter().copied())
@@ -484,6 +612,7 @@ impl SearchProvider for SettingsPagesProvider {
         let slug = result.id.strip_prefix("page:").or_else(|| {
             let id = result.id.strip_prefix("setting:")?;
             let id = id.strip_suffix(READS).unwrap_or(id);
+            let id = id.split_once(CHOOSES).map_or(id, |(setting, _)| setting);
             index::SETTINGS
                 .iter()
                 .find(|setting| setting.id == id)
@@ -492,16 +621,18 @@ impl SearchProvider for SettingsPagesProvider {
         page_icon(slug)
     }
 
-    /// A switch row flips in place: the palette stays open and its row reads
-    /// the value it was just switched to.
+    /// A switch row flips in place, and a choice's value row sets it there:
+    /// the palette stays open and the row reads the value it now holds.
     fn toggles_in_place(&self, result: &SearchResult) -> bool {
         let built = self.built.borrow();
         built.as_ref().is_some_and(|built| {
             built
                 .rows
                 .iter()
-                .zip(&built.switches)
-                .any(|(row, switch)| row.id == result.id && switch.is_some())
+                .zip(built.switches.iter().zip(&built.options))
+                .any(|(row, (switch, option))| {
+                    row.id == result.id && (switch.is_some() || option.is_some())
+                })
         })
     }
 
@@ -605,6 +736,85 @@ mod switch_tests {
 
     /// Every yes-or-no setting the index names is a section's field the
     /// session keeps: the palette offers each as the switch it is.
+    /// Every value of a choice the session keeps is a row: its name finds
+    /// it, choosing it sets the field, and it reads as the current one.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn every_choice_value_is_found_by_its_name_and_sets_its_field() {
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let config = tempfile::tempdir().expect("isolated settings");
+        let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
+        let records = settings_store::SessionSettings::open(paths).expect("records");
+        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(records));
+
+        let provider = SettingsPagesProvider::new();
+        let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+        let doc = AutoCommit::new();
+        let wanted = [provider.kinds[0].clone()];
+        let mut options = 0;
+        for setting in index::SETTINGS {
+            let Some(choice) = setting.choice else {
+                continue;
+            };
+            for option in choice.options {
+                let id = format!("setting:{}{CHOOSES}{}", setting.id, option.name);
+                let name = t(&setting.option_key(*option));
+                let listed = {
+                    let state = chrome.borrow();
+                    provider
+                        .query(SearchContext {
+                            query_scope: None,
+                            include_programmatic: false,
+                            needle: &name,
+                            wanted: &wanted,
+                            chrome: &state,
+                            doc: &doc,
+                            doc_root: &automerge::ROOT,
+                        })
+                        .into_iter()
+                        .find(|row| row.id == id)
+                };
+                let row = listed.unwrap_or_else(|| panic!("{name:?} finds {id}"));
+                assert!(provider.toggles_in_place(&row), "{id} sets in place");
+                let mut document = AutoCommit::new();
+                (row.on_open)(
+                    &mut ui::widget::Edits::lend(&mut document),
+                    &automerge::ROOT,
+                    &chrome,
+                    &ActionArgs::none(),
+                )
+                .unwrap_or_else(|error| panic!("{id}: {error:?}"));
+                assert_eq!(
+                    crate::shell::settings_records::chosen([Some(choice)])
+                        .pop()
+                        .flatten(),
+                    Some(option.json()),
+                    "{id} set {}.{}",
+                    choice.section,
+                    choice.field
+                );
+                let state = chrome.borrow();
+                let now = provider
+                    .resolve(
+                        &id,
+                        SearchContext {
+                            query_scope: None,
+                            include_programmatic: false,
+                            needle: "",
+                            wanted: &wanted,
+                            chrome: &state,
+                            doc: &doc,
+                            doc_root: &automerge::ROOT,
+                        },
+                    )
+                    .expect("its address finds it");
+                assert_eq!(now.badge, Some(t("search-badge-state-current")), "{id}");
+                options += 1;
+            }
+        }
+        assert!(options > 0, "the index names choices");
+    }
+
     #[test]
     fn every_indexed_switch_is_a_field_the_session_keeps() {
         for setting in index::SETTINGS {
