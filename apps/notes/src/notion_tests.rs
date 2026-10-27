@@ -1,5 +1,9 @@
 //! What a Notion export becomes: an archive of pages, or a pages listing.
 
+use std::io::Write as _;
+
+use base64::Engine as _;
+
 use super::*;
 
 /// A zip holding `files`, in the order given.
