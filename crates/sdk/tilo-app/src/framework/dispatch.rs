@@ -1384,6 +1384,22 @@ impl<R: Resource> Dispatcher<R> {
         self.core.queue_invocation(address, arguments);
     }
 
+    /// Run `invoke`, one of the actions `actions` publishes (another
+    /// record's, such as a settings section), through the host as a control
+    /// bound to it runs it: where another provider keeps the record, it runs
+    /// there. From an effect's handler or completion it continues that
+    /// effect, as its caller's. A refusal is told in [`Self::refused`].
+    pub fn invoke_on<T: Resource>(&self, actions: &super::Actions<T>, invoke: Invoke<T>) {
+        if let Some(refusal) = invoke.refusal() {
+            self.core.refuse(invoke.id, refusal.to_owned());
+            return;
+        }
+        self.invoke_at(
+            ActionAddress::new(actions.resource_id(), invoke.id),
+            invoke.arguments,
+        );
+    }
+
     /// Submit one typed action value — an edit with no named declaration,
     /// such as a drag's final geometry. The door applies it after the
     /// event; if it refuses it, [`Self::refused`] says why.

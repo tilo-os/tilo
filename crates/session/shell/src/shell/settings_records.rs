@@ -1035,4 +1035,68 @@ mod tests {
         }
         drop(settings);
     }
+
+    /// A magnifier shortcut steps the person's accessibility section: the
+    /// zoom and what the toggle comes back to are one step of theirs, which
+    /// undo takes back.
+    #[test]
+    #[serial_test::serial]
+    fn a_magnifier_step_is_a_step_the_person_undoes() {
+        use settings_store::magnifier::{MagnifierState, SECTION};
+
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let paths = settings_store::SessionPaths::configured().unwrap();
+        let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
+        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
+        let zoom = || MagnifierState::from_section(&settings_store::load_section(SECTION)).zoom;
+        let shortcut = settings_store::InvokingAction::action("magnifier.zoom-in");
+        let mut step = serde_json::Map::new();
+        step.insert("step".into(), "zoom-in".into());
+        let address = super::address("settings.accessibility", "step-magnifier");
+        super::change(&address, &step, true, &shortcut).unwrap();
+        super::change(&address, &step, true, &shortcut).unwrap();
+        assert_eq!(zoom(), 3);
+        let undo = super::address("settings.accessibility", "undo");
+        super::change(&undo, &serde_json::Map::new(), false, &shortcut).unwrap();
+        assert_eq!(zoom(), 2, "undo takes back one step");
+        drop(settings);
+    }
+
+    /// Quick settings routes this device through another of the person's
+    /// and shares its connection through their `device-vpn` section's
+    /// actions, as Settings does: changes of theirs, kept in the section.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial_test::serial]
+    fn quick_settings_change_the_device_vpn_section_through_its_actions() {
+        use settings_store::device_vpn::{EXIT, SECTION, THROUGH};
+
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let paths = settings_store::SessionPaths::configured().unwrap();
+        let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
+        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
+        crate::shell::device_vpn::choose("desk", true).unwrap();
+        crate::shell::device_vpn::set_exit(true).unwrap();
+        let section = settings_store::load_section(SECTION);
+        assert_eq!(
+            THROUGH.from_section(&section).map(|through| through.device),
+            Some("desk".to_owned())
+        );
+        assert!(EXIT.from_section(&section));
+        // Each is a step of the person's: undo takes back the last.
+        super::change(
+            &super::address("settings.device-vpn", "undo"),
+            &serde_json::Map::new(),
+            false,
+            &settings_store::InvokingAction::action("device-vpn.undo"),
+        )
+        .unwrap();
+        assert!(!EXIT.from_section(&settings_store::load_section(SECTION)));
+        crate::shell::device_vpn::choose("desk", false).unwrap();
+        assert_eq!(
+            THROUGH.from_section(&settings_store::load_section(SECTION)),
+            None
+        );
+        drop(settings);
+    }
 }

@@ -566,6 +566,11 @@ impl<R: Resource> Actions<R> {
             .ok()
     }
 
+    /// The id the resource is published at.
+    pub(crate) fn resource_id(&self) -> String {
+        self.table.resource.borrow().base.id.0.clone()
+    }
+
     /// The table these actions bind from, which follows the publication
     /// whatever the resource's type.
     pub(crate) fn table(&self) -> ActionTable {
