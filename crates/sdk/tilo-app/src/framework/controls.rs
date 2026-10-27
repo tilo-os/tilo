@@ -416,11 +416,11 @@ impl ActionTable {
     /// input `I`.
     fn effect_binding<I: 'static>(
         &self,
-        key: ActionKey,
+        key: &ActionKey,
         spec: Option<tilo_actions::ActionSpec>,
         arguments: Arguments<I>,
     ) -> Option<ActionBinding<I>> {
-        let (resource, spec) = self.effect_publication(&key, spec)?;
+        let (resource, spec) = self.effect_publication(key, spec)?;
         ActionBinding::fallible(&resource, &spec, arguments)
             .map_err(|error| unbound_of(&key.kind, &format!("`{key}`"), &error.to_string()))
             .ok()
@@ -429,11 +429,11 @@ impl ActionTable {
     /// The binding of one fully specified effect, for a button.
     fn effect_invocation(
         &self,
-        key: ActionKey,
+        key: &ActionKey,
         spec: Option<tilo_actions::ActionSpec>,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ActionBinding<()>> {
-        let (resource, spec) = self.effect_publication(&key, spec)?;
+        let (resource, spec) = self.effect_publication(key, spec)?;
         ActionBinding::static_json(&resource, &spec, arguments)
             .map_err(|error| unbound_of(&key.kind, &format!("`{key}`"), &error.to_string()))
             .ok()
@@ -726,7 +726,7 @@ impl<R: Resource> Actions<R> {
     ) -> Option<ActionBinding<I>> {
         let key = effect_key::<E, I>(&effect);
         self.table.effect_binding(
-            key.clone(),
+            &key,
             E::spec(&key.action),
             Box::new(move |input| effect.arguments(input)),
         )
@@ -735,7 +735,7 @@ impl<R: Resource> Actions<R> {
     /// The binding of one fully specified effect, for a button.
     pub fn effect<E: Effect>(&self, effect: &E) -> Option<ActionBinding<()>> {
         self.table
-            .effect_invocation(effect.key(), E::spec(effect.id()), effect.arguments())
+            .effect_invocation(&effect.key(), E::spec(effect.id()), effect.arguments())
     }
 
     pub fn bind_effect<E: Effect, I: 'static, C: ActionControl<I>>(
