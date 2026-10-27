@@ -374,9 +374,7 @@ impl Checker<'_> {
                 scope.vars.insert(name.clone(), ty);
                 None
             }
-            StepKind::Compute { expr } => {
-                Some((self.expression(expr, scope, path), Some(expr.schema())))
-            }
+            StepKind::Compute { expr } => Some((self.expression(expr, scope, path), expr.schema())),
             StepKind::Repeat { count, index, body } => {
                 self.repeat(path, scope, count, index, body);
                 None

@@ -376,15 +376,15 @@ pub enum ExprError {
     /// A value of the wrong type reached an operation.
     Type { what: String },
     /// A number operation would have left the numbers JSON can hold.
-    OutOfRange,
+    OutOfRange {},
     /// A division or modulo by zero.
-    DivideByZero,
+    DivideByZero {},
     /// The field an access or a `map` named is not there.
     MissingField { field: String },
     /// A comparison of values that have no order between them.
     Unordered { left: String, right: String },
     /// A `first` of an empty list.
-    Empty,
+    Empty {},
 }
 
 impl fmt::Display for ExprError {
@@ -441,7 +441,7 @@ pub fn compare(op: Op, left: &Value, right: &Value) -> Result<Value, ExprError> 
         match (l, r) {
             (Value::Number(a), Value::Number(b)) => match (a.as_f64(), b.as_f64()) {
                 (Some(a), Some(b)) => a.partial_cmp(&b).ok_or_else(|| unordered(l, r)),
-                _ => Err(ExprError::OutOfRange),
+                _ => Err(ExprError::OutOfRange {}),
             },
             (Value::String(a), Value::String(b)) => Ok(a.cmp(b)),
             (Value::Bool(a), Value::Bool(b)) => Ok(a.cmp(b)),
@@ -487,7 +487,7 @@ pub fn arithmetic(op: Op, left: &Value, right: &Value) -> Result<Value, ExprErro
     }
     let number = |value: &Value| -> Result<f64, ExprError> {
         match value {
-            Value::Number(number) => number.as_f64().ok_or(ExprError::OutOfRange),
+            Value::Number(number) => number.as_f64().ok_or(ExprError::OutOfRange {}),
             other => Err(wrong(format!(
                 "arithmetic needs numbers, and {} is not one",
                 type_name(other)
@@ -499,16 +499,16 @@ pub fn arithmetic(op: Op, left: &Value, right: &Value) -> Result<Value, ExprErro
         Op::Add => a + b,
         Op::Subtract => a - b,
         Op::Multiply => a * b,
-        Op::Divide if b == 0.0 => return Err(ExprError::DivideByZero),
+        Op::Divide if b == 0.0 => return Err(ExprError::DivideByZero {}),
         Op::Divide => a / b,
-        Op::Modulo if b == 0.0 => return Err(ExprError::DivideByZero),
+        Op::Modulo if b == 0.0 => return Err(ExprError::DivideByZero {}),
         Op::Modulo => a % b,
         _ => {
             return Err(wrong(format!("`{}` is not arithmetic", op.as_str())));
         }
     };
     if !computed.is_finite() {
-        return Err(ExprError::OutOfRange);
+        return Err(ExprError::OutOfRange {});
     }
     // A whole answer stays whole: a person who adds 1 and 2 expects 3, not
     // 3.0, and an integer parameter refuses the latter.
@@ -568,7 +568,7 @@ pub fn field(value: &Value, field: &str) -> Result<Value, ExprError> {
                 let index: usize = token
                     .parse()
                     .map_err(|_| wrong(format!("`{token}` is not a position in a list")))?;
-                items.get(index).cloned().ok_or(ExprError::Empty)?
+                items.get(index).cloned().ok_or(ExprError::Empty {})?
             }
             other => {
                 return Err(wrong(format!(
@@ -675,7 +675,7 @@ pub fn take(items: &Value, count: &Value) -> Result<Value, ExprError> {
 fn whole(value: &Value, what: &str) -> Result<usize, ExprError> {
     match value {
         Value::Number(number) => match number.as_u64() {
-            Some(count) => usize::try_from(count).map_err(|_| ExprError::OutOfRange),
+            Some(count) => usize::try_from(count).map_err(|_| ExprError::OutOfRange {}),
             None => match number.as_i64() {
                 // Taking a negative number of elements takes none rather than
                 // counting from the end: a bound is a count.
