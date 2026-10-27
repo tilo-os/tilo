@@ -61,6 +61,14 @@ pub trait PublishesResources: Widget {
         None
     }
 
+    /// Whether `id`, which resolves to nothing now, may resolve once what
+    /// the widget is reading off the UI thread lands (a row of a list not
+    /// read yet). A caller resolving it is answered then, never kept waiting
+    /// on a blocking read nor told it is unknown before the read ends.
+    fn resource_pending(&self, _id: &str) -> bool {
+        false
+    }
+
     /// The tree as one participant (an agent task) sees it, built from that
     /// participant's own view state. `None` is this widget's own view.
     /// Multi-participant widgets override this and [`Self::resource_for`],
@@ -235,6 +243,12 @@ pub fn resource_for(
     id: &str,
 ) -> Option<tilo_actions::Resource> {
     capability::<dyn PublishesResources>(widget)?.resource_for(participant, doc, id)
+}
+
+/// Whether resource `id` of `widget` may resolve once what it reads lands
+/// ([`PublishesResources::resource_pending`]).
+pub fn resource_pending(widget: &(impl Widget + ?Sized), id: &str) -> bool {
+    capability::<dyn PublishesResources>(widget).is_some_and(|w| w.resource_pending(id))
 }
 
 /// The action disclosing container `resource_id` of `widget`, if any.

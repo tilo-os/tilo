@@ -2684,6 +2684,12 @@ impl RootPublishes for ResourceRoot {
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         RootPublishes::resource_for(self, None, doc, id)
     }
+    /// A live row a surface is still reading.
+    fn resource_pending(&self, id: &str) -> bool {
+        let mut pending = false;
+        self.surfaces(&mut |surface| pending = pending || surface.live_row_pending(id));
+        pending
+    }
     /// Resource `id` in the published tree, or one the tree leaves out: a
     /// child the resource resolves by id, or a live row a surface resolves.
     fn resource_for(

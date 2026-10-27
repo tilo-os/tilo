@@ -404,6 +404,9 @@ pub(super) struct ActionRuntime {
     /// Each invocation of another provider's action a control here is bound
     /// to that the provider is still answering, by broker request.
     pub(super) hosted_requests: std::collections::HashSet<u64>,
+    /// Resolutions asked for a resource still being read, answered once its
+    /// read lands ([`crate::resources::PublishesResources::resource_pending`]).
+    pub(super) awaited_resolutions: Vec<super::AwaitedResolution>,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
@@ -481,6 +484,7 @@ impl ActionRuntime {
             acting_for: std::collections::HashMap::new(),
             follow_ups: std::collections::HashMap::new(),
             hosted_requests: std::collections::HashSet::new(),
+            awaited_resolutions: Vec::new(),
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
