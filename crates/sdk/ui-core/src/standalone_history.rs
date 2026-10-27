@@ -426,8 +426,21 @@ impl StandaloneHistory {
     }
 
     /// Capture the committed state after `entry` together with the live
-    /// frontier being reviewed. Nothing is written.
+    /// frontier being reviewed, for a restore. Nothing is written.
     pub(crate) fn review_restore(
+        &mut self,
+        context: &HistoryReadContext<'_>,
+        entry: HistoryEntryId,
+    ) -> Result<RestoreReview, HistoryError> {
+        let review = self.view_at(context, entry)?;
+        self.target.admit_restore(context)?;
+        Ok(review)
+    }
+
+    /// The committed state after `entry` and the live frontier it was read
+    /// against. Looking at a past state is a read: it needs only what
+    /// listing needs, so whoever may read the document may look.
+    pub(crate) fn view_at(
         &mut self,
         context: &HistoryReadContext<'_>,
         entry: HistoryEntryId,
@@ -439,7 +452,6 @@ impl StandaloneHistory {
             .find(|row| row.id == entry)
             .map(|row| row.summary.clone())
             .ok_or(HistoryError::InvalidSelection)?;
-        self.target.admit_restore(context)?;
         let (target_heads, reviewed_live_heads) = self.target.read(context, |doc| {
             (
                 crate::history_source::heads_for_entry(&mut committed_snapshot(doc), &entry),

@@ -209,6 +209,8 @@ def leave_running(ctx, chk: Check, res: Result) -> None:
 
 
 LEFT_STUCK = "left a window that does not close"
+# The facts key under which a check names the window groups it hands on to later checks.
+KEPT_WINDOWS = "kept_windows"
 # How long the windows of an app the harness ended are given to go.
 STUCK_GONE_S = 15
 
@@ -246,10 +248,13 @@ def leave_no_stuck_windows(ctx, chk: Check, res: Result) -> None:
     the app of one that survives its close has its processes ended, and the slot session
     is restarted if its window still stays. The check that left it fails, however it ended."""
     try:
-        if not all_groups(ctx.state()):
-            return
+        left = {g.get("id") for g in all_groups(ctx.state())}
     except (VmError, KeyError, TypeError):
         return  # no state to read: leave_running owns that
+    # Windows a check hands on to the checks after it (W01's two for W02-W07) are not
+    # this check's leftovers: closing them broke every check that needs them.
+    if not left - set(ctx.facts.get(KEPT_WINDOWS, ())):
+        return
     try:
         ctx.close_all_windows()
         return
@@ -632,6 +637,19 @@ def pump_lines_after(ctx, mark: int) -> list[str]:
     return [line.strip() for line in out.splitlines() if PUMP_STALL in line]
 
 
+SLOW_SCENE = re.compile(r"SLOW-SCENE total=([0-9.]+)(ms|µs|us|s) (.*)")
+
+
+def slowest_scenes(lines: list[str], n: int = 2) -> list[str]:
+    """The `n` slowest `SLOW-SCENE` lines (a retained scene build over 16 ms, split by phase
+    and by desktop section), slowest first, each as `total: phase=… section=…`."""
+    def ms(value: str, unit: str) -> float:
+        return float(value) * {"ms": 1.0, "µs": 1e-3, "us": 1e-3, "s": 1e3}[unit]
+
+    found = [(ms(m[1], m[2]), m[3]) for m in (SLOW_SCENE.search(line) for line in lines) if m]
+    return [f"{total:.1f} ms: {split[:400]}" for total, split in sorted(found, reverse=True)[:n]]
+
+
 def frame_pacing_evidence(ctx, check_id: str, log_mark: int, cpu_before) -> str:
     """What a failed frame-pacing scenario leaves to tell its stalls apart: the
     compositor's per-phase pump breakdown for every pump that held input up since
@@ -646,7 +664,15 @@ def frame_pacing_evidence(ctx, check_id: str, log_mark: int, cpu_before) -> str:
     else:
         shown = "; ".join(line[-320:] for line in lines[-3:])
         pumps = f"{len(lines)} pre-paint pump stall line(s), the last: {shown}"
-    return f" [guest CPU steal over the scenario {steal_text}; {pumps}; {check_id}-pump.log has them all]"
+    # The compositor names where a slow scene build went (`SLOW-SCENE`: its phases and the
+    # desktop sections drawn); a failed check keeps no files, so the slowest go here.
+    scenes = slowest_scenes((ctx.vm.exec(
+        f'tail -n +{log_mark + 1} "{SESSION_LOG}" 2>/dev/null | grep -a "SLOW-SCENE"; true',
+        check=False) or "").splitlines())
+    scene_text = (f"; slowest scene builds: {' | '.join(scenes)}" if scenes
+                  else "; no SLOW-SCENE line in the session log")
+    return (f" [guest CPU steal over the scenario {steal_text}; {pumps}{scene_text}; "
+            f"{check_id}-pump.log has them all]")
 
 
 def switch_lines_after(ctx, mark: int) -> list[dict]:

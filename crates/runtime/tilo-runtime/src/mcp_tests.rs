@@ -195,6 +195,7 @@ fn action_row(
             resource_label: "Document".into(),
             action_label: format!("Label of {action}"),
             keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: tilo_actions::ExecutionLocus::ClientLocal,
             kind: tilo_actions::OperationKind::Document,

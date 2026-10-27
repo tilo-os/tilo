@@ -35,6 +35,7 @@ fn action_row() -> ActionDirectoryRow {
         resource_label: "Inbox".into(),
         action_label: "Erase".into(),
         keywords: Vec::new(),
+        icon: None,
         description: Some("Erase every file in the folder".into()),
         operation_kind: OperationKind::Effect,
         params: vec![

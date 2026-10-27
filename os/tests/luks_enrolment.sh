@@ -155,6 +155,21 @@ if [ -n "$password_slot" ] && [ "$marked" = "$password_slot" ]; then
 else
   bad "expected a tilo-startup-secret token on slot ${password_slot:-?}, found '${marked}'"
 fi
+# The one-secret path shows its recovery key the same way: it must open the
+# volume, in a slot of its own, after the password slot and token are added.
+RK_ACCOUNT="$(recovery_key_from "$WORK/account.out")"
+recovery_slot=""
+if [ -n "$RK_ACCOUNT" ]; then
+  ( umask 0077; printf '%s' "$RK_ACCOUNT" > "$WORK/account.rk" )
+  recovery_slot="$(cryptsetup open --test-passphrase --verbose --key-file "$WORK/account.rk" "$ACCOUNT_IMG" 2>&1 \
+    | sed -nE 's/^Key slot ([0-9]+) unlocked\.$/\1/p')"
+  rm -f "$WORK/account.rk"
+fi
+if [ -n "$recovery_slot" ] && [ "$recovery_slot" != "$password_slot" ]; then
+  ok "with the account password as the startup secret, the printed recovery key opens its own slot ($recovery_slot)"
+else
+  bad "with the account password as the startup secret, the printed recovery key does not open a slot of its own (recovery '${recovery_slot}', password '${password_slot}')"
+fi
 
 printf '## no passphrase (the recovery key is the boot secret)\n'
 IMG2="$WORK/rec.luks"; KEY2="$WORK/rec.key"

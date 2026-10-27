@@ -11,6 +11,7 @@ fn descriptor(action_label: &str, params: Vec<ActionParam>) -> ActionDescriptor 
         resource_label: "Inbox".into(),
         action_label: action_label.into(),
         keywords: Vec::new(),
+        icon: None,
         description: None,
         locus: ExecutionLocus::ClientLocal,
         kind: OperationKind::Document,

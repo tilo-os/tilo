@@ -107,8 +107,14 @@ impl<T> Receiver<T> {
 }
 
 impl<T: 'static> Receiver<T> {
-    /// The next value if one is waiting.
+    /// The next value if one is waiting. While a frame is laid out on this
+    /// thread none is: what lands then is taken in by the next frame, which
+    /// the work's wake asks for ([`ui::motion::frame_laying_out`]), so a
+    /// frame's composition passes all show the same answers.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
+        if ui::motion::frame_laying_out() {
+            return Err(TryRecvError::Empty);
+        }
         open(self.inner.try_recv()?).ok_or(TryRecvError::Disconnected)
     }
 

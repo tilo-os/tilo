@@ -77,6 +77,7 @@ fn row(action: &str) -> CatalogueRow {
             resource_label: "Fixture".into(),
             action_label: format!("Open {action}"),
             keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: tilo_actions::ExecutionLocus::default(),
             kind: tilo_actions::OperationKind::View,

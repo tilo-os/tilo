@@ -5105,6 +5105,11 @@ impl Widget for OnboardingView {
             && let Some(&cn) = children.first()
         {
             c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
+            // The page's own widgets are not updated: what of theirs moves,
+            // moves as it is laid out, frame after frame.
+            if c.needs_animation_frame() {
+                ui::widget::note_layout_moved();
+            }
         }
     }
 

@@ -681,11 +681,6 @@ impl Inputs {
     fn slots_in_bar(&self) -> bool {
         self.toolbar_in_bar || self.shell_bar
     }
-
-    /// The window bar shows the sidebar toggle, the app's or the shell's.
-    fn toggle_in_window_bar(&self) -> bool {
-        self.toggle_in_bar || self.shell_bar
-    }
 }
 
 /// The shell's geometry for one size, in coordinates local to the shell.
@@ -1141,8 +1136,10 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     };
     // The bar's toggle reaches a sidebar screen; Back drills only past the
     // first screen after it (a list, the empty state), else past the first.
-    let first =
-        usize::from(inputs.toggle_in_window_bar() && stack.first() == Some(&NavPane::Sidebar));
+    // A shell that declares the bar's slots has no toggle there of its own
+    // (only an app that asks for one does, [`NavShell::with_window_toolbar`]),
+    // so Back is what reaches the sidebar's screen.
+    let first = usize::from(inputs.toggle_in_bar && stack.first() == Some(&NavPane::Sidebar));
     let drills = stack.len().saturating_sub(first) > 1;
 
     // 5. The header row. A column's header stands in it only where the
@@ -1428,13 +1425,16 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         None
     };
     if let Some(column) = back_column
-        && (inputs.slots_in_bar() || inputs.toggle_in_bar)
+        && inputs.slots_in_bar()
     {
         // Back is the window bar's, beside its toggle ([`NavShell::window_toolbar`]).
         g.back_column = Some(column);
     } else if let Some(column) = back_column
         && (push_back || g.header(column) != Rect::ZERO)
     {
+        // The bar declares none of the shell's slots (an app keeps its own),
+        // so Back is a chevron the shell draws, beside the toggle if the bar
+        // carries it.
         let slot = usize::from(g.toggle_column == Some(column) && g.toggle.width() > 0.0);
         // The page moves; navigation belongs to the window. Back must stay
         // operable even before the incoming screen enters the viewport.
@@ -2699,6 +2699,18 @@ impl NavShell {
         };
         let can = (back.can_go_back)();
         self.set_can_go_back(can);
+    }
+
+    /// The parts a frame paints: laid out, and on screen inside the shell.
+    /// A part a push screen holds beside the window (the content behind a
+    /// sidebar that is a screen of its own) is culled when the shell draws,
+    /// so what it would show next waits until it is back on screen: asked
+    /// for, it would keep the window drawing frames that never paint it.
+    fn painted_parts(&self) -> impl Iterator<Item = &dyn Widget> {
+        self.host_parts
+            .iter()
+            .filter_map(|part| self.part(*part))
+            .filter(|part| part.paint_bounds().intersect(self.rect).area() > 0.0)
     }
 
     /// Snap every animation to its end (deterministic shots and tests).
@@ -4465,10 +4477,7 @@ impl Widget for NavShell {
         self.animating
             || self.settling
             || self.fade.is_moving(crate::motion::frame_now())
-            || self
-                .host_parts
-                .iter()
-                .any(|part| self.part(*part).is_some_and(Widget::needs_animation_frame))
+            || self.painted_parts().any(Widget::needs_animation_frame)
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -4487,10 +4496,7 @@ impl Widget for NavShell {
             || self.animating
             || self.settling
             || self.fade.is_moving(crate::motion::frame_now())
-            || self
-                .host_parts
-                .iter()
-                .any(|part| self.part(*part).is_some_and(Widget::needs_redraw))
+            || self.painted_parts().any(Widget::needs_redraw)
     }
 
     fn mark_drawn(&mut self) {

@@ -297,6 +297,7 @@ impl Tracker {
             assignee: Some(agent.clone()),
             model: ask.model.clone(),
             subject: ask.subject,
+            quick: ask.quick,
             author: starter.clone(),
             created_ms: now,
             run: Some(Run {
@@ -946,7 +947,11 @@ impl Tracker {
         run.paused = None;
         run.updated_ms = at_ms;
         let epoch = run.epoch;
+        let quick = target.quick;
         target.status = match outcome {
+            // A quick question ends when it is answered: there is nothing
+            // for a person to review in what the agent said back.
+            RunOutcome::Done if quick => Status::Done,
             RunOutcome::Done => Status::InReview,
             RunOutcome::Failed | RunOutcome::Stopped => Status::Todo,
         };

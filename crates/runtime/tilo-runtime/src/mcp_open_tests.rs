@@ -359,6 +359,7 @@ fn row(
             resource_label: label.into(),
             action_label: action.replace('-', " "),
             keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: tilo_actions::ExecutionLocus::ClientLocal,
             kind: tilo_actions::OperationKind::Document,

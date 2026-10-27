@@ -77,11 +77,26 @@ const HTML: DocumentFormat = DocumentFormat {
     opened_by: Some(WRITER),
 };
 
-/// The document format `bytes` hold: a PDF by its `%PDF-` header, an Office or `OpenDocument`
+/// The first bytes of a recording: a stretch of a resource's history as a
+/// document of its own, which the app it recorded opens to replay it.
+pub const RECORDING_MAGIC: &[u8] = b"tilo-recording/1\n";
+
+/// A recording ([`RECORDING_MAGIC`]).
+pub const RECORDING: DocumentFormat = DocumentFormat {
+    extension: "tilo-recording",
+    mime: "application/vnd.tilo.recording",
+    kind: "a recording of an app's record",
+    opened_by: None,
+};
+
+/// The document format `bytes` hold: a recording by its header, a PDF by its `%PDF-` header, an Office or `OpenDocument`
 /// package by the parts and media type its zip holds, RTF, or an HTML page. `None` for plain
 /// text, Markdown and anything else, whose name is all that says what it is.
 #[must_use]
 pub fn document_format(bytes: &[u8]) -> Option<DocumentFormat> {
+    if bytes.starts_with(RECORDING_MAGIC) {
+        return Some(RECORDING);
+    }
     if bytes.starts_with(b"PK\x03\x04") {
         return package_format(bytes);
     }
@@ -243,6 +258,9 @@ mod tests {
             ("content.xml", b"<office/>"),
         ]);
         assert_eq!(document_format(&odt), Some(ODT));
+        let mut recording = RECORDING_MAGIC.to_vec();
+        recording.extend([0x85, 0x6f, 0x4a, 0x83]);
+        assert_eq!(document_format(&recording), Some(RECORDING));
         assert_eq!(document_format(b"%PDF-1.7\n%\xe2\xe3"), Some(PDF));
         assert_eq!(document_format(b"{\\rtf1\\ansi Hi}"), Some(RTF));
         assert_eq!(document_format(b"\n<!DOCTYPE html><p>Hi"), Some(HTML));

@@ -185,6 +185,20 @@ pub(crate) trait TypedRoot {
     /// As [`Resource::facts`].
     fn facts(&self, state: &dyn Any, doc: &AutoCommit) -> Result<serde_json::Value, String>;
 
+    /// One version of the record as the type's own adapter answers it, or
+    /// the exact bytes it holds
+    /// ([`historical_content`](super::super::preview::historical_content)).
+    ///
+    /// # Errors
+    /// The [`HistoricalGap`](ui_core::history_mode::HistoricalGap) to show:
+    /// the version does not read as the type, or the type has nothing to
+    /// show.
+    fn historical_content(
+        &self,
+        frozen: &AutoCommit,
+        item: Option<&str>,
+    ) -> Result<serde_json::Value, ui_core::history_mode::HistoricalGap>;
+
     /// [`tilo_resource::child_by_id`] of `state`.
     fn child(&self, state: &dyn Any, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource>;
 
@@ -474,6 +488,14 @@ impl<R: Resource> TypedRoot for Typed<R> {
         let state =
             state_of::<R>(state).ok_or_else(|| "the resource states no facts here".to_owned())?;
         R::facts(state, doc)
+    }
+
+    fn historical_content(
+        &self,
+        frozen: &AutoCommit,
+        item: Option<&str>,
+    ) -> Result<serde_json::Value, ui_core::history_mode::HistoricalGap> {
+        super::super::preview::historical_content::<R>(frozen, item)
     }
 
     fn child(&self, state: &dyn Any, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {

@@ -10451,6 +10451,7 @@ mod tests {
                     resource_label: "report".into(),
                     action_label: "Refresh".into(),
                     keywords: Vec::new(),
+                    icon: None,
                     description: None,
                     operation_kind: tilo_actions::OperationKind::Effect,
                     params: Vec::new(),

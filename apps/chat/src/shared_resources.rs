@@ -155,6 +155,25 @@ impl Navigation {
         }
     }
 
+    /// The caption of the control that replays `message`'s recording: what
+    /// it does, or why the recorded app did not open it. `reason` adds why,
+    /// for assistive technology.
+    pub(crate) fn replay_label(&self, message: &str, reason: bool) -> String {
+        match self.outcome(message, true) {
+            Some(Err(why)) if reason => {
+                format!("{}: {why}", crate::i18n::t("chat-feedback-replay-failed"))
+            }
+            Some(Err(_)) => crate::i18n::t("chat-feedback-replay-failed"),
+            Some(Ok(())) | None => crate::i18n::t("chat-feedback-replay"),
+        }
+    }
+
+    /// Whether [`Self::replay_label`] is the catalogue's copy alone, without
+    /// a failure's own words.
+    pub(crate) fn replay_label_is_copy(&self, message: &str) -> bool {
+        !matches!(self.outcome(message, true), Some(Err(_)))
+    }
+
     /// Whether [`Self::label`] is the catalogue's copy alone, without a
     /// failure's own words.
     pub(crate) fn label_is_copy(&self, message: &str) -> bool {
@@ -209,6 +228,33 @@ impl ChatApp {
     pub(crate) fn open_shared_resource(&mut self, message: &str) {
         let started = self.request_open(message);
         self.finish_starting(message, true, started);
+    }
+
+    /// Replay the recording the report `message` shows carries: its app
+    /// opens it, read from this chat's content as any opened content is
+    /// (`docs/architecture/session-replay.md`).
+    pub(crate) fn replay_recording(&mut self, message: &str) {
+        let started = self.request_replay(message);
+        self.finish_starting(message, true, started);
+    }
+
+    fn request_replay(&mut self, message: &str) -> Result<(), String> {
+        if self.resource_navigation.opening.is_some() {
+            return Err("Something is already opening".into());
+        }
+        let recording = self
+            .report_recordings
+            .get(message)
+            .ok_or("This message carries no recording")?;
+        let launch = crate::feedback::replay_launch(recording);
+        let call = self.resource_navigation.remote.invoke(
+            launch.target(&ui::framework::reference::room()?),
+            launch.argument(),
+            None,
+        );
+        self.resource_navigation.status = None;
+        self.resource_navigation.opening = Some((message.to_owned(), call));
+        Ok(())
     }
 
     fn finish_starting(&mut self, message: &str, open: bool, started: Result<(), String>) {

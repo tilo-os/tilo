@@ -657,6 +657,7 @@ impl Verb {
                 resource_label: label.into(),
                 action_label: self.label.into(),
                 keywords: Vec::new(),
+                icon: None,
                 description: None,
                 locus: ExecutionLocus::ServerPreferred,
                 kind: OperationKind::Effect,

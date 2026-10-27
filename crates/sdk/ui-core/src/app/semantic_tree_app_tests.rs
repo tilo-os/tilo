@@ -221,7 +221,9 @@ fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> Resour
                 &CounterAction::Bump,
             )
             .unwrap()
-            .with_contract(tilo_actions::ActionContract::default()),
+            .with_contract(tilo_actions::ActionContract::default())
+            // Pinging a service reaches outside the document.
+            .of_kind(tilo_actions::ActionKind::Outside),
         )
         .with_action(ActionSpec::prompted_param(
             "set-label",

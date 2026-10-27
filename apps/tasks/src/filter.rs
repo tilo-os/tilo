@@ -2,11 +2,11 @@
 //! picks out.
 //!
 //! A filter is view state, never stored: the sidebar offers the ones that
-//! read a tracker as a person works through it — everything, mine, what
-//! nobody has taken, what an agent is working on, and one per label in use —
-//! and the list and the board both narrow to it. An issue shows when it
-//! matches, and so does an issue whose sub-issue matches, so the tree stays
-//! whole down to what was asked for.
+//! read a tracker as a person works through it — everything, mine, the todo
+//! nobody has started, what nobody has taken, what an agent is working on,
+//! and one per label in use — and the list and the board both narrow to it.
+//! An issue shows when it matches, and so does an issue whose sub-issue
+//! matches, so the tree stays whole down to what was asked for.
 
 use std::collections::BTreeSet;
 
@@ -22,6 +22,8 @@ pub(crate) enum Filter {
     All,
     /// The ones assigned to the person reading.
     Mine,
+    /// The ones nobody, human or AI, has started: a todo.
+    Todo,
     /// The ones nobody has taken.
     Unassigned,
     /// The ones an agent is working on.
@@ -32,13 +34,20 @@ pub(crate) enum Filter {
 
 impl Filter {
     /// The filters the sidebar offers, before the labels in use.
-    pub(crate) const ALL: [Self; 4] = [Self::All, Self::Mine, Self::Unassigned, Self::Agent];
+    pub(crate) const ALL: [Self; 5] = [
+        Self::All,
+        Self::Mine,
+        Self::Todo,
+        Self::Unassigned,
+        Self::Agent,
+    ];
 
     /// The sidebar row's name.
     pub(crate) fn title(&self) -> String {
         match self {
             Self::All => crate::tr("tasks-filter-all"),
             Self::Mine => crate::tr("tasks-filter-mine"),
+            Self::Todo => crate::tr("tasks-filter-todo"),
             Self::Unassigned => crate::tr("tasks-filter-unassigned"),
             Self::Agent => crate::tr("tasks-filter-agent"),
             Self::Label(label) => label.clone(),
@@ -50,6 +59,7 @@ impl Filter {
         match self {
             Self::All => ui::icons::Icon::ListTree,
             Self::Mine => ui::icons::Icon::User,
+            Self::Todo => ui::icons::Icon::Circle,
             Self::Unassigned => ui::icons::Icon::CircleDashed,
             Self::Agent => ui::icons::Icon::Bot,
             Self::Label(_) => ui::icons::Icon::Tag,
@@ -61,6 +71,7 @@ impl Filter {
         match self {
             Self::All => "filter:all".to_owned(),
             Self::Mine => "filter:mine".to_owned(),
+            Self::Todo => "filter:todo".to_owned(),
             Self::Unassigned => "filter:unassigned".to_owned(),
             Self::Agent => "filter:agent".to_owned(),
             Self::Label(label) => format!("filter:label:{label}"),
@@ -72,6 +83,7 @@ impl Filter {
         Some(match key {
             "filter:all" => Self::All,
             "filter:mine" => Self::Mine,
+            "filter:todo" => Self::Todo,
             "filter:unassigned" => Self::Unassigned,
             "filter:agent" => Self::Agent,
             other => Self::Label(other.strip_prefix("filter:label:")?.to_owned()),
@@ -83,6 +95,10 @@ impl Filter {
         match self {
             Self::All => true,
             Self::Mine => me.is_some_and(|me| issue.assigned_person() == Some(me)),
+            // A todo is a task nobody, human or AI, has started: no run has
+            // taken it up, and it has not been moved out of where it waits.
+            // "Started" is the work beginning, not the assignment.
+            Self::Todo => issue.run.is_none() && !issue.status.started(),
             Self::Unassigned => issue.assignee.is_none(),
             Self::Agent => issue.assigned_agent().is_some(),
             Self::Label(label) => issue.labels.iter().any(|carried| carried == label),

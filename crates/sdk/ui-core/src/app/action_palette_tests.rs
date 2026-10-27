@@ -736,10 +736,17 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
 
         assert!(app.state.doc.get(&ROOT, "flipped").unwrap().is_none());
         assert!(app.state.peek_last_undo().is_none());
+        // An app's actions rank after what it holds: narrowed to the
+        // action, its row is the top one.
+        app.actions
+            .action_palette
+            .as_mut()
+            .unwrap()
+            .set_query("Flip it");
         app.needs_sync = false;
         app.layout.layout_dirty = false;
 
-        // Enter selects the top row (the action) and dispatches it.
+        // Enter dispatches the selected action.
         let consumed = app.action_palette_handle_key(&synth_enter());
         assert!(consumed, "the open palette consumed the Enter key");
 

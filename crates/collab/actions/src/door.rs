@@ -189,6 +189,9 @@ pub struct ActionDescriptor {
     /// label.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
+    /// The action's own picture ([`ActionSpec::icon`]), by its Lucide name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     pub description: Option<String>,
     pub locus: ExecutionLocus,
     pub kind: OperationKind,
@@ -391,6 +394,7 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
             resource_label: resource.label.clone(),
             action_label: action.label.clone(),
             keywords: action.keywords.clone(),
+            icon: action.icon.clone(),
             description: action.description.clone(),
             locus: action.locus,
             kind: action.kind,

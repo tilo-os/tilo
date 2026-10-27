@@ -198,6 +198,7 @@ fn with_only_a_weak_match_enter_hands_the_query_to_the_agent() {
             title: query.into(),
             body: query.into(),
             show: true,
+            quick: true,
         }],
         "the workspace's agent is asked for a task carrying the query, whose page opens"
     );

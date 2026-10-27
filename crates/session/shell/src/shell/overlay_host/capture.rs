@@ -12,10 +12,23 @@ impl ShellOverlayHost {
         std::mem::take(&mut self.magnifier_changed)
     }
 
-    /// Apply a magnifier shortcut to the session's settings and show the resulting zoom.
+    /// Step the magnifier through the person's accessibility section, as
+    /// their change they undo there, and show the resulting zoom.
     pub(super) fn step_magnifier(&mut self, step: MagnifierStep) {
-        match settings_store::magnifier::apply_step(step) {
-            Ok(zoom) => {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("step".into(), step.id().into());
+        let stepped = crate::shell::settings_records::change(
+            &crate::shell::settings_records::address("settings.accessibility", "step-magnifier"),
+            &arguments,
+            true,
+            &settings_store::InvokingAction::action(format!("magnifier.{}", step.id())),
+        );
+        match stepped {
+            Ok(()) => {
+                let zoom = settings_store::magnifier::MagnifierState::from_section(
+                    &settings_store::load_section(settings_store::magnifier::SECTION),
+                )
+                .zoom;
                 self.magnifier_changed = true;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome
@@ -23,7 +36,7 @@ impl ShellOverlayHost {
                         .show_osd(crate::shell::osd::Osd::magnifier(zoom));
                 }
             }
-            Err(error) => tracing::warn!(%error, "magnifier change could not be saved"),
+            Err(error) => tracing::warn!(?error, "magnifier change could not be saved"),
         }
     }
 

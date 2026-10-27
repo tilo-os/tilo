@@ -50,6 +50,8 @@ pub(crate) fn value(doc: &AutoCommit) -> String {
 fn fixture() -> (State, PreparedContentRestore) {
     VALIDATION_MODE.set(0);
     let mut state = State::new();
+    tilo_resource::evolution::write_version(&mut state.doc, SCHEMA.version).unwrap();
+    state.commit_action(None, None);
     state.doc.put(ROOT, "body", "old").unwrap();
     state.commit_action(None, None);
     let target = state.doc.base_heads();
@@ -271,6 +273,8 @@ fn owned_restore_mixed_overlay_and_undo_preserve_live_remote_operational_state()
         validate_result: |_| Ok(()),
     };
     let mut state = State::new();
+    tilo_resource::evolution::write_version(&mut state.doc, MIXED.version).unwrap();
+    state.commit_action(None, None);
     let mixed = state
         .doc
         .put_object(ROOT, "mixed", automerge::ObjType::Map)

@@ -83,26 +83,7 @@ impl CapnpBrokerState {
         let checked = own_device::Invocation::from_argument(&request.argument)
             .and_then(|invocation| invocation.check())
             .map_err(abandon)?;
-        // This descriptor describes forwarding, not the target action's contract:
-        // the receiving device resolves and authorizes that action independently.
-        let descriptor = tilo_actions::ActionDescriptor {
-            semantic_identity: None,
-            address: own_device::target().address,
-            resource_kind: own_device::RESOURCE.into(),
-            resource_label: "Device".into(),
-            action_label: "Invoke".into(),
-            keywords: Vec::new(),
-            description: None,
-            locus: tilo_actions::ExecutionLocus::default(),
-            kind: tilo_actions::OperationKind::Effect,
-            contract: tilo_actions::ActionContract {
-                kind: tilo_actions::ActionKind::Outside,
-                ..Default::default()
-            },
-            input: tilo_actions::InputSpec::None,
-            params: Vec::new(),
-            view: None,
-        };
+        let descriptor = forwarding_descriptor();
         let admitted = self
             .admit_host_action(
                 caller,
@@ -150,6 +131,31 @@ impl CapnpBrokerState {
             }
         }
         Ok(self.receipt_for(request.invocation, id))
+    }
+}
+
+/// What forwarding an invocation to one of the person's own devices is, as
+/// one descriptor: forwarding, not the target action's contract, which the
+/// receiving device resolves and authorizes independently.
+fn forwarding_descriptor() -> tilo_actions::ActionDescriptor {
+    tilo_actions::ActionDescriptor {
+        semantic_identity: None,
+        address: own_device::target().address,
+        resource_kind: own_device::RESOURCE.into(),
+        resource_label: "Device".into(),
+        action_label: "Invoke".into(),
+        keywords: Vec::new(),
+        icon: None,
+        description: None,
+        locus: tilo_actions::ExecutionLocus::default(),
+        kind: tilo_actions::OperationKind::Effect,
+        contract: tilo_actions::ActionContract {
+            kind: tilo_actions::ActionKind::Outside,
+            ..Default::default()
+        },
+        input: tilo_actions::InputSpec::None,
+        params: Vec::new(),
+        view: None,
     }
 }
 

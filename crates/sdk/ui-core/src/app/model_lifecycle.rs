@@ -336,14 +336,18 @@ impl super::App {
         // authority, as the draw sees it.
         let (root, state, presence) = (&mut self.root_widget, &self.state, &self.presence_ctx);
         // What this update moved, not what a widget updated outside an app
-        // noted before it.
-        let _ = crate::widget::take_layout_moved();
+        // noted before it: that stays noted for its own host (an app hosted
+        // in a tile updates in the middle of its host's update).
+        let outer = crate::widget::take_layout_moved();
         let updated = presence.with_permissions(self.permission_ctx.clone(), || {
             crate::presence::frame::lend(presence, || root.update(&state.doc, &state.root))
         });
         // An animation moved what its widget lays out: the window is laid
         // out again. Any other animation frame is only drawn.
         self.layout.layout_dirty |= crate::widget::take_layout_moved();
+        if outer {
+            crate::widget::note_layout_moved();
+        }
         if !updated {
             return false;
         }

@@ -184,21 +184,22 @@ fn back_shows_once_there_is_somewhere_to_go_back_to() {
 }
 
 /// A phone-wide (420 px) push stack whose app keeps the sidebar's toggle in
-/// the window's bar (Passwords, Files) has its Back there too: no header row
-/// stands under the bar to hold a lone Back chevron, on the list or on an
-/// open item.
+/// the window's bar (Passwords, Files) has no header row: the toggle stands
+/// in the bar's corner, and Back beside it while there is somewhere to go
+/// back to.
 #[test]
 fn a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it() {
     const NARROW: u32 = 420;
-    let no_row = |h: &FrameHarness, at: &str| {
+    // The shell keeps the row's chevron beside the bar's toggle, where
+    // Back goes somewhere; a top-level page has none to draw.
+    let no_row = |h: &FrameHarness, at: &str, back_room: bool| {
         let g = geometry(h);
         assert_eq!(g.header_height, 0.0, "{at}: no header row");
         assert!(
             g.headers.iter().all(|header| *header == Rect::ZERO),
             "{at}: no header in any column"
         );
-        assert_eq!(g.back, Rect::ZERO, "{at}: no Back chip");
-        assert!(!shows_back_part(h), "{at}: no Back part");
+        assert_eq!(shows_back_part(h), back_room, "{at}: a Back of its own");
     };
     // Passwords: places, the list, the item.
     let mut shell = NavShell::new()
@@ -211,15 +212,14 @@ fn a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it() {
     let mut h = harness(shell, NARROW, H, Theme::dark());
     settle(&mut h, NARROW, H);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-    no_row(&h, "the list");
+    no_row(&h, "the list", false);
     let list = child_rect(&h, "overview").expect("the list shows");
     assert!(list.y0.abs() < 1e-9, "the list starts right under the bar");
 
     h.root_mut::<NavShell>().show(NavPane::Content);
     settle(&mut h, NARROW, H);
-    no_row(&h, "an open item");
+    no_row(&h, "an open item", true);
     assert!(h.root::<NavShell>().can_go_back());
-    assert!(bar_back(&h), "Back is the bar's");
     let item = child_rect(&h, "content").expect("the item shows");
     assert!(item.y0.abs() < 1e-9, "the item starts right under the bar");
     assert!(h.root_mut::<NavShell>().back());
@@ -237,8 +237,7 @@ fn a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it() {
     let mut h = harness(shell, NARROW, H, Theme::dark());
     settle(&mut h, NARROW, H);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
-    no_row(&h, "the folder");
-    assert!(!bar_back(&h), "the folder is the top-level page");
+    no_row(&h, "the folder", false);
 }
 
 /// Content that shows the feed a new place whenever it settles, as an app
@@ -555,4 +554,52 @@ fn another_parts_slots_stand_while_it_holds_them() {
     );
     declare(None);
     settle(&mut h, W, H);
+}
+
+/// The bar's Back is the window's, so it reaches the first screen too: from
+/// a place it goes back to the app's navigation, and the bar names that
+/// again.
+#[test]
+fn the_window_bars_back_names_the_app_again() {
+    let label = || {
+        declared()
+            .and_then(|toolbar| toolbar.location)
+            .map(|location| location.label)
+    };
+    let shell = NavShell::new()
+        .mode(NavMode::Push)
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Places", Vec::new())
+        .content_header("Home", Vec::new());
+    let mut h = harness(shell, 360, 800, Theme::dark());
+    h.present_in_window_bar();
+    settle(&mut h, 360, 800);
+    assert_eq!(
+        h.root::<NavShell>().front_pane(),
+        NavPane::Sidebar,
+        "a pushed window opens on its navigation"
+    );
+    assert_eq!(
+        label().as_deref(),
+        Some("Places"),
+        "the bar names the navigation the sidebar screen shows"
+    );
+
+    h.root_mut::<NavShell>().show(NavPane::Content);
+    settle(&mut h, 360, 800);
+    assert_eq!(label().as_deref(), Some("Home"), "and follows to the place");
+
+    h.press_window_slot(ToolbarEvent::Back);
+    settle(&mut h, 360, 800);
+    assert_eq!(
+        h.root::<NavShell>().front_pane(),
+        NavPane::Sidebar,
+        "the bar's Back reaches the navigation screen"
+    );
+    assert_eq!(
+        label().as_deref(),
+        Some("Places"),
+        "and the bar names it again"
+    );
 }

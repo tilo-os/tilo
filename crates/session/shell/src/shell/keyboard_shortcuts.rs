@@ -129,6 +129,7 @@ pub fn descriptor() -> ActionDescriptor {
         resource_label: t("keyboard-shortcuts-resource"),
         action_label: t("keyboard-shortcuts-list"),
         keywords: Vec::new(),
+        icon: None,
         description: Some(t("keyboard-shortcuts-list-description")),
         locus: ExecutionLocus::default(),
         kind: OperationKind::View,

@@ -495,6 +495,18 @@ def _timed_open(ctx, app: str, shell_anon: list[float] | None = None,
     return result
 
 
+def describe_before_main(medians: dict[str, float], n: int = 4) -> str:
+    """Where a warm open's time before the app's `main` went, by median, for a failure
+    text (a failed check keeps none of its files): the segments that add up to it, then
+    the slowest of the launcher's phases and of the compositor's dispatch phases."""
+    parts = [f"{name} {medians[name]} ms" for name in SEGMENTS if name in medians]
+    for prefix in ("launcher_phase.", "dispatch_phase."):
+        slowest = sorted(((v, k) for k, v in medians.items() if k.startswith(prefix)), reverse=True)[:n]
+        if slowest:
+            parts.append(f"{prefix.rstrip('.')}s " + ", ".join(f"{k[len(prefix):]} {v}" for v, k in slowest))
+    return "; ".join(parts) or "not split (no launcher marks)"
+
+
 # The segments of an open before the app's `main`, recorded as `app.open.<name>_ms.<app>`;
 # with `app.startup_ms.<app>` (main to first frame) they add up to the open.
 SEGMENTS = ("request_to_launcher", "launcher", "sandbox_to_main", "exec_to_main")
@@ -582,7 +594,8 @@ def warm_opens(ctx, res):
         if opens and median(opens) > budget:
             problems.append(f"{app} took {median(opens)} ms (median of {len(opens)}) from the open request "
                             f"to its first frame, over its {budget} ms budget on {kind} rendering "
-                            f"(process start to first frame: median {median(starts)} ms)")
+                            f"(process start to first frame: median {median(starts)} ms; "
+                            f"before it: {describe_before_main(summary[app]['median_ms'])})")
         target = kpi_p95_target(f"app.open.warm_ms.{short}")
         if kind == "gpu" and opens and target is not None and p95(opens) > target:
             problems.append(f"{app} took {p95(opens)} ms (p95 of {len(opens)}) from the open request to its "
@@ -692,10 +705,17 @@ def files_after_session_crash(ctx, res):
     ctx.vm.root_exec(f"kill -SEGV {pids[0]}; sleep 0.5; kill -SEGV {pids[0]} 2>/dev/null; true")
 
     def answering():
+        # The next session answers when its state and its action listing both do: a
+        # session still starting answered the state dump and then closed the connection
+        # of the listing the reset below reads.
         try:
             fields = session_unit.show(ctx)
             moved = fields and fields.get("MainPID", "0") not in ("0", "", wrapper)
-            return ctx.vm.state() if moved else None
+            if not moved:
+                return None
+            state = ctx.vm.state()
+            ctx.vm.actions()
+            return state
         except VmError:
             return None
 

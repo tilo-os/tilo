@@ -43,6 +43,7 @@
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/build-lib.sh"
 cd "$repo_root"
+. os/dev/guest-disks.sh
 
 # The RFC 8032 test-vector key: public and non-production, accepted only for development and
 # validation images (as tools/ci/publish/os-image.sh).
@@ -52,6 +53,7 @@ dev_owner_key=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
 phase_started=$SECONDS phase_name=start
 phase() {
   printf 'TILO_LAYER_TIMING phase=%s seconds=%s\n' "$phase_name" "$((SECONDS - phase_started))"
+  [[ $in_guest == 0 ]] || guest_disk_report "$phase_name"
   phase_name=$1 phase_started=$SECONDS
   guest_memory
 }
@@ -109,6 +111,8 @@ fragment_dir() {
 # The guest's devices for podman: fuse for its storage, loop for the disk steps.
 guest_devices() {
   in_guest=1
+  guest_writeback
+  guest_memory_watch
   modprobe fuse 2>/dev/null || true
   modprobe loop 2>/dev/null || true
   if [[ ! -c /dev/fuse ]]; then

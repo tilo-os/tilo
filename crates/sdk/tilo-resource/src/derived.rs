@@ -153,6 +153,9 @@ fn bound_declaration(
         }
     });
     let mut decl = Declaration::new(vocabulary, id, label, params, build);
+    // The same act with some of its arguments given: it wears the verb's
+    // picture.
+    decl.icon.clone_from(&verb.icon);
     decl.invokes = Some(invokes);
     decl.kind = verb.kind;
     decl.field = verb.field;

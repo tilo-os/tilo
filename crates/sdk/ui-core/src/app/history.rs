@@ -150,34 +150,80 @@ impl App {
         }
         crate::history_mode::embedded::capture_entries(self.root_widget.as_mut(), &self.state.doc);
     }
+    /// Reconcile the document routes with the tree, and refresh History
+    /// where it needs it: the window's own, and the surfaces in the tree.
+    ///
+    /// Each walk of the whole tree here runs only when what it reads moved
+    /// since it last ran ([`super::runtime::TreeWalks`]): a frame only an
+    /// animation asked for walks nothing. History asks every frame for
+    /// what other threads deliver to it, so a tree holding History surfaces
+    /// is walked every frame.
     pub(super) fn refresh_framework_history(&mut self, width: f64) {
-        self.refresh_document_routes();
+        self.restore_failed_document_publications();
+        let tree = self.tree_generation();
+        let routes = super::runtime::RouteInputs {
+            tree,
+            witness: self.bound_broker_route().cloned(),
+            autosave_generation: self.autosave_generation,
+            document: crate::doc::settle_mark(&self.state.doc),
+        };
+        if self.layout.walks.routes.as_ref() != Some(&routes) {
+            #[cfg(test)]
+            let _walk = crate::profiling::frame_probe::span("walk.routes");
+            self.reconcile_document_routes();
+            self.layout.walks.routes = Some(routes);
+        }
         let status = self.window_status();
+        let walked = self
+            .layout
+            .walks
+            .history
+            .take()
+            .filter(|walk| walk.tree == tree && walk.status == status);
+        let embedded = walked.as_ref().is_none_or(|walk| walk.embedded);
         // A status that only changes the text where it already shows repaints
         // that text; it is no reason to rebuild History or the app.
-        crate::history_mode::embedded::set_sync_status_in_place(
-            self.root_widget.as_mut(),
-            status.as_ref(),
-        );
+        #[cfg(test)]
+        let walk = embedded.then(|| crate::profiling::frame_probe::span("walk.history"));
+        if embedded {
+            crate::history_mode::embedded::set_sync_status_in_place(
+                self.root_widget.as_mut(),
+                status.as_ref(),
+            );
+        }
         if let Some(history) = &mut self.history
             && !history.sync_status_matches(status.as_ref())
         {
             history.set_sync_status_in_place(status.as_ref(), self.root_widget.as_mut());
         }
-        let nested = crate::history_mode::embedded::needs_refresh(
-            self.root_widget.as_ref(),
-            &self.state.doc,
-            width,
-            status.as_ref(),
-        );
-        let invalid = self
-            .history
-            .as_ref()
-            .is_some_and(|history| history.validate_root(self.root_widget.as_ref()).is_err());
+        let (nested, found) = if embedded {
+            crate::history_mode::embedded::surfaces_need_refresh(
+                self.root_widget.as_ref(),
+                &self.state.doc,
+                width,
+                status.as_ref(),
+            )
+        } else {
+            (false, false)
+        };
+        #[cfg(test)]
+        drop(walk);
+        // The window's own History found its root in this same tree.
+        let root_valid = self.history.as_ref().is_some_and(|history| {
+            walked.as_ref().is_some_and(|walk| walk.root_valid)
+                || history.validate_root(self.root_widget.as_ref()).is_ok()
+        });
+        let invalid = self.history.is_some() && !root_valid;
         let status_changed = self
             .history
             .as_ref()
             .is_some_and(|history| !history.sync_status_matches(status.as_ref()));
+        self.layout.walks.history = Some(super::runtime::HistoryWalk {
+            tree,
+            status: status.clone(),
+            embedded: found,
+            root_valid,
+        });
         if !nested
             && !invalid
             && !status_changed

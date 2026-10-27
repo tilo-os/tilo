@@ -219,7 +219,11 @@ impl Notebook {
     ///
     /// A note titled `title`, after the notes already under `parent` (a
     /// top-level note when none).
-    #[action(keywords = "new page, create note, add note, memo", answers)]
+    #[action(
+        keywords = "new page, create note, add note, memo",
+        answers,
+        icon = "file-plus"
+    )]
     pub fn new_note(
         &mut self,
         cx: &mut ActionCx,
@@ -240,7 +244,7 @@ impl Notebook {
     /// New note inside
     ///
     /// A note titled `title`, after the notes already under this one.
-    #[action(keywords = "sub page, subpage, child note, nested note", item = pages, answers)]
+    #[action(keywords = "sub page, subpage, child note, nested note", item = pages, answers, icon = "list-tree")]
     pub fn new_child(
         &mut self,
         cx: &mut ActionCx,
@@ -257,7 +261,7 @@ impl Notebook {
     /// Rename note
     ///
     /// Give the note a new title; every link to it reads the new title.
-    #[action(keywords = "change title, retitle", item = pages)]
+    #[action(keywords = "change title, retitle", item = pages, icon = "pencil")]
     pub fn rename(
         &mut self,
         page: &Id,
@@ -280,7 +284,7 @@ impl Notebook {
     /// Delete note
     ///
     /// Delete the note and every note under it.
-    #[action(keywords = "remove note, trash note, delete page", item = pages, destructive)]
+    #[action(keywords = "remove note, trash note, delete page", item = pages, destructive, icon = "trash-2")]
     pub fn delete(&mut self, page: &Id) -> Result<(), Refusal> {
         self.pages.get(page).ok_or("no such note")?;
         for id in self.subtree(page) {
@@ -304,7 +308,7 @@ impl Notebook {
     }
 
     /// Move note up
-    #[action(item = pages)]
+    #[action(item = pages, icon = "arrow-up")]
     pub fn move_up(&mut self, page: &Id) -> Result<(), Refusal> {
         let (parent, siblings, at) = self.siblings_of(page)?;
         let above = at
@@ -316,7 +320,7 @@ impl Notebook {
     }
 
     /// Move note down
-    #[action(item = pages)]
+    #[action(item = pages, icon = "arrow-down")]
     pub fn move_down(&mut self, page: &Id) -> Result<(), Refusal> {
         let (parent, siblings, at) = self.siblings_of(page)?;
         if at.saturating_add(1) >= siblings.len() {
@@ -329,7 +333,7 @@ impl Notebook {
     /// Indent note
     ///
     /// Put the note under the note above it.
-    #[action(item = pages)]
+    #[action(item = pages, icon = "arrow-right")]
     pub fn indent(&mut self, page: &Id) -> Result<(), Refusal> {
         let (_, siblings, at) = self.siblings_of(page)?;
         let above = at
@@ -343,7 +347,7 @@ impl Notebook {
     /// Outdent note
     ///
     /// Put the note beside the note it is under, right after it.
-    #[action(item = pages)]
+    #[action(item = pages, icon = "arrow-left")]
     pub fn outdent(&mut self, page: &Id) -> Result<(), Refusal> {
         let parent = self
             .pages
@@ -361,7 +365,7 @@ impl Notebook {
     ///
     /// Copy the note and every note under it, right after it. Links between
     /// the copied notes lead to the copies.
-    #[action(keywords = "copy note, clone note", item = pages)]
+    #[action(keywords = "copy note, clone note", item = pages, icon = "copy")]
     pub fn duplicate(&mut self, cx: &mut ActionCx, page: &Id) -> Result<(), Refusal> {
         let source = self.pages.get(page).ok_or("no such note")?.clone();
         let sources = self.subtree(page);
@@ -429,7 +433,7 @@ impl Notebook {
     }
 
     /// New tag
-    #[action]
+    #[action(icon = "tag")]
     pub fn new_tag(
         &mut self,
         cx: &mut ActionCx,
@@ -452,7 +456,7 @@ impl Notebook {
     /// Tag note
     ///
     /// Give the note the tag named `name`, made when the notebook has none.
-    #[action(keywords = "label, add tag, categorize", item = pages)]
+    #[action(keywords = "label, add tag, categorize", item = pages, icon = "tag")]
     pub fn tag(
         &mut self,
         cx: &mut ActionCx,
@@ -482,7 +486,7 @@ impl Notebook {
     /// Delete tag
     ///
     /// Delete the tag and take it off every note.
-    #[action(item = tags, destructive)]
+    #[action(item = tags, destructive, icon = "trash-2")]
     pub fn delete_tag(&mut self, tag: &Id) -> Result<(), Refusal> {
         self.tags.remove(tag).ok_or("no such tag")?;
         for (_, page) in self.pages.iter_mut() {
