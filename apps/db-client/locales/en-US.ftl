@@ -4,6 +4,7 @@ db-run-query = Run query
 db-cancel-query = Cancel query
 db-copy-row = Copy row
 db-copy-result = Copy result
+db-export-csv = Export as CSV
 db-view-switcher = View
 
 ## Tabs
