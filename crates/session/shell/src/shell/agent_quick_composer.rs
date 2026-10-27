@@ -599,6 +599,22 @@ impl AgentQuickComposer {
         self.about.as_ref()
     }
 
+    /// The person chose to instruct the agent rather than ask it: the field
+    /// starts with what they chose to have done there. It is their text from
+    /// then on — every key they type goes into it.
+    pub(crate) fn instruct(&mut self, text: &str) {
+        if !self.is_open() {
+            return;
+        }
+        if let Some(editor) = self.text_input() {
+            editor.set_text(text);
+            return;
+        }
+        self.draft.set(text.to_owned());
+        self.refresh();
+        self.focus_reset = true;
+    }
+
     /// Let the person pick which of `agents` to tell, in its header.
     pub(crate) fn offer_agents(&mut self, agents: Vec<String>) {
         self.view.picks_agent.set(agents.len() > 1);
@@ -661,6 +677,11 @@ impl AgentQuickComposer {
     /// agent's marker, so it stays while that agent shows no marker.
     pub(crate) fn about_selection(&self) -> bool {
         self.is_open() && self.about.is_some()
+    }
+
+    /// The field the composer types into, for the keyboard's own edits.
+    pub(crate) fn text_input(&mut self) -> Option<&mut TextInput> {
+        find_editor_mut(&mut self.popover)
     }
 
     /// Offer to insert a text answer at the selection the composer was
@@ -1145,6 +1166,16 @@ fn editor_state(widget: &dyn Widget) -> Option<String> {
         return ui::undo::get_state(widget);
     }
     widget.children().into_iter().find_map(editor_state)
+}
+
+/// The composer's text field, wherever the popover holds it.
+fn find_editor_mut(widget: &mut dyn Widget) -> Option<&mut TextInput> {
+    if widget.test_id() == Some("agent-quick-editor") {
+        return widget
+            .as_any_mut()
+            .and_then(|widget| widget.downcast_mut::<TextInput>());
+    }
+    widget.children_mut().into_iter().find_map(find_editor_mut)
 }
 
 /// The test id of the composer's agent picker.

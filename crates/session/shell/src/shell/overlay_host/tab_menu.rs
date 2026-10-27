@@ -235,9 +235,11 @@ impl TabMenuLayer {
                 target: *target,
                 action,
             }),
-            MenuSubject::Thing(_) => {
-                (action == WindowMenuAction::TellAgent).then_some(LayerIntent::TellAgent)
-            }
+            MenuSubject::Thing(_) => match action {
+                WindowMenuAction::TellAgent => Some(LayerIntent::TellAgent),
+                WindowMenuAction::InstructAgent => Some(LayerIntent::InstructAgent),
+                _ => None,
+            },
         }
     }
 }

@@ -235,8 +235,9 @@ impl ShellOverlayHost {
     }
 
     /// A right-click on something the desktop draws (a strip, a
-    /// notification, a search result): its menu offers to tell an agent
-    /// about `seed`, at `at`. Whether it opened.
+    /// notification, a search result, a file in the file chooser): its menu
+    /// offers to tell an agent about `seed` — or to be told what to do with
+    /// it — at `at`. Whether it opened.
     pub(crate) fn open_thing_menu(
         &mut self,
         seed: crate::shell::selection_agent::SelectionSeed,
@@ -249,7 +250,7 @@ impl ShellOverlayHost {
         let display = self.surface_area(Some(at));
         self.layers.tab_menu.open(
             MenuSubject::Thing(Box::new(seed)),
-            vec![crate::shell::window_menu::tell_agent_row()],
+            crate::shell::window_menu::agent_rows().to_vec(),
             at,
             title,
             display,
@@ -643,6 +644,21 @@ impl ShellOverlayHost {
                 // says so.
                 self.open_ask_agent(seed.drawn_at(Some(Rect::from_center_size(at, (1.0, 1.0)))));
                 true
+            }
+            LayerIntent::InstructAgent => {
+                let at = self.layers.tab_menu.anchor_point();
+                let Some(seed) = self.layers.tab_menu.take_thing() else {
+                    return false;
+                };
+                // The person said what to do; the agent is found, or said
+                // missing, exactly as it is when they asked.
+                let instruction = seed.instruction();
+                let opened = self
+                    .open_ask_agent(seed.drawn_at(Some(Rect::from_center_size(at, (1.0, 1.0)))));
+                if let Some(instruction) = instruction {
+                    self.agent_quick_composer.instruct(&instruction);
+                }
+                opened
             }
         }
     }

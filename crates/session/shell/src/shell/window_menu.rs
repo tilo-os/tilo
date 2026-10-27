@@ -51,6 +51,9 @@ pub enum WindowMenuAction {
     /// Tell an agent to do something with this window: the agent composer
     /// opens at the pointer about the window's app.
     TellAgent,
+    /// Say what to do with this window: the agent composer opens at the
+    /// pointer about the window's app, its field holding the instruction.
+    InstructAgent,
     /// Stop the tab controlling the desktop beyond its workspace: the one
     /// row of the bar's "Controls your desktop" chip menu
     /// ([`desktop_control_menu_rows`]).
@@ -91,6 +94,7 @@ impl WindowMenuAction {
             Self::CloseTab => "tabmenu:close".into(),
             Self::CloseWindow => "tabmenu:close-window".into(),
             Self::TellAgent => "tabmenu:tell-agent".into(),
+            Self::InstructAgent => "tabmenu:instruct-agent".into(),
             Self::StopDesktopControl => "tabmenu:stop-desktop-control".into(),
         }
     }
@@ -144,6 +148,7 @@ impl WindowMenuAction {
             Self::CloseTab,
             Self::CloseWindow,
             Self::TellAgent,
+            Self::InstructAgent,
             Self::StopDesktopControl,
         ]
         .into_iter()
@@ -441,7 +446,7 @@ pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec
         ));
     }
     rows.push(WindowMenuRow::Separator);
-    rows.push(tell_agent_row());
+    rows.extend(agent_rows());
     rows
 }
 
@@ -500,6 +505,24 @@ pub fn tell_agent_row() -> WindowMenuRow {
         icon: Some(Icon::Sparkles),
         shortcut: None,
     })
+}
+
+/// "Instruct an agent…": what to do with the thing, said in the composer's
+/// field rather than asked about it.
+pub fn instruct_agent_row() -> WindowMenuRow {
+    WindowMenuRow::Entry(WindowMenuEntry {
+        action: WindowMenuAction::InstructAgent,
+        label: t("shell-window-menu-instruct-agent"),
+        icon: Some(Icon::WandSparkles),
+        shortcut: None,
+    })
+}
+
+/// What the desktop's menus offer an agent about the thing they are on,
+/// asked or told: the same pair under a window's menu and under anything
+/// else the desktop draws.
+pub fn agent_rows() -> [WindowMenuRow; 2] {
+    [tell_agent_row(), instruct_agent_row()]
 }
 
 fn menu_item(entry: &WindowMenuEntry) -> MenuItem {

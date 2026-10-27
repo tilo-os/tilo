@@ -204,6 +204,26 @@ impl SelectionSeed {
             },
         }
     }
+
+    /// What the person chose to have done about it, as the composer's field
+    /// starts with it ([`crate::shell::agent_quick_composer::AgentQuickComposer::instruct`]):
+    /// an instruction naming the thing, which the agent reaches only through
+    /// the resource the composer sends with it. A thing with nothing to act
+    /// on is not offered one.
+    pub(crate) fn instruction(&self) -> Option<String> {
+        let resource = self.selection.as_ref()?.resource.as_ref()?;
+        let label = resource.label.trim();
+        if label.is_empty() {
+            return None;
+        }
+        Some(t_args(
+            "agent-quick-instruct",
+            &[
+                ("thing", label.into()),
+                ("app", self.app_label.clone().into()),
+            ],
+        ))
+    }
 }
 
 /// Where a pressed chord goes next.
