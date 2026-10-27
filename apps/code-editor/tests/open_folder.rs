@@ -28,8 +28,10 @@ fn click_open_folder(app: &mut TestApp<CodeEditorShell>) {
         })
         .and_then(|(_, node)| node.bounds())
         .expect("the sidebar offers Open folder");
-    let center = bounds.center();
-    harness.click_at(center.x, center.y);
+    harness.click_at(
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
 }
 
 fn shows(app: &mut TestApp<CodeEditorShell>, name: &str) -> bool {
