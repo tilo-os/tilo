@@ -2019,6 +2019,7 @@ settings-users-autologin-error = Automatische Anmeldung kann nicht gelesen werde
 settings-bluetooth-read-error = Bluetooth kann nicht gelesen werden: { $error }
 settings-bluetooth-no-adapter = Kein Bluetooth-Adapter an diesem Gerät
 sound-devices-error = Audiogeräte können nicht aufgelistet werden: { $error }
+sound-unavailable-title = Ausgabe und Eingabe
 sound-volume-error = Ausgabelautstärke kann nicht gelesen werden: { $error }
 sound-input-error = Eingangspegel kann nicht gelesen werden: { $error }
 display-brightness-error = Helligkeit kann nicht gelesen werden: { $error }

@@ -2019,6 +2019,7 @@ settings-users-autologin-error = Can't read automatic login: { $error }
 settings-bluetooth-read-error = Can't read Bluetooth: { $error }
 settings-bluetooth-no-adapter = No Bluetooth adapter on this device
 sound-devices-error = Can't list audio devices: { $error }
+sound-unavailable-title = Output and input
 sound-volume-error = Can't read the output volume: { $error }
 sound-input-error = Can't read the input level: { $error }
 display-brightness-error = Can't read the brightness: { $error }
