@@ -710,3 +710,70 @@ fn a_touch_tap_on_an_app_card_opens_its_app() {
         "a tap on the Notes card opens Notes"
     );
 }
+
+/// The compositor's DRM loop handles a tap's raw contact and the click it
+/// becomes in one batch, settling the desktop only after the whole batch:
+/// a mouse that rested elsewhere, the finger's start and lift, then move,
+/// press, release and leave with no settle between them. The tap opens
+/// Notes all the same.
+#[test]
+fn a_touch_tap_handled_in_one_batch_opens_its_app() {
+    use winit::event::{Touch, TouchPhase};
+    let tree = WorkspaceTree::bootstrap_default();
+    let (mut host, _) = build_tilo_overlay_host_with_chrome(&tree);
+    let apps = FakeApplications::install(&mut host, 0);
+    let mut doc = AutoCommit::new();
+    let theme = Theme::dark().with_reduce_motion(true);
+    let (taffy, node) = launchpad_journey_layout(&mut host, &theme);
+    launchpad_journey_paint(&mut host, &theme, "batch-idle");
+    let card = launchpad_card(host.content.as_ref(), "notes")
+        .expect("the empty workspace offers a Notes card")
+        .center();
+    // The mouse last rested away from the cards, as in the VM's W18.
+    launchpad_journey_deliver(
+        &mut host,
+        &mut doc,
+        &ui::synthetic_input::cursor_moved(8.0, 300.0),
+        &taffy,
+        node,
+    );
+    let finger = |phase| Touch {
+        device_id: winit::event::DeviceId::dummy(),
+        phase,
+        location: winit::dpi::PhysicalPosition::new(card.x, card.y),
+        force: None,
+        id: 3,
+    };
+    let mut pointer = crate::compositor::touch_pointer::TouchPointer::default();
+    let mut batch = Vec::new();
+    for phase in [TouchPhase::Started, TouchPhase::Ended] {
+        let touch = finger(phase);
+        let raw = ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .layout(&taffy, node)
+            .send(&mut host, &WindowEvent::Touch(touch));
+        let route = if raw.handled {
+            crate::compositor::touch_pointer::TouchRoute::Raw
+        } else {
+            crate::compositor::touch_pointer::TouchRoute::for_cursor(None)
+        };
+        batch.extend(pointer.events(&touch, || route));
+    }
+    assert_eq!(
+        batch.len(),
+        4,
+        "the tap becomes move, press, release, leave: {batch:?}"
+    );
+    for event in &batch {
+        ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .layout(&taffy, node)
+            .send(&mut host, event);
+    }
+    host.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+    assert_eq!(
+        *apps.opened.borrow(),
+        ["so.tilo.notes"],
+        "a tap handled in one batch opens Notes"
+    );
+}
