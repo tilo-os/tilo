@@ -2311,14 +2311,16 @@ COPY \
 # offers it only while the person's key is held. A custom authselect
 # profile over the configured one, with its features, so authselect keeps
 # owning the files; an image whose base has no authselect configuration fails
-# here rather than shipping a stack that skips the daemon.
+# here rather than shipping a stack that skips the daemon. No backup of the
+# files it replaces: the base image has them, and a backup is named by the time
+# the build ran, which made the layer differ in every build.
 RUN --mount=type=bind,source=os/scripts/authselect-tilo.py,target=/run/authselect-tilo.py,ro \
     current="$(authselect current --raw)" \
     && base="${current%% *}" \
     && features="$(printf '%s' "$current" | cut -s -d' ' -f2-)" \
     && authselect create-profile tilo --base-on="$base" \
     && python3 /run/authselect-tilo.py /etc/authselect/custom/tilo \
-    && authselect select custom/tilo $features --force \
+    && authselect select custom/tilo $features --force --nobackup \
     && grep -q pam_tilo.so /etc/pam.d/system-auth \
     && grep -q pam_tilo.so /etc/pam.d/password-auth \
     && ! grep -q pam_fprintd /etc/pam.d/system-auth /etc/pam.d/password-auth
