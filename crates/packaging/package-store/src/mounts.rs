@@ -109,8 +109,19 @@ impl Mounts {
 }
 
 /// What the running apps hold, or that it cannot be known.
+///
+/// Reading the mount table means reading `/proc/<pid>/mountinfo` for
+/// hundreds of processes, tens of milliseconds on a desktop, so
+/// [`InUse::now`] reads it when it is first asked, and most collections,
+/// which find nothing to remove, never read it at all. The answer is never
+/// older than the first question: everything a caller did before asking,
+/// such as taking a launch lease, happened before the table was read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InUse(std::sync::OnceLock<Table>);
+
+/// One reading of the mount table.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum InUse {
+pub enum Table {
     /// The mount table was read.
     Known(Mounts),
     /// The mount table could not be read: everything counts as in use.
@@ -118,35 +129,55 @@ pub enum InUse {
 }
 
 impl InUse {
-    /// The mounts of every process now. Off Linux no app tree is ever
-    /// mounted, so the answer is an empty table.
+    /// The mounts of every process, read when first asked. Off Linux no app
+    /// tree is ever mounted, so the answer is an empty table.
     #[must_use]
     pub fn now() -> Self {
-        if cfg!(target_os = "linux") {
-            match Mounts::scan_proc(Path::new("/proc")) {
-                Ok(mounts) => Self::Known(mounts),
-                Err(error) => Self::Unknown(format!("reading /proc: {error}")),
+        Self::default()
+    }
+
+    /// The mount table `mounts`, as already read.
+    #[must_use]
+    pub fn known(mounts: Mounts) -> Self {
+        Self(std::sync::OnceLock::from(Table::Known(mounts)))
+    }
+
+    /// A mount table that could not be read, for `reason`.
+    #[must_use]
+    pub fn unknown(reason: impl Into<String>) -> Self {
+        Self(std::sync::OnceLock::from(Table::Unknown(reason.into())))
+    }
+
+    /// The table, read now if it has not been yet.
+    #[must_use]
+    pub fn table(&self) -> &Table {
+        self.0.get_or_init(|| {
+            if cfg!(target_os = "linux") {
+                match Mounts::scan_proc(Path::new("/proc")) {
+                    Ok(mounts) => Table::Known(mounts),
+                    Err(error) => Table::Unknown(format!("reading /proc: {error}")),
+                }
+            } else {
+                Table::Known(Mounts::default())
             }
-        } else {
-            Self::Known(Mounts::default())
-        }
+        })
     }
 
     /// Whether `tree` may be in use by a running app.
     #[must_use]
     pub fn holds(&self, tree: &Path) -> bool {
-        match self {
-            Self::Known(mounts) => mounts.holds(tree),
-            Self::Unknown(_) => true,
+        match self.table() {
+            Table::Known(mounts) => mounts.holds(tree),
+            Table::Unknown(_) => true,
         }
     }
 
     /// Whether some process may have a mount at `point`.
     #[must_use]
     pub fn has_mount_point(&self, point: &Path) -> bool {
-        match self {
-            Self::Known(mounts) => mounts.has_mount_point(point),
-            Self::Unknown(_) => true,
+        match self.table() {
+            Table::Known(mounts) => mounts.has_mount_point(point),
+            Table::Unknown(_) => true,
         }
     }
 }
@@ -232,10 +263,10 @@ mod tests {
 
     #[test]
     fn an_unreadable_table_holds_everything() {
-        let unknown = InUse::Unknown("no /proc".into());
+        let unknown = InUse::unknown("no /proc");
         assert!(unknown.holds(Path::new("/anything/at/all")));
         assert!(unknown.has_mount_point(Path::new("/run/tilo-runtime/x")));
-        assert!(!InUse::Known(Mounts::default()).holds(Path::new("/a/b")));
+        assert!(!InUse::known(Mounts::default()).holds(Path::new("/a/b")));
     }
 
     #[test]
@@ -250,13 +281,24 @@ mod tests {
         assert!(Mounts::scan_proc(&proc_root.path().join("missing")).is_err());
     }
 
+    #[test]
+    fn the_table_is_read_when_first_asked() {
+        let in_use = InUse::now();
+        assert!(
+            in_use.0.get().is_none(),
+            "nothing is read before a question"
+        );
+        let _ = in_use.holds(Path::new("/a/b"));
+        assert!(in_use.0.get().is_some());
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn this_process_sees_its_own_root_mount() {
         // The production path: a real /proc lists at least the root mount.
-        match InUse::now() {
-            InUse::Known(mounts) => assert!(mounts.has_mount_point(Path::new("/"))),
-            InUse::Unknown(why) => panic!("the mount table must be readable here: {why}"),
+        match InUse::now().table() {
+            Table::Known(mounts) => assert!(mounts.has_mount_point(Path::new("/"))),
+            Table::Unknown(why) => panic!("the mount table must be readable here: {why}"),
         }
     }
 }
