@@ -234,9 +234,10 @@ pub struct Issue {
     pub cost_budget: Option<u64>,
     /// Spend
     ///
-    /// What an agent's runs recorded they used, in the same units. Typed, as
-    /// a field a person can read, never taken from an agent's own word in
-    /// its report.
+    /// What its runs spent, in millionths of the same currency unit, with
+    /// its sub-issues' included: what a person reads of the cost, and what
+    /// its budget is measured against. Written by the tracker from its own
+    /// ledger of settled receipts, never taken from an agent's word.
     #[model(readonly)]
     pub spend: Option<u64>,
     /// Thread
