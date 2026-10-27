@@ -21,7 +21,7 @@ class Element {
 
 // Run the real page wiring and workspace actions. Replace only the booted
 // WASM/GPU peer, arrival animation, and root custody with fixtures.
-async function fixture({boot, remembered = []} = {}) {
+async function fixture({boot, remembered = [], own = false} = {}) {
   const values = new Map();
   globalThis.localStorage = {getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key)};
   globalThis.sessionStorage = {getItem: () => null, removeItem() {}};
@@ -40,12 +40,12 @@ async function fixture({boot, remembered = []} = {}) {
     membership: {list: async () => ({name: 'Current', members: []}), requests: async () => { throw new Error('only the owner sees who asks'); }},
     workspaces: {create: async name => ({room: 'created', name}), enter: async () => calls.push('enter')},
     dispose: async () => calls.push('dispose')};
-  const page = {peer, entry: {base: 'https://web.example/'},
-    mount: {setHostActions: actions => shown.push(actions), flush: async () => calls.push('flush'), cleanup: async () => calls.push('cleanup')},
-    router: {route: {target: {scope: {kind: 'room', host: ORIGIN, room: 'current'}}}, stop: () => calls.push('stop')},
+  const page = {peer: own ? null : peer, entry: {base: 'https://web.example/'},
+    mount: {setHostActions: actions => shown.push(actions), setOwnPerson: person => calls.push(['own', person]), flush: async () => calls.push('flush'), cleanup: async () => calls.push('cleanup')},
+    router: {route: {target: {scope: own ? {kind: 'own'} : {kind: 'room', host: ORIGIN, room: 'current'}}}, stop: () => calls.push('stop')},
     link: {format: route => `https://web.example/#/${route.target.scope.room}`}};
   const prepared = [];
-  globalThis.__entryPageFixture = {page, identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
+  globalThis.__entryPageFixture = {page, mounted: [], identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
     boot: async options => { diagnostics = options.diagnostics; return boot ? boot(options, page) : page; }};
   rememberEntered({origin: ORIGIN, room: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'});
   // Rooms an earlier visit kept as they were stored, whichever host held them.
@@ -55,7 +55,7 @@ async function fixture({boot, remembered = []} = {}) {
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
   source = source
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot;')
-    .replace("import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';", 'const loadRuntime = async () => ({}), mountDesktop = () => {}, prefetchApplication = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu();')
+    .replace("import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';", 'const loadRuntime = async () => ({}), mountDesktop = (...args) => globalThis.__entryPageFixture.mounted.push(args), prefetchApplication = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu();')
     .replace("import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';", "const startArrival = () => {}, failureMessage = error => error.message, STOPPED_DRAWING = 'stopped';")
     .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
@@ -173,3 +173,16 @@ test('creating a workspace remembers it and uses the existing save-and-close swi
   assert.equal(enteredWorkspaces().find(room => room.room === 'created').name, 'Created');
 });
 
+
+test('the person’s own desktop writes as their root identity and shows them by their name', async () => {
+  let mountOwn;
+  const {calls} = await fixture({own: true, boot: async (options, page) => { mountOwn = options.deps.mountDesktop; return page; }});
+  // No room's peer certifies who writes there: the browser's root identity does.
+  await mountOwn('surface', {onStatus() {}});
+  const [[, options]] = globalThis.__entryPageFixture.mounted;
+  assert.equal(options.author, USER);
+  const own = calls.find(call => call[0] === 'own');
+  assert.ok(own, 'the desktop is told who its person is');
+  assert.equal(own[1].user, USER);
+  assert.ok(own[1].label && own[1].label !== 'Guest', own[1].label);
+});

@@ -746,7 +746,12 @@ export async function startEntryPage({mode}) {
       const known = remembering(() => rememberedRoom(next.scope));
       if (known?.name && !workspaceName) workspaceName = known.name;
     },
-    mountDesktop,
+    // The person's own desktop has no room's peer to certify who writes:
+    // the browser's root identity is the person, as everywhere else.
+    mountDesktop: async (surface, options) => {
+      const identity = options.peer ? null : currentIdentity() ?? await browserIdentity({create: false}).catch(() => null);
+      return mountDesktop(surface, identity ? {author: identity.userPublicKey, ...options} : options);
+    },
     ownDesktopOpen: home => ownDesktopOpen(home),
     enterViaHost: async ({workspace, room}) => {
       reportErrors(workspace.admission);
@@ -911,15 +916,23 @@ export async function startEntryPage({mode}) {
       },
       show: url => {
         ownPhoto = url;
-        if (page.peer?.userPublicKey) void page.mount?.setPersonPhoto?.(page.peer.userPublicKey, url);
+        const person = pagePerson(page);
+        if (person) void page.mount?.setPersonPhoto?.(person, url);
       },
     };
+    // On the person's own desktop no room names them: the page does.
+    const own = page.peer ? null : pagePerson(page);
+    if (own) {
+      displayName ??= chosenDisplayName(own) ?? defaultDisplayName(own);
+      page.mount?.setOwnPerson?.({user: own, label: displayName});
+    }
     const attachIdentity = () => keepIdentity({peer: page.peer, mount: hostActions?.('identity') ?? page.mount, home: page.entry?.home,
       name: () => displayName, runtime, link: page.link, photos, naming: {
         ask: (current, save) => askName(current, save),
         set: chosen => {
-          displayName = chooseDisplayName(page.peer.userPublicKey, chosen);
-          page.peer.setDisplayName?.(displayName);
+          displayName = chooseDisplayName(pagePerson(page), chosen);
+          if (page.peer) page.peer.setDisplayName?.(displayName);
+          else page.mount?.setOwnPerson?.({user: pagePerson(page), label: displayName});
           return displayName;
         },
       }});
@@ -1439,20 +1452,29 @@ async function setUpFromLink(secret, setUp) {
  * from the profile their hosts keep; one chosen only here goes to them.
  */
 async function followProfile(page, onName, onKept = () => {}, onNone = () => {}) {
-  const userPublicKey = page.peer?.userPublicKey;
-  if (!userPublicKey || !page.peer.setDisplayName) return;
-  const origins = [page.peer.origin, ...membershipOrigins(userPublicKey),
+  const userPublicKey = pagePerson(page);
+  if (!userPublicKey || (page.peer && !page.peer.setDisplayName)) return;
+  const origins = [page.peer?.origin, ...membershipOrigins(userPublicKey),
     ...listedWorkspaces({home: page.entry?.home}).map(workspace => workspace.host.origin)].filter(Boolean);
   try {
     await syncProfile({userPublicKey, origins, identity: currentIdentity(), chosen: chosenDisplayName(userPublicKey), onKept, onNone,
       apply: name => {
         const kept = chooseDisplayName(userPublicKey, name);
-        page.peer.setDisplayName(kept);
+        if (page.peer) page.peer.setDisplayName(kept);
+        else page.mount?.setOwnPerson?.({user: userPublicKey, label: kept});
         onName(kept);
       }});
   } catch (error) {
     console.warn('identity:', error);
   }
+}
+
+/**
+ * The person this page acts as: the one its room's peer is certified as,
+ * else on their own desktop the browser's root identity.
+ */
+function pagePerson(page) {
+  return page.peer ? page.peer.userPublicKey ?? null : currentIdentity()?.userPublicKey ?? null;
 }
 
 /** Reload this page to join the workspace it watches. */
@@ -1504,8 +1526,10 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
   if (peer?.userPublicKey && peer.userPublicKey !== identity.userPublicKey) return null;
   const mac = /Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? '');
   const actions = createIdentityActions({
-    identity, name, pairing: pairingOf({peer, identity, runtime, link}), naming: peer?.setDisplayName ? naming : null,
-    photos: peer?.setDisplayName ? photos : null,
+    // A watching peer goes by no name of its own; the person's own desktop
+    // (no peer) and a room they joined do.
+    identity, name, pairing: pairingOf({peer, identity, runtime, link}), naming: !peer || peer.setDisplayName ? naming : null,
+    photos: !peer || peer.setDisplayName ? photos : null,
     hosts: () => membershipOrigins(identity.userPublicKey),
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
     pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', showPairLink: pairLinkSheet, askPairing: pairingAsk,
