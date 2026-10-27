@@ -816,6 +816,11 @@ fn instruction(text: &str, context: &str, conversation: &[ComposerTurn]) -> Stri
 
 fn submission_operation(request: ComposerRequest) -> Option<Operation> {
     if request.intent == ComposerIntent::Request && !request.stop {
+        // The person ruling that this is work skips the question the agent
+        // would have answered: the task starts with their words as its title.
+        if request.as_task == Some(true) {
+            return Some(request_queue(&request, None));
+        }
         return Some(respond_operation(request));
     }
     let issue = request
@@ -1082,6 +1087,7 @@ mod tests {
             ],
             about: None,
             model: None,
+            as_task: None,
         }
     }
 
