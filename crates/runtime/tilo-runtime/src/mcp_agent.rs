@@ -1406,11 +1406,55 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// Resolve a whole path.
     async fn resolve(&self, parsed: &ParsedPath) -> Result<Result<Resolved, String>, String> {
         match self.app_ref(&parsed.app).await? {
-            AppRef::Running { app_id, provider } => {
-                Ok(Ok(self.resolve_in(parsed, app_id, provider, true).await?))
-            }
+            AppRef::Running { app_id, provider } => Ok(Ok(self
+                .resolve_published(parsed, app_id, provider, true)
+                .await?)),
             AppRef::Installed { opens, .. } => Ok(Err(Self::not_running_note(&parsed.app, opens))),
         }
+    }
+
+    /// [`Self::resolve_in`] the newest instance `newest` of `app_id`, or, when
+    /// it has published nothing for the path, the app's older instances in
+    /// turn. A path names the app, not one of its processes: an instance
+    /// lists as running a moment before it publishes its directory, and must
+    /// not hide an older one that has (an agent saw an app's actions, and
+    /// the next call found none).
+    async fn resolve_published(
+        &self,
+        parsed: &ParsedPath,
+        app_id: String,
+        newest: String,
+        list: bool,
+    ) -> Result<Resolved, String> {
+        let published = |found: &Resolved| {
+            !found.chain.is_empty() || !found.actions.is_empty() || !found.children.is_empty()
+        };
+        let first = self
+            .resolve_in(parsed, app_id.clone(), newest.clone(), list)
+            .await;
+        if first.as_ref().is_ok_and(published) {
+            return first;
+        }
+        // Only then are the running apps asked again, for the older instances.
+        let older: Vec<String> = self
+            .instances()
+            .await?
+            .1
+            .iter()
+            .rev()
+            .filter(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
+            .map(|(peer, _)| peer.to_string())
+            .filter(|peer| *peer != newest)
+            .collect();
+        for provider in older {
+            let resolved = self
+                .resolve_in(parsed, app_id.clone(), provider, list)
+                .await;
+            if resolved.as_ref().is_ok_and(published) {
+                return resolved;
+            }
+        }
+        first
     }
 
     /// Resolve the segments of `parsed` in the running app `app_id`, whose
@@ -1973,7 +2017,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             AppRef::Running { app_id, provider } => (app_id, provider),
         };
-        let mut resolved = self.resolve_in(&parsed, app_id, provider, false).await?;
+        let mut resolved = self
+            .resolve_published(&parsed, app_id, provider, false)
+            .await?;
         let descriptor = if let Some(descriptor) = self.action_named(&resolved, &action).await? {
             descriptor
         } else {
