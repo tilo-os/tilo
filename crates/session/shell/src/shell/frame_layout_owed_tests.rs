@@ -122,3 +122,20 @@ fn frame_layout_owed_by_input_and_by_layout_moves() {
     assert!(frame_of(&mut frame, &mut doc), "what an update moved");
     assert!(!frame_of(&mut frame, &mut doc), "and nothing after");
 }
+
+/// A painted frame nothing on the desktop changed for draws none of the
+/// windows' tab bars again: each shows its drawing at rest.
+#[test]
+fn frame_layout_owed_by_nothing_draws_no_tab_bar() {
+    let (mut frame, mut doc, _clock) = settled();
+    let ((), phases) = tilo_resource::profiling::observe(|| {
+        for _ in 0..20 {
+            let _ = frame_of(&mut frame, &mut doc);
+        }
+    });
+    let drawn = phases
+        .iter()
+        .find(|sample| sample.phase == "ui.tab_bar.draw")
+        .map_or(0, |sample| sample.calls);
+    assert_eq!(drawn, 0, "quiet frames drew tab bars: {phases:?}");
+}
