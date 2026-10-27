@@ -314,6 +314,52 @@ fn a_budget_is_set_only_between_runs_and_within_its_ceilings() {
 }
 
 #[test]
+fn a_task_is_a_shared_thread_two_people_take_part_in() {
+    let mut ada = ada().as_invoker("ada");
+    ada.apply(Tracker::CREATE.with(create("Plan the offsite", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&ada, "Plan the offsite");
+    let mut bob = ada.fork().as_invoker("bob");
+    // The task has no run yet, so a message joins the thread instead of
+    // failing for want of an agent to read it.
+    ada.apply(Tracker::SEND_MESSAGE.with(tracker::SendMessage {
+        issue: issue.clone(),
+        text: "Book the room".into(),
+    }))
+    .unwrap();
+    bob.sync_with(&mut ada).unwrap();
+    bob.apply(Tracker::SEND_MESSAGE.with(tracker::SendMessage {
+        issue: issue.clone(),
+        text: "I will write the agenda".into(),
+    }))
+    .unwrap();
+    ada.sync_with(&mut bob).unwrap();
+    for replica in [&ada, &bob] {
+        let state = replica.state().unwrap();
+        let said: Vec<(String, String)> = state.issues[&issue]
+            .comments
+            .values()
+            .map(|message| (message.author.clone(), message.text.clone()))
+            .collect();
+        assert_eq!(
+            said,
+            vec![
+                ("ada".to_owned(), "Book the room".to_owned()),
+                ("bob".to_owned(), "I will write the agenda".to_owned()),
+            ],
+            "both people read both messages, each attributed to its author"
+        );
+        assert!(
+            state.issues[&issue]
+                .comments
+                .values()
+                .all(|message| message.kind == MessageKind::Comment),
+            "a message no run is going reads as a comment"
+        );
+    }
+}
+
+#[test]
 fn imported_tasks_are_one_issue_whoever_imports_them_and_never_come_back() {
     let task = Imported {
         task: "t1".into(),
