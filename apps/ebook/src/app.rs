@@ -4670,6 +4670,12 @@ impl Widget for BooksApp {
         // What the person did in the window's bar is carried out here, where
         // the document is at hand, through the actions the row's controls ran.
         self.take_bar_events(edits);
+        // What the search's chips asked for through the window (a screen
+        // reader, an agent) is carried out here.
+        for asked in self.query.chips.take_asked() {
+            self.dispatch(asked, edits);
+            self.dirty = true;
+        }
         self.ensure_library_loaded(edits.doc());
         self.drain_import_worker(edits);
         self.commit_pending_share(edits);
@@ -4946,6 +4952,16 @@ impl Widget for BooksApp {
         }
     }
 
+    /// The search's chips are retained widgets the page paints: the window
+    /// reaches their controls as its children's.
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.query.chips.child().into_iter().collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.query.chips.child_mut().into_iter().collect()
+    }
+
     fn name(&self) -> &'static str {
         "BooksApp"
     }
@@ -5040,9 +5056,6 @@ impl Widget for BooksApp {
             {
                 controls.push(node);
             }
-            if self.view == View::Search {
-                controls.extend(self.query.chips.access_nodes());
-            }
             controls.extend(self.number_controls.accessibility_nodes());
             if let Some(rename) = &self.renaming
                 && let Some(node) = rename.field.accessibility()
@@ -5118,14 +5131,6 @@ impl Widget for BooksApp {
         let Some(path) = path.downcast_ref::<ObjId>() else {
             return false;
         };
-        if let Some(id) = target.strip_prefix("books.search.") {
-            let performed = self.query.chips.perform(id, action, doc);
-            for asked in self.query.chips.take_asked() {
-                self.dispatch(asked, doc);
-            }
-            self.dirty |= performed;
-            return performed;
-        }
         if target == "books.reader.progress" {
             self.semantic_focus = Some(target.to_string());
             let value = match action {
