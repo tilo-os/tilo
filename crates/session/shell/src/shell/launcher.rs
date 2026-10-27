@@ -4383,8 +4383,16 @@ pub(crate) fn admit_native_app(
     if access != NativeAppOpenAccess::Delegate {
         return Ok(access);
     }
-    let broker = opening.ok_or("native app authorship broker unavailable")?;
-    let broker = broker.0.upgrade()?;
+    let opening = opening.ok_or("native app authorship broker unavailable")?;
+    // A room this device just made or joined has its membership actions
+    // published on the broker's next refresh of them: the grant is asked
+    // once the broker's loop has looked, never refused for coming first.
+    let published = opening
+        .0
+        .upgrade()?
+        .await_membership_surface(&room.to_string())?;
+    let _ = published.recv();
+    let broker = opening.0.upgrade()?;
     let job = broker.change_workspace_membership(
         &room.to_string(),
         &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {

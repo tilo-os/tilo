@@ -457,6 +457,22 @@ impl AppActionBroker {
     }
     /// Invoke one closed native workspace-membership command as the retained
     /// certified person. The owner still rechecks current Admin authority.
+    /// Told whether `room`'s membership actions are published, once the
+    /// broker's loop has looked (see
+    /// `CapnpBrokerState::await_membership_surface`). Ask before
+    /// [`Self::change_workspace_membership`] in a room that may have
+    /// appeared since the broker last published its rooms' actions.
+    ///
+    /// # Errors
+    /// The broker is shutting down.
+    pub fn await_membership_surface(
+        &self,
+        room: &str,
+    ) -> Result<std::sync::mpsc::Receiver<bool>, String> {
+        self.state
+            .while_live(|state| Ok(state.await_membership_surface(room)))
+    }
+
     pub fn change_workspace_membership(
         &self,
         room: &str,
