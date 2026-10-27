@@ -834,6 +834,10 @@ pub struct CollaborationManager {
     /// collaboration service to reach. Losing the service later keeps it
     /// set; a manager that never had one is a local document.
     sync_expected: bool,
+    /// The `Hello` to announce again while a primary route that missed its
+    /// deadline is joined anew in the background: an app opened on its
+    /// local replica rather than wait, and joins once the route answers.
+    rejoin_hello: Option<CollabRequest>,
 }
 
 impl CollaborationManager {
@@ -857,6 +861,7 @@ impl CollaborationManager {
             identity: None,
             action_directory_published: false,
             sync_expected: true,
+            rejoin_hello: None,
         };
         manager.reported_state = Some(manager.state());
         manager
@@ -985,6 +990,7 @@ impl CollaborationManager {
             identity: None,
             action_directory_published: false,
             sync_expected: false,
+            rejoin_hello: None,
         }
     }
 
@@ -1022,6 +1028,13 @@ impl CollaborationManager {
                 TransportStatus::Ready | TransportStatus::Degraded(_) => CollaborationState::Ready,
             },
         }
+    }
+
+    /// Whether the app opened on its local replica because its primary route
+    /// missed its deadline, and is joining that route again now.
+    #[must_use]
+    pub fn joining_late_route(&self) -> bool {
+        self.rejoin_hello.is_some() && self.awaiting_primary
     }
 
     /// Whether changes were meant to reach peers and currently do not: the
@@ -1656,13 +1669,47 @@ impl CollaborationManager {
         });
         if self.awaiting_primary {
             match (acknowledged, transport.status()) {
-                (Some(Ok(())), _) => self.awaiting_primary = false,
+                (Some(Ok(())), _) => {
+                    self.awaiting_primary = false;
+                    if self.rejoin_hello.take().is_some() {
+                        tracing::info!("collab: the late primary route joined");
+                    }
+                }
+                (Some(Err(error)), _)
+                    if error == broker::PRIMARY_ROUTE_TIMED_OUT && self.rejoin_hello.is_some() =>
+                {
+                    self.rejoin_late_primary_route();
+                }
                 (Some(Err(error)), _) => self.go_offline(error),
                 (None, TransportStatus::Closed(reason)) => self.go_offline(reason),
                 (None, _) => {}
             }
         }
         events
+    }
+
+    /// Join a primary route that missed its deadline again, on the same
+    /// connection, behind the app that opened without waiting for it: the
+    /// app stays up, [`CollaborationState::Connecting`] says it is joining,
+    /// and each attempt is paced by the broker's own join deadline.
+    fn rejoin_late_primary_route(&mut self) {
+        let Some(hello) = self.rejoin_hello.clone() else {
+            return;
+        };
+        tracing::info!("collab: the primary route is late; joining it again");
+        self.awaiting_primary = false;
+        let _ = self.send(hello);
+        self.confirm_primary_route_in_background();
+    }
+
+    /// A manager whose primary route missed its deadline at launch: the app
+    /// opens on its local replica, and `hello` is announced again until the
+    /// route answers (see [`Self::rejoin_late_primary_route`]).
+    pub(crate) fn joining_late(mut self, hello: CollabRequest) -> Self {
+        self.rejoin_hello = Some(hello);
+        self.rejoin_late_primary_route();
+        self.reported_state = Some(self.state());
+        self
     }
 }
 
@@ -2031,3 +2078,111 @@ mod portable_transport_tests {
 
 /// Original authority retained across display background work.
 pub use runtime_collab::DisplayOrigin;
+
+#[cfg(test)]
+mod late_primary_route_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    /// A broker connection whose primary-route answers the test hands out,
+    /// recording the `Hello`s it was sent.
+    #[derive(Default)]
+    struct Late {
+        answers: Arc<Mutex<VecDeque<Result<RouteSpec, String>>>>,
+        hellos: Arc<Mutex<usize>>,
+    }
+    impl CollabTransport for Late {
+        fn status(&self) -> TransportStatus {
+            TransportStatus::Ready
+        }
+        fn submit(&mut self, command: TransportCommand) -> Result<(), TransportError> {
+            if let TransportCommand::Primary(CollabRequest::Hello { .. }) = command {
+                *self.hellos.lock().unwrap() += 1;
+            }
+            Ok(())
+        }
+        fn drain(&mut self, _: &mut Vec<CollabEvent>) {}
+        fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+            self.answers.lock().unwrap().pop_front()
+        }
+        fn take_action_directory_requests(&mut self, _: &mut Vec<ActionDirectoryRequest>) {}
+    }
+
+    #[test]
+    fn a_late_primary_route_leaves_the_app_up_and_joins_when_it_answers() {
+        let room = uuid::Uuid::from_bytes([7; 16]);
+        let route = RouteSpec {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: room,
+            record: None,
+        };
+        let hello = CollabRequest::Hello {
+            app_id: route.app_id.clone(),
+            cluster_id: room,
+            record: None,
+            record_kind: Some("notes.notebook".into()),
+            handle: None,
+        };
+        let transport = Late::default();
+        let (answers, hellos) = (
+            Arc::clone(&transport.answers),
+            Arc::clone(&transport.hellos),
+        );
+        // The launch's own Hello missed its deadline: the app opens anyway.
+        let mut manager =
+            CollaborationManager::with_transport(Box::new(transport)).joining_late(hello);
+        assert_eq!(manager.state(), CollaborationState::Connecting);
+        assert!(
+            manager.joining_late_route(),
+            "the app says it is connecting"
+        );
+        assert!(!manager.sync_lost());
+        assert_eq!(
+            *hellos.lock().unwrap(),
+            1,
+            "the late route is joined again at once"
+        );
+
+        // That join misses its deadline too: still up, joining once more.
+        answers
+            .lock()
+            .unwrap()
+            .push_back(Err(broker::PRIMARY_ROUTE_TIMED_OUT.into()));
+        manager.poll();
+        assert_eq!(manager.state(), CollaborationState::Connecting);
+        assert_eq!(*hellos.lock().unwrap(), 2);
+
+        // The route answers: the app joins it, with nothing to do on its part.
+        answers.lock().unwrap().push_back(Ok(route));
+        manager.poll();
+        assert_eq!(manager.state(), CollaborationState::Ready);
+        assert!(
+            !manager.joining_late_route(),
+            "joined: the connecting note clears"
+        );
+        assert_eq!(
+            *hellos.lock().unwrap(),
+            2,
+            "a joined route is not announced again"
+        );
+    }
+
+    #[test]
+    fn a_refused_route_still_takes_the_app_offline() {
+        let hello = CollabRequest::Hello {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: uuid::Uuid::nil(),
+            record: None,
+            record_kind: None,
+            handle: None,
+        };
+        let transport = Late::default();
+        let answers = Arc::clone(&transport.answers);
+        let mut manager =
+            CollaborationManager::with_transport(Box::new(transport)).joining_late(hello);
+        answers.lock().unwrap().push_back(Err("refused".into()));
+        manager.poll();
+        assert!(matches!(manager.state(), CollaborationState::Offline(_)));
+    }
+}
