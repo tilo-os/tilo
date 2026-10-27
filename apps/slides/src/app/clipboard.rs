@@ -67,6 +67,10 @@ impl Clip {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::float_cmp,
+    reason = "a paste is the copy moved by exactly the paste offset: the same float sum on both sides"
+)]
 mod tests {
     use super::*;
 
