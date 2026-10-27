@@ -598,6 +598,10 @@ impl<H: PanelBindings> ProviderPanel<H> {
         self.keys = read.keys;
         let mut value = None;
         let mut listing_failed = None;
+        // Which provider the answer is about, as the profile names it: the
+        // notice says whose result it is instead of leaving one line to
+        // stand for every provider.
+        let mut listing_for = None;
         if let Some((provider, listed)) = read.listed {
             value = listed
                 .as_ref()
@@ -605,8 +609,16 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 .and_then(|models| serde_json::to_value(models).ok());
             let listed = listed.map_err(|error| listing_error(&error));
             listing_failed = listed.as_ref().err().cloned();
+            listing_for = Some(
+                self.provider_config()
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == provider)
+                    .map_or_else(|| provider.clone(), |profile| profile.label.clone()),
+            );
             self.listed_models.insert(provider, listed);
         }
+        let listing_failure = listing_failed.clone();
         let outcome = read.outcome.map_err(|error| {
             if let Some(message) = listing_failed {
                 return message;
@@ -631,17 +643,25 @@ impl<H: PanelBindings> ProviderPanel<H> {
         if let Some(acknowledgement) = self.limits_ack.take().filter(|_| read.acknowledged) {
             self.acknowledge_limits(&acknowledgement);
         }
-        self.notice = Some(match (&outcome, &value) {
-            (Ok(()), Some(serde_json::Value::Array(models))) => {
-                t_args("agent-test-connected", &[("count", models.len().into())])
-            }
-            (Ok(()), _) => t(if self.admin_reply.is_some() {
-                "agent-provider-saved"
-            } else {
-                "agent-provider-ready"
-            }),
-            (Err(error), _) => error.clone(),
-        });
+        // Only what the person asked for and cannot read anywhere else is a
+        // notice: a provider's own card shows its test result, and a change
+        // that took is already the state the panel shows. One line speaking
+        // for every provider, or announcing a save, says nothing they can act
+        // on.
+        self.notice = match (&outcome, &value) {
+            (Ok(()), Some(serde_json::Value::Array(models))) if !models.is_empty() => Some(t_args(
+                "agent-test-connected",
+                &[
+                    ("provider", listing_for.clone().unwrap_or_default().into()),
+                    ("count", models.len().into()),
+                ],
+            )),
+            (Ok(()), _) => None,
+            // The provider's own card says its test failed, beside the
+            // provider it is about.
+            (Err(_), _) if listing_failure.is_some() => None,
+            (Err(error), _) => Some(error.clone()),
+        };
         if let Some(reply) = self.admin_reply.take() {
             reply.finish(outcome.map(|()| ui::tilo_actions::ActionOutput {
                 value,
