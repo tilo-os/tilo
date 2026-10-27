@@ -512,6 +512,58 @@ fn open_program(path: &Path, chrome: &Chrome) -> Result<Opened, OpenError> {
         .map_err(OpenError::Launch)
 }
 
+/// Show `path` in Files, in the active workspace: a folder opens there, and
+/// any other path opens its folder with it selected. Files is given that
+/// folder for this session, through the workspace's grants, and nothing
+/// more; the launch is queued like a document's, so the compositor never
+/// waits on it.
+///
+/// # Errors
+///
+/// [`OpenError::Launch`] with [`LaunchError::NotInstalled`] when Files is not
+/// installed, [`OpenError::NoWorkspace`] with no active workspace, or
+/// [`OpenError::Launch`] when the launch could not be queued.
+pub fn show_in_files(path: &Path, chrome: &Chrome) -> Result<(), OpenError> {
+    use crate::shell::search::providers::applications::{
+        SYSTEM_FILE_MANAGER, grant_file_manager_path,
+    };
+
+    let folder = if path.is_dir() {
+        path
+    } else {
+        path.parent().ok_or_else(|| OpenError::NoHandler {
+            path: path.to_path_buf(),
+            ext: None,
+        })?
+    };
+    let app = launcher::installed_apps()
+        .map_err(OpenError::Launch)?
+        .into_iter()
+        .find(|app| app.package_id == SYSTEM_FILE_MANAGER)
+        .ok_or_else(|| {
+            OpenError::Launch(LaunchError::NotInstalled {
+                package_id: SYSTEM_FILE_MANAGER.to_owned(),
+            })
+        })?;
+    let workspace = {
+        let state = chrome.borrow();
+        let mut tree = state.tree_mut();
+        let active = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.id)
+            .ok_or(OpenError::NoWorkspace)?;
+        grant_file_manager_path(&mut tree, active, folder.to_path_buf());
+        let workspace = tree.workspace_after_opening_app(SYSTEM_FILE_MANAGER);
+        tree.queue_save();
+        workspace
+    };
+    let workspace = workspace.ok_or(OpenError::NoWorkspace)?;
+    chrome.borrow_mut().bump();
+    launcher::queue_document_in_workspace(app, &workspace, path.to_path_buf(), || {})
+        .map_err(OpenError::Launch)
+}
+
 /// One application offered under "Open With" for a file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenWithChoice {
@@ -2313,6 +2365,75 @@ mod tests {
             "the document is not open anywhere, so it launches again: {again:?}"
         );
         assert_eq!(launched_commands(&log, 2).len(), 2);
+        clear_launch_env();
+    }
+
+    /// "Show in Files" launches Files on the file itself, through the same
+    /// document launch every open takes, with its folder granted to Files
+    /// and nothing wider; without Files installed it says so.
+    #[test]
+    #[serial_test::serial(process_env, launch_events)]
+    fn show_in_files_launches_files_on_the_file_with_only_its_folder_granted() {
+        use crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
+        use crate::shell::state::{Effect, Scope, Subject};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        let log = install_recording_launcher(tmp.path(), &mut env);
+        let folder = tmp.path().join("Pictures").join("Screenshots");
+        std::fs::create_dir_all(&folder).unwrap();
+        let shot = folder.join("Tilo Screenshot 2026-10-27 at 02.21.06.png");
+        std::fs::write(&shot, b"png").unwrap();
+
+        reset_session_state();
+        let chrome = chrome_with_workspace();
+        assert_eq!(
+            show_in_files(&shot, &chrome),
+            Err(OpenError::Launch(LaunchError::NotInstalled {
+                package_id: SYSTEM_FILE_MANAGER.to_owned()
+            })),
+            "without Files there is nothing to show it in"
+        );
+
+        let files_scopes = || -> Vec<Scope> {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let workspace = tree.desktop.active_workspace().expect("a workspace");
+            workspace
+                .sandbox
+                .iter()
+                .filter(|c| c.subject == Subject::app(SYSTEM_FILE_MANAGER))
+                .filter(|c| c.effect == Effect::Grant)
+                .map(|c| c.scope.clone())
+                .collect()
+        };
+        let before = files_scopes();
+
+        install(tmp.path(), SYSTEM_FILE_MANAGER, "Files", &[]);
+        reset_session_state();
+        show_in_files(&shot, &chrome).expect("Files is installed");
+        let commands = launched_commands(&log, 1);
+        assert_eq!(commands.len(), 1, "one launch: {commands:#?}");
+        assert!(
+            commands[0].contains(&format!("--app-id {SYSTEM_FILE_MANAGER}")),
+            "Files is what opens: {}",
+            commands[0]
+        );
+        assert!(
+            commands[0].contains(&format!("--open {}", shot.display())),
+            "on the file, which Files shows selected in its folder: {}",
+            commands[0]
+        );
+        let added: Vec<Scope> = files_scopes()
+            .into_iter()
+            .filter(|scope| !before.contains(scope))
+            .collect();
+        assert_eq!(
+            added,
+            vec![Scope::FsPath(folder.display().to_string())],
+            "Files is given the screenshot's folder, nothing wider"
+        );
         clear_launch_env();
     }
 }
