@@ -196,6 +196,43 @@ class HardwareProfileTest(unittest.TestCase):
             hardware_profile.validate_definition(board | {
                 "internal_keyboards": [keyboard | {"devicetree_compatible": "valve,jupiter"}]})
 
+    def test_a_handset_states_the_hardening_its_kernel_cannot_deliver(self):
+        profile = Path(__file__).resolve().parents[1] / "hardware/profiles/pinephone-pro.json"
+        handset = hardware_profile.validate_definition(json.loads(profile.read_text(encoding="utf-8")))
+        self.assertEqual((handset["architecture"], handset["devicetree"]),
+                         ("aarch64", "rockchip/rk3399-pinephone-pro.dtb"))
+        # A handset is a personal computer, not an always-on host: it suspends.
+        self.assertFalse(handset["always_on"])
+        # Its camera and headset microphone hang off the display controller and
+        # the one audio card the image builds in for it, so the hardening that
+        # removes those interfaces names both actions and the option behind each.
+        self.assertEqual([entry["action"] for entry in handset["hardening_defaults"]],
+                         ["camera", "microphone"])
+        self.assertEqual({entry["driver"] for entry in handset["hardening_defaults"]},
+                         {"CONFIG_MEDIA_SUPPORT", "CONFIG_SND"})
+
+    def test_a_hardening_default_names_the_action_and_the_driver_behind_it(self):
+        _, base = self.definition()
+        board = base | QUIET_CRASH_RECORD
+        entry = {"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT"}
+        self.assertEqual(hardware_profile.validate_definition(
+            board | {"hardening_defaults": [entry]})["hardening_defaults"], [entry])
+        for defaults, message in (
+            ({"camera": "CONFIG_MEDIA_SUPPORT"}, "bounded action list"),
+            ([{"action": "camera"}], "missing or unknown fields"),
+            ([entry | {"why": "handset"}], "missing or unknown fields"),
+            (["camera"], "missing or unknown fields"),
+            ([entry | {"action": "wifi"}], "unsupported action"),
+            ([entry | {"driver": "media_support"}], "kernel option"),
+            # An action relaxes only the hardening whose feature its own
+            # driver switches on; naming another driver would open a hole for
+            # something the board keeps.
+            ([entry | {"driver": "CONFIG_SND"}], "does not cover"),
+            ([entry, entry | {"driver": "CONFIG_MEDIA_SUPPORT"}], "must be unique"),
+        ):
+            with self.subTest(defaults=defaults), self.assertRaisesRegex(ValueError, message):
+                hardware_profile.validate_definition(board | {"hardening_defaults": defaults})
+
     def test_shipped_handhelds_are_firmware_described_boards(self):
         profiles = Path(__file__).resolve().parents[1] / "hardware/profiles"
         handhelds = {path.stem: json.loads(path.read_text(encoding="utf-8"))
