@@ -1915,8 +1915,6 @@ pub fn in_the_store() -> ResourceKind {
     ResourceKind::Custom(t("search-group-in-the-store"))
 }
 
-}
-
 fn scope_allows(
     provider: &dyn SearchProvider,
     scope: SearchScope,
