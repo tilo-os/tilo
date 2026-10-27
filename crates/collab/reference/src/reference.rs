@@ -187,6 +187,28 @@ impl ResourceRef {
     }
 }
 
+/// An existing resource of the workspace in the app that keeps it: what an
+/// action parameter that picks one takes ([`tilo_actions::Pick::Resource`]).
+/// A person picks it from the palette by the title its app publishes; an
+/// agent passes the same reference. Nobody types its id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceAt {
+    /// The app that keeps the resource.
+    pub app: String,
+    /// The app's record that keeps it; its record of the workspace without.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<String>,
+    /// The resource, by its kind and its id in that app.
+    #[serde(flatten)]
+    pub reference: ResourceRef,
+}
+
+impl tilo_resource::JsonSchema for ResourceAt {
+    fn json_schema() -> serde_json::Value {
+        tilo_actions::resource_reference_schema()
+    }
+}
+
 /// What an app answers when asked what is selected right now.
 ///
 /// One method, so the compose surface never needs to know which app it is
@@ -200,6 +222,34 @@ pub trait Referent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a person picks and an agent passes reads as one reference: the
+    /// app, the kind and the id, with the label beside them.
+    #[test]
+    fn a_resource_at_its_app_reads_from_the_reference_an_agent_passes() {
+        let passed = serde_json::json!({
+            "app": "so.tilo.notes",
+            "kind": "notes.notebook.pages",
+            "id": "notes.notebook/pages/p1",
+            "label": "Plan",
+        });
+        let at: ResourceAt = serde_json::from_value(passed.clone()).expect("a reference");
+        assert_eq!(at.app, "so.tilo.notes");
+        assert_eq!(at.record, None);
+        assert_eq!(
+            at.reference,
+            ResourceRef::whole("notes.notebook.pages", "notes.notebook/pages/p1", "Plan")
+        );
+        let written = serde_json::to_value(&at).expect("writes");
+        assert_eq!(written["id"], passed["id"]);
+        assert!(
+            tilo_actions::validate_json_schema(
+                &written,
+                &<ResourceAt as tilo_resource::JsonSchema>::json_schema()
+            )
+            .is_ok()
+        );
+    }
 
     /// A span normalises its direction, counts in its declared unit, may end
     /// just past the last character, and reports rather than guesses when it

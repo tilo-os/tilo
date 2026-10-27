@@ -199,6 +199,14 @@ impl Snippets {
   record (`snippets::NewSnippet { title, folder }`) with a JSON schema derived
   from the parameter types themselves.
   Agents, the palette and forms (§3.3) all use it.
+- A parameter that names an existing resource (a note, a file, an issue) is a
+  reference to it, `ResourceAt` (the app that keeps it, its kind, its id and
+  how it reads), declared `#[param("The note", resource = "notes.notebook.pages")]`.
+  A person picks it in the system palette from the workspace's resources of
+  that kind, found by the titles their apps publish in search, the same way
+  the palette picks who, where and which grant (`tilo_actions::Pick`); an
+  agent passes the same reference. Nobody types an id. Tasks' "Link a note"
+  is one: its button opens the palette on the issue's `link-note`.
 - Verbs run against the record the framework reads for them, and write back as
   a diff. A verb that only touches one item is an item method: it takes the
   item instead of `&mut self` and reads and writes only that item.
