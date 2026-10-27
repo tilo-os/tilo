@@ -661,6 +661,21 @@ impl InitialReadBridge {
         }
         Ok(Some(read))
     }
+    /// Whether the broker answered `checkout`'s read as the app's own
+    /// channel's: a record a sealed room does not hold yet, which is new and
+    /// which the app makes there. Never the primary route, which the bridge
+    /// reads committed.
+    pub(crate) fn answered_by_own_channel(&self, checkout: &crate::record::RecordCheckout) -> bool {
+        !checkout.id.is_package_primary()
+            && self.state.document_reads.answered_by_own_channel(
+                &RouteSpec::record(
+                    self.route.app_id.clone(),
+                    self.route.cluster_id,
+                    checkout.id.as_str(),
+                )
+                .channel_id(),
+            )
+    }
     /// The committed read of the primary route. A bridge exists only for an
     /// app whose primary route is read committed, so it is never answered by
     /// the app's own channel.
@@ -793,6 +808,12 @@ impl InitialReadBridge {
         match self.never {}
     }
     fn read_primary(&self) -> Result<CommittedDocument, String> {
+        match self.never {}
+    }
+    pub(crate) fn answered_by_own_channel(
+        &self,
+        _checkout: &crate::record::RecordCheckout,
+    ) -> bool {
         match self.never {}
     }
 }
