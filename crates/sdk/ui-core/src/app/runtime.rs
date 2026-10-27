@@ -164,14 +164,18 @@ impl LayoutRuntime {
 /// What the widgets declare moves on with the resource generation (an
 /// update, a sync or an input that changed it:
 /// `App::invalidate_widget_resource_cache`), the widgets themselves with a
-/// rebuild or a remount, and what the local actor may do with the
-/// permission generation. Equal generations are the same tree.
+/// rebuild or a remount, what the local actor may do with the permission
+/// generation, and what the components in the tree may do with the
+/// revision of the permissions their hosts share with them
+/// ([`crate::permissions::shared_revision`]). Equal generations are the
+/// same tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TreeGeneration {
     pub(super) resources: u64,
     pub(super) rebuilds: u64,
     pub(super) remounts: u64,
     pub(super) permissions: u64,
+    pub(super) shared_permissions: u64,
 }
 
 /// What a frame's walks of the whole widget tree last read. A walk whose
@@ -205,10 +209,10 @@ pub(super) struct AvailabilityWalk {
     /// (`ActionRuntime::last_control_availability`) as the walk left it:
     /// anything that drops it asks for the walk again.
     pub(super) controls: Option<(super::ResourceCacheKey, u64)>,
-    /// The tree holds bound components. Each reads its authority from a
-    /// permission context of its own, which changes without the app's
-    /// generations moving, so their controls are refreshed every frame.
-    pub(super) bound: bool,
+    /// A bound component's permissions sample an outside authority at each
+    /// decision (`PermissionContext::samples_outside`), which changes with
+    /// nothing put in force: their controls are refreshed every frame.
+    pub(super) sampled: bool,
 }
 
 /// Every input of reconciling the document routes with the tree.
@@ -224,12 +228,40 @@ pub(super) struct RouteInputs {
 pub(super) struct HistoryWalk {
     pub(super) tree: TreeGeneration,
     pub(super) status: Option<crate::widget::WindowStatus>,
-    /// The tree holds History surfaces. Each asks every frame for what other
-    /// threads deliver to it, so the tree is walked every frame while any is
-    /// in it.
+    /// The tree holds History surfaces, which the next walk looks at again
+    /// when anything they read moved since: news reached one
+    /// ([`crate::history_mode::news`]), the document, whether the window is
+    /// narrow, a surface's own refresh came due, or one needed a refresh.
     pub(super) embedded: bool,
     /// The window's own History found the root it registered.
     pub(super) root_valid: bool,
+    /// What the surfaces read, as this walk read it.
+    pub(super) surfaces: HistorySurfaceInputs,
+    /// A surface needed a refresh.
+    pub(super) needed: bool,
+    /// When a surface asks for a refresh on its own, on its clock.
+    pub(super) due: Option<(crate::background::Background, crate::time::Instant)>,
+}
+
+/// What History surfaces read besides the tree and the window's status.
+#[derive(PartialEq)]
+pub(super) struct HistorySurfaceInputs {
+    pub(super) news: u64,
+    pub(super) document: (Vec<automerge::ChangeHash>, usize),
+    pub(super) narrow: bool,
+}
+
+impl HistoryWalk {
+    /// Whether the surfaces this walk found need looking at again.
+    pub(super) fn surfaces_owed(&self, inputs: &HistorySurfaceInputs) -> bool {
+        self.embedded
+            && (self.needed
+                || self.surfaces != *inputs
+                || self
+                    .due
+                    .as_ref()
+                    .is_some_and(|(clock, at)| clock.now() >= *at))
+    }
 }
 
 /// Input modality, gesture, cursor, and tooltip state.

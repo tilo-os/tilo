@@ -23,7 +23,7 @@ mod ordinary_confirmation;
 use deferred_intent::validate_deferred_arguments;
 pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
 
-use crate::permissions::{PermissionContext, UserId};
+use crate::permissions::{PermissionContext, SharedPermissions, UserId};
 use crate::published::SharedResource;
 use crate::record::{RecordCheckout, RecordOpenError, RecordStore};
 use crate::wake::{WakeHandle, WakeScopeGuard};
@@ -3124,8 +3124,7 @@ pub(crate) fn invoke_resource_action(
                     // relies on it again.
                     binding
                         .permissions
-                        .borrow_mut()
-                        .spend_once(&spent)
+                        .update(|permissions| permissions.spend_once(&spent))
                         .map_err(|_| denied(spec))?;
                     // A refused private View must not invoke a Deferred encoder.
                     // The execution guard below remains an independent boundary.
@@ -3416,7 +3415,7 @@ pub struct CallbackBinding {
     pub(crate) host_person: UserId,
     pub(crate) records: RecordStore,
     pub(crate) checkout: RecordCheckout,
-    pub(crate) permissions: Rc<RefCell<PermissionContext>>,
+    pub(crate) permissions: SharedPermissions,
     pub(crate) author: UserId,
     pub(crate) operation_context: tilo_actions::ActionContext,
     /// Edits commit as the author's own writer on the record

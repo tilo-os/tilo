@@ -4362,6 +4362,19 @@ impl ControlState for FrameBuilderControlState<'_> {
                         .is_some_and(|value| value == "1"),
                 }),
             );
+            fields.insert(
+                "seat_keyboard".into(),
+                serde_json::json!(self.seat.map(State::seat_keyboard_json)),
+            );
+            // A trim asked for by a window close, still to run or running
+            // (`heap_trim`), and how many trims have run.
+            fields.insert(
+                "heap_trim".into(),
+                serde_json::json!({
+                    "pending": crate::shell::heap_trim::close_trim_pending(),
+                    "trims": crate::shell::heap_trim::trims_completed(),
+                }),
+            );
         }
         dump
     }
@@ -20106,6 +20119,13 @@ mod tests {
                 "on_screen_keyboard_surface": null,
             })
         );
+        let sources = chrome["seat_keyboard"]["sources"]
+            .as_array()
+            .expect("the seat keyboard's XKB sources");
+        assert!(!sources.is_empty(), "the seat keymap has a source");
+        assert_eq!(chrome["seat_keyboard"]["active"], 0);
+        assert!(chrome["heap_trim"]["pending"].is_boolean());
+        assert!(chrome["heap_trim"]["trims"].is_u64());
     }
 
     /// The state dump says who asks for animation frames, and asking must

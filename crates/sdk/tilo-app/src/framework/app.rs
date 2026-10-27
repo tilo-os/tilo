@@ -22,7 +22,6 @@ use ui_core::widget::{Element, IconDescriptor};
 // native presentation and profiles; a browser host prepares components itself.
 #[cfg(not(target_arch = "wasm32"))]
 use {
-    std::cell::RefCell,
     ui_core::application::{
         ApplicationHost, Capture, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
     },
@@ -1183,7 +1182,7 @@ pub(crate) const DATA_DIR_INSTANCE: u64 = 0;
 pub(crate) fn data_dir_host(
     directory: &std::path::Path,
     author: &UserId,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: ui_core::permissions::SharedPermissions,
 ) -> Result<ApplicationHost, LaunchError> {
     let root = std::path::absolute(directory).map_err(super::headless::operation)?;
     ApplicationHost::new(
@@ -1199,8 +1198,11 @@ pub(crate) fn data_dir_host(
 #[cfg(not(target_arch = "wasm32"))]
 /// The permissions of `author` holding `role`, shared with the host so a
 /// later role change reaches the running app.
-pub(crate) fn role_permissions(author: &str, role: Role) -> Rc<RefCell<PermissionContext>> {
-    Rc::new(RefCell::new(PermissionContext::member(author, role)))
+pub(crate) fn role_permissions(
+    author: &str,
+    role: Role,
+) -> ui_core::permissions::SharedPermissions {
+    ui_core::permissions::SharedPermissions::new(PermissionContext::member(author, role))
 }
 
 /// Prepare `definition` on `host`: the record a launch named, else the one

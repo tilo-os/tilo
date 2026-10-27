@@ -157,6 +157,7 @@ impl FileController {
         let spawned = self.background.spawn("ui-file-history", move || {
             let reply = work(transport);
             let _ = tx.send(Completion { key, reply });
+            super::note_news();
             wake.wake();
         });
         if spawned.is_err() {
@@ -165,6 +166,11 @@ impl FileController {
                 reply: Reply::Unavailable,
             });
         }
+    }
+    /// When this controller next asks for the activity list on its own
+    /// ([`Self::has_results`]), on the clock of its background work.
+    pub fn next_refresh(&self) -> Option<(Background, crate::time::Instant)> {
+        (self.active && !self.refreshing).then(|| (self.background.clone(), self.next_poll))
     }
     pub fn has_results(&self) -> bool {
         self.inbox.borrow_mut().extend(self.rx.try_iter());

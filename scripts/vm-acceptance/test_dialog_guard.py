@@ -192,6 +192,9 @@ class ScratchpadVm(ShellVm):
         }]}]
         return st
 
+    def foreign_frames(self):
+        return [{"app_id": "so.tilo.scratchpad", "presented": True, "frame_seq": 1}] if self.scratchpad else []
+
     def targets(self):
         if not self.scratchpad:
             return []

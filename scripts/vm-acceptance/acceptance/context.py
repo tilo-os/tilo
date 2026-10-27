@@ -65,8 +65,33 @@ class Context:
             raise core.CheckFailed(f"{what} not reached within {timeout:.0f}s")
         return got
 
-    def settle(self, seconds: float = 0.8) -> None:
-        time.sleep(seconds)
+    def wait_still(self, timeout: float = 3.0) -> dict:
+        """The state once nothing asks for animation frames (the dump's `animating` is
+        empty: an overlay's fade or a resize has ended), or the latest one after
+        `timeout`."""
+        last = {}
+
+        def still():
+            last["s"] = self.vm.state()
+            return last["s"] if not (last["s"].get("chrome") or {}).get("animating") else None
+
+        return wait_until(still, timeout, interval=0.2) or last["s"]
+
+    def wait_presented(self, app_id: str, timeout: float = 30.0, after_seq: int = 0):
+        """`app_id`'s foreign frame once it has presented a frame past `after_seq`, else None."""
+        def presented():
+            for f in self.vm.foreign_frames():
+                if f.get("app_id") == app_id and f.get("presented") and f.get("frame_seq", 0) > after_seq:
+                    return f
+            return None
+
+        return wait_until(presented, timeout, interval=0.3)
+
+    def frame_seq(self, app_id: str) -> int | None:
+        """The newest frame `app_id` presented, or None while it shows none."""
+        seqs = [f.get("frame_seq", 0) for f in self.vm.foreign_frames()
+                if f.get("app_id") == app_id and f.get("presented")]
+        return max(seqs) if seqs else None
 
     # -- a known desktop between checks ---------------------------------------
 
@@ -75,10 +100,12 @@ class Context:
         overlays and search, and also the Invite composer, portal sheets and the rest the
         state dump reports outside `overlays`."""
         for _ in range(3):
-            if not core.open_surfaces(self.vm.state()):
+            before = core.open_surfaces(self.vm.state())
+            if not before:
                 return
             self.vm.key("Escape")
-            time.sleep(0.6)
+            # Escape closes the top surface; the next press is for what is still open.
+            wait_until(lambda: core.open_surfaces(self.vm.state()) != before, 3, 0.2)
 
     def close_all_windows(self, timeout: float = 20) -> None:
         """Close every window group through its own close action.
@@ -87,21 +114,30 @@ class Context:
         left alone: the check that owns it reports it, the others go on."""
         deadline = time.monotonic() + timeout
         stuck = self.facts.setdefault("unclosable", {})
-        while time.monotonic() < deadline:
+        while True:
             closers = [a for a in self.vm.actions()
                        if a["provider"] == "desktop-windows" and a["id"].startswith("group.close:")
                        and a["id"] not in stuck]
             if not closers:
                 return
+            if time.monotonic() >= deadline:
+                raise core.CheckFailed("windows still open after closing every group")
+            closing = set()
             for a in closers:
                 try:
                     self.vm.invoke(a["provider"], a["id"], {"confirm": True}
                                    if a.get("params") else None)
+                    closing.add(a["id"].removeprefix("group.close:"))
                 except VmError as exc:
                     if "action_failed" in str(exc):
                         stuck[a["id"]] = a.get("title")
-            time.sleep(1.0)
-        raise core.CheckFailed("windows still open after closing every group")
+
+            def closed():
+                live = {str(g["id"]) for g in core.all_groups(self.vm.state())}
+                return not closing & live
+
+            # A close a client did not act on is asked for again.
+            wait_until(closed, max(0.0, min(5.0, deadline - time.monotonic())), 0.25)
 
     def reset(self) -> None:
         self.close_overlays()
@@ -125,7 +161,8 @@ class Context:
                 if time.monotonic() - started > 45:
                     raise core.CheckFailed(f"{app_id} is not in the {provider} catalogue "
                                            "45 s after asking for it") from exc
-                time.sleep(2)
+                # The invocation is the probe: it succeeds once the catalogue lists the app.
+                time.sleep(0.5)
         st = self.wait_state(
             lambda s: [g for g in core.all_groups(s) if g["id"] not in before],
             timeout, f"a new window group for {app_id}")

@@ -28,7 +28,7 @@ import time
 from .. import core, session_unit
 from ..core import CheckFailed, Unobservable, check, expect
 from ..vm import VmError, wait_until
-from .basics import _settings
+from .basics import _settings, search_query, seat_keyboard, write_input_settings
 from .window import _app_groups, _ensure_unlocked, _group_rect, _locked, _two_windows
 
 AREA = "input"
@@ -76,19 +76,15 @@ def layouts(ctx, layout: str = "de:nodeadkeys", *more: str):
     """The session's keyboard layout set to `layout` (and `more`, in order) for the block."""
     doc = _settings(ctx)
     saved = dict(doc.get("input") or {})
-
-    def write(document):
-        ctx.vm.write_home_file(".config/tilo/session/settings.json", json.dumps(document, indent=2).encode())
-        time.sleep(2.5)
-
+    keyboard = seat_keyboard(ctx)
     doc.setdefault("input", {}).update(keyboard_layout=layout, keyboard_layouts=[layout, *more])
-    write(doc)
     try:
+        write_input_settings(ctx, doc)
         yield
     finally:
         doc = _settings(ctx)
         doc["input"] = saved
-        write(doc)
+        write_input_settings(ctx, doc, back_to=keyboard)
 
 
 def search_text(ctx, *combos: str) -> str:
@@ -101,10 +97,16 @@ def search_text(ctx, *combos: str) -> str:
         raise CheckFailed(f"{exc}: {keyboard_diagnosis(ctx)}") from exc
     for combo in combos:
         ctx.vm.key(combo)
-    ctx.settle(0.8)
-    query = (ctx.state()["chrome"].get("palette") or {}).get("query") or ""
+    # Each combo types one character: the field holds as many once all of them arrived.
+    got = {"query": ""}
+
+    def arrived():
+        got["query"] = search_query(ctx)
+        return len(got["query"]) >= len(combos)
+
+    wait_until(arrived, 3, 0.2)
     ctx.close_overlays()
-    return query
+    return got["query"]
 
 
 def keyboard_diagnosis(ctx) -> str:
@@ -260,9 +262,10 @@ def stuck_modifiers(ctx, res):
                 held.append(modifier)
                 ctx.vm.invoke("session", "lock")
                 ctx.wait_state(lambda s: s["chrome"].get("session_locked"), 10, f"locked with {modifier} down")
-                ctx.vm.input("release", modifier)  # the key comes up behind the lock
+                # The key comes up behind the lock: the release reaches the compositor before
+                # the passcode typed on the same keyboard.
+                ctx.vm.input("release", modifier)
                 held.remove(modifier)
-                ctx.settle(0.5)
                 result[f"unlock_{modifier}"] = _ensure_unlocked(ctx, PASSCODE)
                 expect(_locked(ctx) is False, f"could not unlock after {modifier} was held into the lock")
                 # A stuck Shift types a capital, a stuck Ctrl/Alt/Super is a shortcut, not a letter.
@@ -304,8 +307,7 @@ def touchpad_tap_click(ctx, res):
             ctx.vm.input("move", "8", "300")
             x, y = _launchpad_card(ctx)
             ctx.vm.input("move", str(x), str(y))
-            ctx.settle(0.5)
-            before = len(_notes_groups(ctx.state()))
+            before = len(_notes_groups(ctx.wait_still()))
             ctx.vm.input(*args)
             ctx.wait_state(lambda s: len(_notes_groups(s)) > before, 25,
                            f"Notes opened by a touchpad {how} on its launchpad card at {x},{y}")
@@ -330,7 +332,9 @@ def touchpad_scroll(ctx, res):
             before = scroll_x()
             ctx.vm.input("move", str(x), str(y))
             ctx.vm.input("touchpad", "swipe", str(dx), "0", "--fingers", "2")
-            ctx.settle(1.2)
+            # A clamped direction never moves: bounded, then the other one.
+            wait_until(lambda: abs(scroll_x() - before) > 20, 2, 0.2)
+            ctx.wait_still()
             moved[dx] = [round(before, 1), round(scroll_x(), 1)]
             if abs(moved[dx][1] - moved[dx][0]) > 20:
                 break
@@ -349,23 +353,27 @@ def disable_while_typing(ctx, res):
         # Baseline: with no key in use the pad moves the pointer.
         ctx.vm.key("Escape")
         ctx.wait_state(lambda s: _modality(s) == "keyboard", 5, "keyboard in use after a key")
-        ctx.settle(1.5)
+        # libinput's disable-while-typing runs on timers of its own, which the session does
+        # not report: the pauses here are those timers, not waits for the session.
+        time.sleep(1.5)
         ctx.vm.input("touchpad", "swipe", "20", "0", "--duration", "100")
         ctx.wait_state(lambda s: _modality(s) == "pointer", 5, "the pad moved the pointer with no key in use")
         # A key held down: libinput keeps the pad off while it is, and for a moment after.
         ctx.vm.input("hold", "a")
         try:
             ctx.wait_state(lambda s: _modality(s) == "keyboard", 5, "keyboard in use while a key is held")
-            ctx.settle(0.5)
+            time.sleep(0.5)
             ctx.vm.input("touchpad", "swipe", "20", "0", "--duration", "100")
-            ctx.settle(0.8)
+            # Suppression is the pad's motion not arriving: watched for a fixed window.
+            time.sleep(0.8)
             suppressed = _modality(ctx.state()) == "keyboard"
         finally:
             ctx.vm.input("release", "a")
         res.metrics["suppressed_while_typing"] = suppressed
         expect(suppressed, "the touchpad moved the pointer while a key of the internal keyboard was held: "
                            "disable-while-typing did not engage")
-        ctx.settle(2.0)
+        # Past libinput's disable-while-typing timeout after the release.
+        time.sleep(2.0)
         ctx.vm.input("touchpad", "swipe", "-20", "0", "--duration", "100")
         ctx.wait_state(lambda s: _modality(s) == "pointer", 5,
                        "the pad moved the pointer again after the key was released")
@@ -484,8 +492,10 @@ def wake_from_sleep(ctx, res):
         with plugged(ctx, KEYBOARD):
             # A client that keeps committing while the display is dark: the paint loop draws
             # nothing then and owes the change to the frame that wakes it.
+            shells = core.terminal_shells(ctx)
             ctx.new_terminal_window()
-            ctx.settle(1.0)
+            if core.wait_new_terminal_shell(ctx, shells, core.TERMINAL_SHELL_S) is None:
+                raise CheckFailed(f"no shell ran in the new Terminal within {core.TERMINAL_SHELL_S} s")
             ctx.vm.input("type", "i=0; while :; do i=$((i+1)); echo wake-$i; sleep 0.2; done")
             ctx.vm.key("Return")
             displays = ctx.state()["workspace_tree"]["outputs"]["displays"]

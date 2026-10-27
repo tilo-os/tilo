@@ -282,9 +282,9 @@ mod owner_commit_tests {
                 views,
                 device_id: "device".into(),
                 instance_id: 1,
-                permissions: Rc::new(RefCell::new(
+                permissions: ui::permissions::SharedPermissions::new(
                     ui::permissions::PermissionContext::permissive(),
-                )),
+                ),
                 author: ui::permissions::UserId("worker".into()),
                 action_context: tilo_actions::ActionContext::default(),
             },
@@ -1126,9 +1126,9 @@ mod owner_commit_tests {
                 views,
                 device_id: "device".into(),
                 instance_id: 1,
-                permissions: Rc::new(RefCell::new(
+                permissions: ui::permissions::SharedPermissions::new(
                     ui::permissions::PermissionContext::permissive(),
-                )),
+                ),
                 author: ui::permissions::UserId(principal.clone()),
                 action_context: tilo_actions::ActionContext::default(),
             },

@@ -322,11 +322,14 @@ def _text_field(ctx, res, app: DailyApp, sid, undo: bool) -> None:
     # A pasted text followed by one typed letter: a paste that does nothing leaves just the letter.
     pasted = f"tilo{token}p"
     ctx.vm.raw({"op": "clipboard_copy", "text": pasted})
+    # An X11 app learns of the new selection through Xwayland, out of order with the keys.
     time.sleep(0.5)
     ctx.vm.key("ctrl+a", "ctrl+v")
+    # The app fetches the pasted text after the key, from the clipboard's owner, and shows
+    # no sign of having it: the letter typed next waits as a person would.
     time.sleep(0.8)
+    # The letter and the copy go through the same keyboard, so they arrive in order.
     ctx.vm.input("type", "q")
-    time.sleep(0.5)
     ctx.vm.key("ctrl+a", "ctrl+c")
     ok, got = _wait_clipboard(ctx, pasted + "q")
     res.metrics["pasted_from_tilo"] = ok
