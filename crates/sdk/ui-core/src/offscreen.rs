@@ -1214,7 +1214,7 @@ impl OffscreenRenderer {
         let unpadded = width.saturating_mul(bytes_per_pixel);
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let padded_bytes_per_row = unpadded.div_ceil(align).saturating_mul(align);
-        let renderer = Renderer::new(
+        let mut renderer = Renderer::new(
             device,
             RendererOptions {
                 use_cpu,
@@ -1226,6 +1226,22 @@ impl OffscreenRenderer {
             },
         )
         .map_err(OffscreenError::Renderer)?;
+
+        // A capture must be the same picture twice, and a frame is not: the
+        // rasteriser sums a scene's segments in whatever order the tiles
+        // finish, which moves one antialiased edge by one unit between two
+        // renders of the same scene (`VELLO_CANONICAL_SEGMENT_ORDER=1` shows
+        // it, and this is the same switch asked for by the caller that needs
+        // it rather than by an environment variable). The CPU path already
+        // sums in a fixed order.
+        if !use_cpu && let Err(error) = renderer.enable_canonical_segment_order(device) {
+            // A shader set that will not build is not a reason to refuse to
+            // draw: say the frames may differ, and draw.
+            tracing::warn!(
+                %error,
+                "a capture cannot fix its segment order; two renders of one scene may differ by one unit"
+            );
+        }
 
         drop(ctx);
 
