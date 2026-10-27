@@ -3,6 +3,45 @@
 //! Apps describe intent (`command + K`, primary vs cancel); the host chooses
 //! the modifier label, event modifier, and dialog ordering for its platform.
 
+/// A row of a shortcut reference, as this platform spells it: `{cmd:K}` is
+/// the command key with K (Ctrl+K, or the Command key on a Mac),
+/// `{cmd+shift:Enter}` adds Shift, `{alt:Up}` is Alt with Up and `{F2}` is a
+/// key on its own, each in the active keyboard's legends. Everything else is
+/// shown as written.
+///
+/// A reference sheet that prints "Ctrl+S" as a string teaches a Mac user the
+/// wrong modifier, so every sheet spells its keys here.
+#[must_use]
+pub fn spell_shortcut(template: &str) -> String {
+    let conventions = PlatformConventions::default();
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some((before, after)) = rest.split_once('{') {
+        out.push_str(before);
+        let Some((spec, tail)) = after.split_once('}') else {
+            out.push('{');
+            rest = after;
+            break;
+        };
+        let (modifiers, key) = spec.split_once(':').unwrap_or(("", spec));
+        let mut shortcut = if modifiers.contains("cmd") {
+            Shortcut::command(key)
+        } else {
+            Shortcut::key(key)
+        };
+        if modifiers.contains("shift") {
+            shortcut = shortcut.shift();
+        }
+        if modifiers.contains("alt") {
+            shortcut = shortcut.alt();
+        }
+        out.push_str(&shortcut.label(conventions));
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Platform family relevant to human-interface conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {

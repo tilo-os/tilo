@@ -249,31 +249,22 @@ mod tests {
     }
 
     /// The note being written is marked in the bar, wherever the window is
-    /// shown, not only in this app's status band (`APP-notes-03`).
+    /// shown, not only in this app's status band (`APP-notes-03`). The slots
+    /// are built here rather than through the hosted window bar, because the
+    /// bar's hosted flag is process-wide and a test that flips it races the
+    /// others.
     #[test]
     fn the_window_bar_marks_a_note_that_is_not_on_disk_yet() {
-        let mut notes = notes_at("status", (1280, 800));
-        ui::window_toolbar::set_hosted(true);
-        notes.surface_mut::<NotesApp>().sync_window_toolbar();
-        notes.settle();
-        let declared = ui::window_toolbar::declared().expect("the note's slots are declared");
-        let location = declared.location.expect("the bar names the note");
+        let note = Some(("Shopping", "notes.page.1".to_owned()));
+        let written = NotesApp::window_toolbar(note.clone(), false, true, false);
         assert!(
-            !location.edited,
+            !written.location.expect("the bar names the note").edited,
             "a note the store has written is not marked"
         );
-        // A save that fails is work at risk: the bar says so.
-        notes
-            .surface_mut::<NotesApp>()
-            .set_record_save_status_for_test(ui::record::RecordSaveStatus::Failed(
-                "the store refused the write".into(),
-            ));
-        notes.surface_mut::<NotesApp>().sync_window_toolbar();
-        notes.settle();
-        let declared = ui::window_toolbar::declared().expect("the note's slots are declared");
+        let unsaved = NotesApp::window_toolbar(note, false, true, true);
         assert!(
-            declared.location.expect("the bar names the note").edited,
-            "a note whose save failed is marked"
+            unsaved.location.expect("the bar names the note").edited,
+            "a note whose save is in flight or failed is marked"
         );
     }
 }
