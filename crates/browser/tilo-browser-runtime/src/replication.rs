@@ -503,7 +503,7 @@ fn refused_change(app: &str, plain: &str) -> String {
     let title = crate::desktop::applications()
         .into_iter()
         .find(|definition| definition.app_id == app)
-        .map_or("The app", |definition| definition.title);
+        .map_or("The app", |definition| &*definition.title);
     format!("{title} didn't keep that. {plain}")
 }
 

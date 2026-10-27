@@ -231,7 +231,13 @@ impl Dev {
         }
         session::status(
             Command::new(self.bin.join("tilo-runtime-bundle"))
-                .args(["build", "--version", &runtime.version, "--out"])
+                .args([
+                    "build",
+                    "--binaries-only",
+                    "--version",
+                    &runtime.version,
+                    "--out",
+                ])
                 .arg(&bundle)
                 .arg("--include-bin")
                 .arg(&runtime.binary)
