@@ -3,8 +3,8 @@ discord-empty-body = Bridge a server with the Discord Bridge bot and its channel
 discord-bridge-server = Bridge a server
 discord-status-importing = Bringing in the server's channels. Nothing changes in Discord.
 discord-status-bridged = Messages go both ways between this room's Chat and the server.
-discord-voice-problem = Calls in the voice channels don't reach Discord: { $problem }
-discord-emoji-problem = The workspace's emoji don't reach Discord: { $problem }
+discord-voice-problem = Calls in the voice channels don't reach Discord
+discord-emoji-problem = The workspace's emoji don't reach Discord
 discord-channels = { $count ->
     [one] 1 channel
    *[other] { $count } channels
@@ -13,8 +13,18 @@ discord-linked-accounts = { $count ->
     [one] 1 linked account
    *[other] { $count } linked accounts
 }
-discord-your-account = Your Discord account
-discord-link-explanation = Link your Discord account from your profile card, or type /link in the Discord server, so what you write there shows up as you here.
+discord-accounts-title = Discord accounts
+discord-connect-account = Connect Discord
+discord-unlink-account = Unlink
+discord-you = You
+discord-not-linked = No Discord account linked
+discord-link-unavailable = This room's host doesn't offer linking a Discord account yet.
+discord-channels-title = Channels
+discord-channels-empty = The bridge hasn't read this server's channels yet.
+discord-channel-text = Text channel
+discord-channel-voice = Voice channel
+discord-channel-category = Category
+discord-channel-thread = Thread
 discord-link-elsewhere = In the Discord server, type /link to link from there.
 discord-offer-gone = This link was already used or has run out. Start again: type /link in the Discord server, or choose Connect Discord.
 discord-offer-expired = This link ran out after 10 minutes. Start again: type /link in the Discord server, or choose Connect Discord.
