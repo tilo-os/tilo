@@ -3330,7 +3330,7 @@ pub use color_picker::{ColorPicker, ColorPickerOutcome};
 pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker, SwatchPainter};
 pub mod picture;
 pub mod picture_choice;
-pub use picture_choice::{ColourFilter, Picture, PictureChoice, PictureOption};
+pub use picture_choice::{ColourFilter, Picture, PictureChoice, PictureOption, TouchpadGesture};
 pub mod popover;
 pub use popover::{PanelAlign, Popover, PopoverButton, PopoverPrompt, PopoverSide};
 pub mod emoji_picker;
