@@ -42,6 +42,8 @@
 #   CHANNEL            true advances tilo-vm:latest, only forward (default false)
 #   TILO_PACKAGE_TOKEN, TILO_PACKAGE_PUBLIC_BASE_URL   generic package access
 #   TILO_VM_PUBLISH_DIR  scratch for converted disks (default /var/tmp/tilo-vm-publish)
+#   TILO_VM_DISK_RECEIPT  where to leave a copy of the committed tilo-vm-disk-<arch>.json,
+#                      also when an earlier run committed it (t's dev-disk-<arch> pointer)
 #   PUSHED_DIGEST      the child is already pushed as <tag>-<arch> with this
 #                      digest (a BuildKit push); DEV_IMAGE is then unused
 #   IMAGE_ONLY         1 publishes the child and index only: no disk, no disk
@@ -110,7 +112,14 @@ manifest_file="tilo-vm-disk-$ARCH.json"
 status=$(curl --silent --show-error --retry 3 --output /dev/null --write-out '%{http_code}' \
   --header "Authorization: Bearer $TILO_PACKAGE_TOKEN" "$package/$manifest_file")
 case "$status" in
-  200) note "tilo-vm-disk $DEV_TAG already publishes $ARCH ($package/$manifest_file)"; exit 0 ;;
+  200)
+    note "tilo-vm-disk $DEV_TAG already publishes $ARCH ($package/$manifest_file)"
+    if [[ -n ${TILO_VM_DISK_RECEIPT:-} ]]; then
+      mkdir -p "$(dirname -- "$TILO_VM_DISK_RECEIPT")"
+      curl --fail --silent --show-error --retry 3 --header "Authorization: Bearer $TILO_PACKAGE_TOKEN" \
+        --output "$TILO_VM_DISK_RECEIPT" "$package/$manifest_file"
+    fi
+    exit 0 ;;
   404) ;;
   3??) die "reading $package/$manifest_file was redirected (HTTP $status): the package base moved; update TILO_PACKAGE_PUBLIC_BASE_URL" ;;
   *) die "reading $package/$manifest_file answered HTTP $status" ;;
@@ -296,6 +305,10 @@ printf '%s\t%s\n' "$out/$manifest_file" "$package/$manifest_file" \
 "$REPO/tools/upload_immutable_packages.sh" "$uploads"
 rm -f "$uploads"
 cat "$out/$manifest_file"
+if [[ -n ${TILO_VM_DISK_RECEIPT:-} ]]; then
+  mkdir -p "$(dirname -- "$TILO_VM_DISK_RECEIPT")"
+  cp -- "$out/$manifest_file" "$TILO_VM_DISK_RECEIPT"
+fi
 if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
   {
     echo "### tilo-vm:$DEV_TAG ($ARCH)"

@@ -1507,11 +1507,15 @@ Main's dev disk, once os-acceptance-{arch} passed on it (tools/ci/publish/os-dev
 disk os-dev-disk-{arch} installed, in the tilo-vm-disk package as main-<commit7>-ci, which
 `tilo-vm vm create` takes and os-dev-gate-{arch} updates from, with its dev image published as
 publish-os-dev-{arch} publishes it but for the channel tag; tilo-vm:latest moves forward to its
-index. It runs on main's newest head whenever t has room, and when dispatched."""
+index. It runs on main's newest head whenever t has room, and when dispatched. The disk's manifest
+(tilo-vm-disk-<arch>.json: its URL and SHA-256, the dev image's digest, the commit) becomes main's
+`dev-disk-{arch}` pointer, the base a working tree's VM boots under its own userspace layers."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-dev-publish.sh disk {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-dev-publish.sh", "tools/ci/publish/oci-publish.sh", "os/dev/publish-dev-disk.sh", "tools/upload_immutable_packages.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-disk-{arch}", "os-acceptance-{arch}", "sign-dev-os-{arch}", "signing-tools"]
+outputs = ["/target/publish/os-dev-disk-receipt/{arch}/receipt.json"]
+pointers = { "dev-disk-{arch}" = "/target/publish/os-dev-disk-receipt/{arch}/receipt.json" }
 git = true
 id_token = ["registry.tilo.so"]
 secrets = ["TILO_PACKAGES_TOKEN"]

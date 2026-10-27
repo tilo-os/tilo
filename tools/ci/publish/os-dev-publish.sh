@@ -82,5 +82,7 @@ else
     BASE_REPOSITORY=registry.tilo.so/tilo/tilo-ci BASE_TRUST=integration \
     BASE_INDEX_DIGEST=$base_digest BASE_CHILD_DIGEST=$base_digest CHANNEL=true \
     TILO_PACKAGE_TOKEN=$TILO_PACKAGES_TOKEN TILO_PACKAGE_PUBLIC_BASE_URL=https://code.tilo.so/api/packages/tilo/generic \
-    TILO_VM_PUBLISH_DIR=$scratch/tilo-vm-publish bash os/dev/publish-dev-disk.sh
+    TILO_VM_PUBLISH_DIR=$scratch/tilo-vm-publish \
+    TILO_VM_DISK_RECEIPT=/target/publish/os-dev-disk-receipt/$arch/receipt.json \
+    bash os/dev/publish-dev-disk.sh
 fi

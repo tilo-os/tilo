@@ -532,13 +532,14 @@ class Product:
 
 
 def placeholders(v: Any, values: dict[str, str]) -> Any:
-    """Replace {name} for each of VALUES in strings, leaving other braces ({commit}) alone."""
+    """Replace {name} for each of VALUES in strings and table keys, as t's matrices do, leaving
+    other braces ({commit}) alone."""
     if isinstance(v, str):
         return re.sub(r"\{(\w+)\}", lambda m: values.get(m[1], m[0]), v)
     if isinstance(v, list):
         return [placeholders(x, values) for x in v]
     if isinstance(v, dict):
-        return {k: placeholders(x, values) for k, x in v.items()}
+        return {placeholders(k, values): placeholders(x, values) for k, x in v.items()}
     return v
 
 
