@@ -92,16 +92,15 @@ pub fn splice_text_diffed(
     new: &str,
 ) -> Result<TextEdit, TextSpliceError> {
     let cur = tilo_resource::text::text_of(doc, text_id)?;
-    let (at, delete, insert) = match tilo_resource::text::splice_between(&cur, new) {
-        Some(tilo_resource::text::TextEdit::Splice { at, delete, insert }) => (at, delete, insert),
+    let Some(tilo_resource::text::TextEdit::Splice { at, delete, insert }) =
+        tilo_resource::text::splice_between(&cur, new)
+    else {
         // Identical text (or a form this helper does not write): nothing to do.
-        _ => {
-            return Ok(TextEdit {
-                pos: 0,
-                del: 0,
-                ins: 0,
-            });
-        }
+        return Ok(TextEdit {
+            pos: 0,
+            del: 0,
+            ins: 0,
+        });
     };
     let ins = insert.chars().count();
     tilo_resource::text::splice_chars(doc, text_id, at, delete, &insert)?;

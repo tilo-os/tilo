@@ -312,7 +312,7 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
             }
             let now = ui::time::wall();
             let fact = match metrics.sampled_at {
-                Some(at) => Measured::measured(
+                Some(at) => Measured::reading(
                     Measure::new(stat.measure()),
                     "1 sample",
                     "this device",

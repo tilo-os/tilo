@@ -6,7 +6,7 @@
 //! right and are wrong in a way only a review of the frame notices, and a
 //! measurement that reported nothing must not exit as though it had.
 
-use super::*;
+use super::{DefinitionDispatch, LaunchArgs, LaunchError, LaunchSpec, dispatch_definition};
 
 /// Modes that write frames or print measurements about this build.
 pub(super) fn captures_frames(args: &LaunchArgs) -> bool {

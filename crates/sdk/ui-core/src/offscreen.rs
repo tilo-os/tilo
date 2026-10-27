@@ -2181,15 +2181,14 @@ mod tests {
     /// which every GPU lane sets). A test whose subject is the renderer must
     /// not pass on a host that never ran it.
     fn gpu_here<T>(subject: &str, probe: Option<T>) -> Option<T> {
-        match probe {
-            Some(value) => Some(value),
-            None => {
-                tilo_test_env::capability_unavailable(
-                    tilo_test_env::Capability::Gpu,
-                    format_args!("{subject}"),
-                );
-                None
-            }
+        if let Some(value) = probe {
+            Some(value)
+        } else {
+            tilo_test_env::capability_unavailable(
+                tilo_test_env::Capability::Gpu,
+                format_args!("{subject}"),
+            );
+            None
         }
     }
 
