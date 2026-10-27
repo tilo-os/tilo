@@ -354,6 +354,19 @@ pub fn action_search_fields<'a>(
     fields
 }
 
+/// How well `needle` names an action by its fields, on [`action_ranks`]:
+/// [`rank_fields`] for an action.
+#[must_use]
+pub fn rank_action_fields(needle: &str, fields: &[RankField<'_>]) -> Option<i32> {
+    super::ListIndex::default()
+        .with_ranks(action_ranks)
+        .ranks(needle, [fields.iter().copied()])
+        .into_iter()
+        .next()
+        .flatten()
+        .map(provider_score)
+}
+
 /// The actions of `actions` a search for `query` finds, best first, on
 /// [`action_search_fields`]: what an app's test asserts to pin the words
 /// people use for its actions ("mkdir") to the action they mean.
@@ -365,7 +378,7 @@ pub fn actions_found_by<'a>(
     let mut found: Vec<(i32, &tilo_actions::ActionSpec)> = actions
         .iter()
         .filter_map(|action| {
-            let score = rank_fields(
+            let score = rank_action_fields(
                 query,
                 &action_search_fields(&action.label, &action.keywords, ""),
             )?;
@@ -429,6 +442,20 @@ pub fn application_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> 
             MatchTier::Prefix => return MatchTier::Word.rank_in(super::FieldWeight::TITLE),
             _ => {}
         }
+    }
+    tier.rank_in(weight)
+}
+
+/// What a tier earns in an action's fields: the usual ranks, except that
+/// an action's keywords are the other words people use for it ("power off"
+/// for Shut down, "mkdir" for New folder), so a keyword typed whole ranks
+/// as the start of the action's title, as an app's other names rank as its
+/// name ([`application_ranks`]). A keyword only begun keeps a keyword's
+/// rank: "bat" is not yet "battery saver".
+#[must_use]
+pub fn action_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> Option<i32> {
+    if weight == super::FieldWeight::KEYWORD && tier == super::MatchTier::Exact {
+        return super::MatchTier::Prefix.rank_in(super::FieldWeight::TITLE);
     }
     tier.rank_in(weight)
 }
