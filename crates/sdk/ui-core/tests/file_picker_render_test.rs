@@ -138,10 +138,11 @@ fn listed(mut picker: FilePicker) -> FilePicker {
 #[test]
 fn file_picker_open_and_save_render() {
     let (w, h) = (900u32, 620u32);
-    let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
-        eprintln!("no wgpu adapter — skipping file_picker_open_and_save_render");
-        return;
-    };
+    let mut renderer = tilo_test_env::require_capability!(
+        Gpu,
+        OffscreenRenderer::try_new(w, h).ok(),
+        "the file picker render guard paints through the offscreen harness"
+    );
     let (_g, root) = temp_dir();
 
     for (theme_name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {

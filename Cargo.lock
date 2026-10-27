@@ -19995,6 +19995,7 @@ dependencies = [
  "seccompiler",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-test-env",
  "workspace-hack",
 ]
 

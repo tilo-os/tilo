@@ -69,6 +69,15 @@ pub enum Capability {
     /// The live `WebDAV`/Nextcloud servers a storage conformance lane names
     /// through its credential and URL variables.
     CloudServers,
+    /// A kernel that enforces Landlock at the ABI the sandbox policy needs
+    /// (`CONFIG_SECURITY_LANDLOCK`, `landlock` in `lsm=`, ABI 5 or newer).
+    Landlock,
+    /// A clipboard backend the process can write to and read back from: a
+    /// Wayland or X11 session behind `arboard`, not a headless test host.
+    Clipboard,
+    /// A camera the capture pipeline can open (`/dev/video*` and the media
+    /// stack that reads it).
+    Camera,
 }
 
 impl Capability {
@@ -92,6 +101,9 @@ impl Capability {
             Self::NetworkTunnel => "TILO_REQUIRE_TUN",
             Self::Pdfium => "TILO_REQUIRE_PDFIUM",
             Self::CloudServers => "TILO_REQUIRE_CLOUD_SERVERS",
+            Self::Landlock => "TILO_REQUIRE_LANDLOCK",
+            Self::Clipboard => "TILO_REQUIRE_CLIPBOARD",
+            Self::Camera => "TILO_REQUIRE_CAMERA",
         }
     }
 
@@ -122,6 +134,9 @@ impl fmt::Display for Capability {
             Self::NetworkTunnel => "TUN devices with ip and nft",
             Self::Pdfium => "PDFium",
             Self::CloudServers => "live cloud servers",
+            Self::Landlock => "Landlock",
+            Self::Clipboard => "clipboard",
+            Self::Camera => "camera",
         })
     }
 }
@@ -410,6 +425,22 @@ mod tests {
             "TILO_REQUIRE_FUSE is set but FUSE is unavailable: \
              cannot mount the fixture: no /dev/fuse"
         );
+    }
+
+    #[test]
+    fn the_sandbox_clipboard_and_camera_join_the_lane_vocabulary() {
+        let mut env = ScopedEnv::new();
+        for (capability, variable) in [
+            (Capability::Landlock, "TILO_REQUIRE_LANDLOCK"),
+            (Capability::Clipboard, "TILO_REQUIRE_CLIPBOARD"),
+            (Capability::Camera, "TILO_REQUIRE_CAMERA"),
+        ] {
+            env.remove(variable);
+            assert!(!capability.required(), "{variable} is not promised");
+            env.set(variable, "1");
+            assert!(capability.required(), "{variable} is promised");
+            assert_eq!(capability.variable(), variable);
+        }
     }
 
     #[test]

@@ -3,9 +3,10 @@
 //! produces distinct pixel output — the regression guard for paint paths
 //! `window_group_test.rs` only reaches through state inspection.
 //!
-//! Fails when no wgpu adapter is available: a check that cannot observe its
-//! subject must fail, not skip (`CLAUDE.md`), or a headless CI without
-//! llvmpipe would report the paint paths green without ever drawing them.
+//! Every case takes the shared capability gate: a host without a wgpu adapter
+//! skips with the reason, and a lane that promises one (`TILO_REQUIRE_GPU`,
+//! which every GPU lane sets) fails, so a check that cannot observe its
+//! subject cannot report the paint paths green without drawing them.
 //!
 //! Set `TILO_UI_SCREENSHOT_DIR=<path>` to write one PNG per state for
 //! by-eye inspection.
@@ -274,10 +275,11 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
     {
         fn window_group_fresh_render_is_deterministic() {
             let (w, h) = (400u32, 120u32);
-            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
-                eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
-                return;
-            };
+            let mut renderer = tilo_test_env::require_capability!(
+                Gpu,
+                OffscreenRenderer::try_new(w, h).ok(),
+                "the window-group determinism check paints through the offscreen harness"
+            );
             let mut g1 = make_window_group();
             let mut g2 = make_window_group();
             let a = render_group(&mut renderer, &mut g1);

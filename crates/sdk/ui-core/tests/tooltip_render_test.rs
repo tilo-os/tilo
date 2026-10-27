@@ -3,8 +3,9 @@
 //! in both light and dark themes, and asserts the chip actually rasterises an
 //! opaque surface where it is anchored (not just that *something* painted).
 //!
-//! Skips gracefully when no wgpu adapter is available, matching the other
-//! offscreen tests. Set `TILO_UI_SCREENSHOT_DIR=<path>` to dump the PNGs
+//! Takes the shared capability gate: a host without a wgpu adapter skips with
+//! the reason, and a lane that promises one (`TILO_REQUIRE_GPU`) fails. Set
+//! `TILO_UI_SCREENSHOT_DIR=<path>` to dump the PNGs
 //! (`tooltip_over_icon_button_dark.png` / `_light.png`) for visual review.
 
 #![allow(
@@ -27,10 +28,11 @@ use tilo_ui::widget::{Button, Widget};
 
 fn render_case(theme: &Theme, bg: Color, name: &str) {
     let (canvas_w, canvas_h) = (360u32, 150u32);
-    let Some(mut renderer) = OffscreenRenderer::try_new(canvas_w, canvas_h).ok() else {
-        eprintln!("no wgpu adapter — skipping tooltip render ({name})");
-        return;
-    };
+    let mut renderer = tilo_test_env::require_capability!(
+        Gpu,
+        OffscreenRenderer::try_new(canvas_w, canvas_h).ok(),
+        "the tooltip render proof ({name}) paints through the offscreen harness"
+    );
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();

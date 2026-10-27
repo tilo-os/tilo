@@ -32,6 +32,9 @@ seccompiler.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# The shared capability gate: a test that needs a kernel facility skips on a
+# host without it and fails on a lane that promises it.
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

@@ -3833,8 +3833,9 @@ mod tests {
 
     #[test]
     fn clipboard_shortcuts_cut_copy_and_paste_the_selection() {
-        // Each phase builds a fresh bound editor. The copy/paste phase keeps its
-        // original no-backend early return, which only ends that phase.
+        // Each phase builds a fresh bound editor. The copy/paste phase takes the
+        // shared capability gate, which only ends that phase where no backend is
+        // present and no lane promised one.
         ctrl_x_cuts_selection_through_crdt();
         clipboard_copy_paste_round_trips_when_available();
     }
@@ -3862,13 +3863,15 @@ mod tests {
 
     fn clipboard_copy_paste_round_trips_when_available() {
         // Only meaningful where arboard has a backend (a Wayland/X11 session).
-        // Probe with a sentinel; if it doesn't round-trip, skip cleanly — the
-        // clipboard helper is silent on absence (headless CI).
+        // Probe with a sentinel and take the shared capability gate: the
+        // clipboard helper is silent on absence, so a headless host skips with
+        // a reason and a lane that promises a clipboard fails instead.
         ui::text_selection::clipboard_copy("__tilo_probe__");
-        if ui::text_selection::clipboard_paste().as_deref() != Some("__tilo_probe__") {
-            eprintln!("clipboard_copy_paste_round_trips: no clipboard backend, skipping");
-            return;
-        }
+        tilo_test_env::require_capability!(
+            Clipboard,
+            ui::text_selection::clipboard_paste().as_deref() == Some("__tilo_probe__"),
+            "clipboard_copy_paste_round_trips: the clipboard did not round-trip the probe"
+        );
         let (mut ev, mut doc) = geom_editor("hello world");
         ev.set_caret_for_test(0, 0);
         for _ in 0..5 {

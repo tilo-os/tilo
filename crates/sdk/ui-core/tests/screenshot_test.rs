@@ -5,10 +5,10 @@
 //! at (0, 0), a filled rect lighting up opaque pixels inside its bounds,
 //! untouched regions staying at the base colour.
 //!
-//! Skipped automatically (via `eprintln` + early return) if no wgpu adapter
-//! is available (e.g. sandboxed CI without llvmpipe) — not `#[ignore]`,
-//! since CI logs should show whether the headless pipeline ran, and not a
-//! panic, so local runs without GPU libraries stay green.
+//! Each case takes the shared capability gate: a host without a wgpu adapter
+//! skips it with the reason, and a lane that promises one (`TILO_REQUIRE_GPU`,
+//! as every GPU lane sets) fails it, so a pipeline that never ran cannot look
+//! green.
 //!
 //! Intentionally not a golden-image diff test — that requires a design pass
 //! for reference-set provenance + per-DPI bases + tolerance. This is an "am
@@ -32,10 +32,11 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
     // Case `headless_renderer_paints_a_solid_background_and_a_filled_rect`.
     {
         fn headless_renderer_paints_a_solid_background_and_a_filled_rect() {
-            let Some(mut renderer) = OffscreenRenderer::try_new(128, 64).ok() else {
-                eprintln!("offscreen: no wgpu adapter available — skipping screenshot test");
-                return;
-            };
+            let mut renderer = tilo_test_env::require_capability!(
+                Gpu,
+                OffscreenRenderer::try_new(128, 64).ok(),
+                "the screenshot smoke check draws through the offscreen harness"
+            );
 
             let mut scene = Scene::new();
             // Filled indigo rect dead-center, 40×20 (from (44, 22) to (84, 42)).
@@ -81,10 +82,11 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
     // Case `headless_renderer_writes_a_png_file`.
     {
         fn headless_renderer_writes_a_png_file() {
-            let Some(mut renderer) = OffscreenRenderer::try_new(32, 32).ok() else {
-                eprintln!("offscreen: no wgpu adapter available — skipping PNG test");
-                return;
-            };
+            let mut renderer = tilo_test_env::require_capability!(
+                Gpu,
+                OffscreenRenderer::try_new(32, 32).ok(),
+                "the screenshot PNG check draws through the offscreen harness"
+            );
 
             let mut scene = Scene::new();
             scene.fill(
@@ -130,10 +132,11 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
             use tilo_ui::widget::{Container, Widget};
 
             let (w, h) = (160, 80);
-            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
-                eprintln!("offscreen: no wgpu adapter available — skipping widget render test");
-                return;
-            };
+            let mut renderer = tilo_test_env::require_capability!(
+                Gpu,
+                OffscreenRenderer::try_new(w, h).ok(),
+                "the widget render check draws through the offscreen harness"
+            );
 
             let mut widget: Box<dyn Widget> =
                 Box::new(Container::new().with_background().filling());
@@ -208,10 +211,11 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
             // 240 wide gives us room for the first 96 px min-width pill + gap;
             // 44 tall matches TAB_BAR_HEIGHT exactly.
             let (bar_w, bar_h) = (240u32, 44u32);
-            let Some(mut renderer) = OffscreenRenderer::try_new(bar_w, bar_h).ok() else {
-                eprintln!("offscreen: no wgpu adapter available — skipping tab-bar test");
-                return;
-            };
+            let mut renderer = tilo_test_env::require_capability!(
+                Gpu,
+                OffscreenRenderer::try_new(bar_w, bar_h).ok(),
+                "the tab-bar render check draws through the offscreen harness"
+            );
 
             let tabs = vec![TabDescriptor::new(1, "a"), TabDescriptor::new(2, "b")];
             let mut bar: Box<dyn Widget> = Box::new(TabBar::new("grp", tabs, 1));
