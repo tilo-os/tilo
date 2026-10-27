@@ -27,7 +27,7 @@ use crate::motion::{Direction, Disclose, ListChange, MotionSpec, Snap};
 mod rename;
 #[path = "tabs_status_chips.rs"]
 mod status_chips;
-pub use status_chips::SharedWith;
+pub use status_chips::{SharedBy, SharedWith};
 #[path = "tabs_title_menu.rs"]
 mod title_menu;
 use crate::tokens::{EffectiveMotion, MotionSource};

@@ -17,7 +17,9 @@
 //!   projection until the room's document carries them;
 //! - a refusal is said ([`WorkspaceTree::take_governance_refusals`]), and
 //!   ends the entry, except a capability taken back: what this device no
-//!   longer lets its apps do never comes back from the room it was asked of.
+//!   longer lets its apps do never comes back from the room it was asked of;
+//!   and a share whose window is gone, which is said once and asked again
+//!   on the host's next event until the room no longer holds it.
 use serde::{Deserialize, Serialize};
 
 use super::{CapOverride, GovernanceRefusal, GovernanceRequest, RoomId, Workspace, WorkspaceTree};
@@ -32,6 +34,10 @@ pub enum RoomChange {
     /// A terminal effect this device made in the room, for the room's
     /// history: the room's host commits it, once, by its invocation.
     Receipt(Box<WorkspaceEffectReceipt>),
+    /// Stop sharing this device's window `tab` (of `app_id`), which its
+    /// workspace here no longer shows: closed, or moved out
+    /// ([`tilo_desktop_model::window_share`]).
+    WindowUnshare { tab: super::TabId, app_id: String },
 }
 
 /// Where an entry stands with its room's host.
@@ -64,6 +70,10 @@ pub struct Outgoing {
     pub takes_back: Option<CapOverride>,
     #[serde(default)]
     pub standing: Standing,
+    /// The host refused it once already, and that was said: asked again,
+    /// it is not said again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refused_once: bool,
 }
 
 /// How a room's host answered an entry.
@@ -79,7 +89,7 @@ impl Outgoing {
     fn new(room: RoomId, change: RoomChange, takes_back: Option<CapOverride>) -> Self {
         let id = match &change {
             RoomChange::Receipt(receipt) => receipt.invocation.0,
-            RoomChange::Governance(_) => uuid::Uuid::new_v4(),
+            RoomChange::Governance(_) | RoomChange::WindowUnshare { .. } => uuid::Uuid::new_v4(),
         };
         Self {
             id,
@@ -87,6 +97,7 @@ impl Outgoing {
             change,
             takes_back,
             standing: Standing::Asking,
+            refused_once: false,
         }
     }
 
@@ -108,6 +119,14 @@ impl Outgoing {
                     .any(|held| held.invocation == receipt.invocation)
             }
             RoomChange::Governance(_) => false,
+            // Carried once the room's record no longer holds the share.
+            RoomChange::WindowUnshare { tab, .. } => {
+                let share = tilo_desktop_model::window_share::window_share_id(*tab);
+                !tilo_desktop_model::projection::room_policy_of(document, &self.room.to_string())
+                    .grants
+                    .iter()
+                    .any(|grant| tilo_action_policy::share::is_of_share(grant, &share))
+            }
         }
     }
 }
@@ -126,7 +145,7 @@ pub(crate) fn adopt_room_document(
     let kept: Vec<WorkspaceEffectReceipt> = pending()
         .filter_map(|entry| match &entry.change {
             RoomChange::Receipt(receipt) => Some((**receipt).clone()),
-            RoomChange::Governance(_) => None,
+            RoomChange::Governance(_) | RoomChange::WindowUnshare { .. } => None,
         })
         .collect();
     let mut changed = tilo_peer_state::room::adopt_room(workspace, document, &kept);
@@ -202,6 +221,25 @@ impl WorkspaceTree {
         true
     }
 
+    /// Stop sharing this device's window `tab` of `app_id` in `room`, whose
+    /// window it no longer shows: asked of the room's host until the room
+    /// no longer holds the share. Whether it was new.
+    pub(crate) fn stop_outlived_share(
+        &mut self,
+        room: RoomId,
+        tab: super::TabId,
+        app_id: String,
+    ) -> bool {
+        if self.room_outbox.iter().any(|entry| {
+            entry.room == room
+                && matches!(&entry.change, RoomChange::WindowUnshare { tab: asked, .. } if *asked == tab)
+        }) {
+            return false;
+        }
+        self.send_to_room(room, RoomChange::WindowUnshare { tab, app_id }, None);
+        true
+    }
+
     /// The entries to ask of their rooms' hosts, in the order they were
     /// made.
     pub fn outbox_to_ask(&self) -> impl Iterator<Item = &Outgoing> {
@@ -236,6 +274,18 @@ impl WorkspaceTree {
                     self.room_outbox.remove(index);
                 }
                 self.queue_save();
+            }
+            HostAnswer::Refused(reason)
+                if matches!(entry.change, RoomChange::WindowUnshare { .. }) =>
+            {
+                // A share outliving its window is stopped again on the
+                // host's next event; the refusal is said the first time.
+                let said = std::mem::replace(&mut entry.refused_once, true);
+                let (room, change) = (entry.room, entry.change.clone());
+                self.queue_save();
+                if !said {
+                    self.refuse_room_change(room, change, reason);
+                }
             }
             HostAnswer::Refused(reason) => {
                 let (room, change) = (entry.room, entry.change.clone());

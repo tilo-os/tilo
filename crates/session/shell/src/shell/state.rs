@@ -23,6 +23,7 @@ pub use tree_handle::{
     WorkspaceTreeWriteGuard, next_policy_revision,
 };
 pub use window_hosting::WindowHosting;
+pub use window_shares::SharedWindowUse;
 pub(crate) use window_shares::host_handle;
 
 pub use collab_types::caps::{
@@ -807,8 +808,12 @@ pub struct WorkspaceTree {
     /// The windows members share with each held room, by tab, read from its
     /// admitted document whenever that changes ([`Self::shared_windows`]).
     #[serde(skip, default)]
-    pub window_shares:
-        HashMap<RoomId, BTreeMap<TabId, tilo_desktop_model::window_share::WindowShare>>,
+    pub window_shares: window_shares::WindowShares,
+    /// What the person here did with the Tilo app windows others shared
+    /// (used them, moved them elsewhere), kept across a restart.
+    /// Device-local.
+    #[serde(default, skip_serializing_if = "SharedWindowUse::is_empty")]
+    pub shared_window_use: SharedWindowUse,
     /// Rooms of workspaces made here ([`Self::create_hosted_workspace`])
     /// whose room no host holds yet: each waits for the network to create it
     /// on the host it is placed on and to enroll this device's native owner
@@ -951,7 +956,8 @@ impl Default for WorkspaceTree {
             policy_revision: 0,
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
-            window_shares: HashMap::new(),
+            window_shares: window_shares::WindowShares::default(),
+            shared_window_use: SharedWindowUse::default(),
             pending_placements: BTreeSet::new(),
             room_outbox: Vec::new(),
             governance_refusals: Vec::new(),
@@ -1356,9 +1362,12 @@ impl WorkspaceTree {
         changed
     }
 
-    /// The record the room document names for `tab` of `room`, if any.
+    /// The record the room document names for `tab` of `room`, if any, as
+    /// a route: its tab's binding, else what the window shared as it shows.
     pub(crate) fn room_tab_record(&self, room: RoomId, tab: TabId) -> Option<String> {
-        tilo_desktop_model::apps::record_routes(self.room_docs.get(&room)?).remove(&tab)
+        let bound = self.room_docs.get(&room);
+        (bound.and_then(|doc| tilo_desktop_model::apps::record_routes(doc).remove(&tab)))
+            .or_else(|| self.shared_window_record(room, tab))
     }
 
     /// Give this tree its device's salt: every id it mints from now on

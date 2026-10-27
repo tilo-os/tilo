@@ -25,13 +25,13 @@ use tilo_peer_state::room::{
 };
 use tilo_test_env::{FakeDocumentNet, Peer};
 
-const ROOM: &str = "2c4e6a8b-1d3f-4a5b-8c7d-9e0f1a2b3c4d";
-const CHAT: &str = "so.tilo.chat";
-const NOTES: &str = "so.tilo.notes";
+pub(super) const ROOM: &str = "2c4e6a8b-1d3f-4a5b-8c7d-9e0f1a2b3c4d";
+pub(super) const CHAT: &str = "so.tilo.chat";
+pub(super) const NOTES: &str = "so.tilo.notes";
 const NOW_NS: u64 = 1_000_000_000_000;
 
 /// The changes one message of the room's sync carries.
-fn changes_in(bytes: &[u8]) -> Vec<Vec<u8>> {
+pub(super) fn changes_in(bytes: &[u8]) -> Vec<Vec<u8>> {
     let mut scratch = AutoCommit::new();
     scratch
         .load_incremental(bytes)
@@ -52,15 +52,15 @@ fn changes_in(bytes: &[u8]) -> Vec<Vec<u8>> {
 
 /// What a member's device holds of the room: what it admitted from the
 /// governor.
-struct Member {
-    peer: Peer,
-    admitted: Option<AutoCommit>,
+pub(super) struct Member {
+    pub(super) peer: Peer,
+    pub(super) admitted: Option<AutoCommit>,
 }
 
 impl Member {
     /// Take what the room's sync brought this device, as the governor's,
     /// through the admission every receiver applies.
-    fn take_in(&mut self, net: &mut FakeDocumentNet, host_key: &str) {
+    pub(super) fn take_in(&mut self, net: &mut FakeDocumentNet, host_key: &str) {
         let mut arrived = Vec::new();
         net.net().deliver_to(self.peer.name(), |_, bytes| {
             arrived.extend(changes_in(bytes))
@@ -86,11 +86,11 @@ impl Member {
         self.admitted = Some(admitted.candidate);
     }
 
-    fn admitted(&self) -> &AutoCommit {
+    pub(super) fn admitted(&self) -> &AutoCommit {
         self.admitted.as_ref().expect("the device holds the room")
     }
 
-    fn on_net(&mut self) -> (&Peer, &mut AutoCommit) {
+    pub(super) fn on_net(&mut self) -> (&Peer, &mut AutoCommit) {
         (
             &self.peer,
             self.admitted.as_mut().expect("the device holds the room"),
@@ -99,7 +99,7 @@ impl Member {
 }
 
 /// A device key that is a valid endpoint, as every device's is.
-fn device_key(seed: u8) -> [u8; 32] {
+pub(super) fn device_key(seed: u8) -> [u8; 32] {
     *iroh::SecretKey::from_bytes(&[seed; 32]).public().as_bytes()
 }
 
@@ -147,7 +147,7 @@ fn a_tree(room: RoomId, salt: u16, chat: u64, notes: u64) -> WorkspaceTree {
 }
 
 /// Every tab B's workspace of the room shows, with what it holds.
-fn b_tabs(tree: &WorkspaceTree, room: RoomId) -> Vec<(u64, TileContent)> {
+pub(super) fn b_tabs(tree: &WorkspaceTree, room: RoomId) -> Vec<(u64, TileContent)> {
     tree.desktop
         .workspaces
         .iter()
@@ -178,7 +178,7 @@ fn share(governor: &mut AutoCommit, person: &str, app: &str, tab: u64) {
 }
 
 /// The governor ends the share of the window `tab`.
-fn stop(governor: &mut AutoCommit, tab: u64) {
+pub(super) fn stop(governor: &mut AutoCommit, tab: u64) {
     let mut policy = room_policy_of(governor, ROOM);
     policy
         .grants

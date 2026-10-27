@@ -483,6 +483,8 @@ pub(crate) struct DurableRest {
     joining_rooms: std::collections::BTreeSet<RoomId>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     archived_workspaces: Vec<crate::shell::state::Workspace>,
+    #[serde(skip_serializing_if = "crate::shell::state::SharedWindowUse::is_empty")]
+    shared_window_use: crate::shell::state::SharedWindowUse,
     /// What an older file held that the tree no longer reads, written back
     /// as it was read.
     #[serde(flatten)]
@@ -541,6 +543,7 @@ impl DurableTree {
                 archived_workspaces: archived.workspaces,
                 pending_placements: tree.pending_placements.clone(),
                 room_outbox: tree.room_outbox.clone(),
+                shared_window_use: tree.shared_window_use.clone(),
                 retired_fields: tree.retired_fields.clone(),
             },
         }

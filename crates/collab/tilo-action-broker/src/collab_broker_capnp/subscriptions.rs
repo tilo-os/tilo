@@ -120,6 +120,18 @@ impl super::CapnpBrokerState {
         held
     }
 
+    /// The connection of the local app window the shell launched for
+    /// window instance `instance`, while it is connected. The lowest when a
+    /// window holds more than one.
+    pub fn window_peer(&self, instance: u64) -> Option<u64> {
+        let windows = self.window_instances.lock().ok()?;
+        windows
+            .iter()
+            .filter(|(_, at)| **at == instance)
+            .map(|(peer, _)| *peer)
+            .min()
+    }
+
     /// Whether a local app subscribes to exactly `route`'s documents.
     pub fn holds_route(&self, route: &CrdtRoute) -> bool {
         self.channels.lock().is_ok_and(|channels| {
@@ -183,7 +195,14 @@ mod tests {
         let _other = state.subscribe_ops(&other.channel_key(), 3);
         let _second = state.subscribe_ops(&second.channel_key(), 4);
         assert_eq!(state.window_records(), [(77, note.clone()), (78, second)]);
+        assert_eq!(
+            state.window_peer(78),
+            Some(4),
+            "where an action for it goes"
+        );
+        assert_eq!(state.window_peer(79), None, "no window of that instance");
         state.remove_connection(4);
+        assert_eq!(state.window_peer(78), None, "not once it closed");
         assert_eq!(state.window_records(), [(77, note)], "a window closed");
         state.remove_connection(2);
         assert!(state.window_records().is_empty(), "gone with its app");
