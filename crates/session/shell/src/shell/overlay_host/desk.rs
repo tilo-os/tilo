@@ -1042,7 +1042,7 @@ impl ShellOverlayHost {
 
     /// What the widgets show this pass: who is on the team, the music the
     /// player has, the month on view and the monitor's reading.
-    fn desk_content(&mut self, now: Instant, presence: &PresenceCtx) -> DeskContent {
+    fn desk_content(&self, now: Instant, presence: &PresenceCtx) -> DeskContent {
         let team_showing = self.desk.board.form(WidgetId::Team) != Form::Away
             || self
                 .desk
@@ -1073,8 +1073,8 @@ impl ShellOverlayHost {
         switcher_card: Option<Rect>,
         painted: &mut Vec<Rect>,
     ) {
-        let (transform, content) = (pass.transform, &*pass.content);
-        let (scene, text, theme) = (&mut *pass.scene, &mut *pass.text, &*pass.theme);
+        let (transform, content, theme) = (pass.transform, pass.content, pass.theme);
+        let (scene, text) = (&mut *pass.scene, &mut *pass.text);
         let shown = self
             .desk
             .shown
