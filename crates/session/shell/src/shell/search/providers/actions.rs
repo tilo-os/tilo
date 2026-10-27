@@ -55,7 +55,8 @@ use tabs::{
 };
 use windows::{
     GROUP_MOVE_TO_STRIP_ID, GROUP_MOVE_TO_STRIP_PARAMS, group_move_to_strip_params,
-    move_group_to_strip, no_window, request_group_shortcut, window_outcome,
+    move_group_to_strip, no_window, other_display_needed, request_group_shortcut,
+    request_toggle_maximize, window_outcome,
 };
 use workspaces::{
     WORKSPACE_DELETE_PARAMS, delete_workspace, move_workspace, workspace_delete_params,
@@ -1423,6 +1424,7 @@ const WINDOW_LAYOUT_ACTION_IDS: &[&str] = &[
     "group.move-to-display-next",
     "group.maximize",
     "group.restore",
+    "group.toggle-maximize",
     "group.fullscreen",
     "group.narrower",
     "group.wider",
@@ -1564,6 +1566,29 @@ impl Action {
                     .map(drop)
                     .ok_or_else(|| ActionError::Explained(t("input-source-next-none")))
             },
+        ),
+        // The steps Super+Alt+8, = and - take, so the magnifier is reachable
+        // from the palette, an agent and a screen reader, not only by chord.
+        chrome(
+            "magnifier.toggle",
+            "search-action-magnifier-toggle",
+            "search-action-magnifier-toggle-subtitle",
+            "search-kw-magnifier-toggle",
+            |st, _| request_window_shortcut(st, ShortcutAction::ToggleMagnifier),
+        ),
+        chrome(
+            "magnifier.zoom-in",
+            "search-action-magnifier-zoom-in",
+            "search-action-magnifier-zoom-in-subtitle",
+            "search-kw-magnifier-zoom-in",
+            |st, _| request_window_shortcut(st, ShortcutAction::MagnifierZoomIn),
+        ),
+        chrome(
+            "magnifier.zoom-out",
+            "search-action-magnifier-zoom-out",
+            "search-action-magnifier-zoom-out-subtitle",
+            "search-kw-magnifier-zoom-out",
+            |st, _| request_window_shortcut(st, ShortcutAction::MagnifierZoomOut),
         ),
         chrome(
             "navigation.axis.enable",
@@ -2965,14 +2990,27 @@ impl Action {
             "search-action-group-move-to-display-previous",
             "search-action-group-move-to-display-previous-subtitle",
             "search-kw-group-move-to-display-previous",
-            |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupToPreviousDisplay),
+            |st, _| {
+                other_display_needed(st)?;
+                request_group_shortcut(st, ShortcutAction::MoveGroupToPreviousDisplay)
+            },
         ),
         chrome(
             "group.move-to-display-next",
             "search-action-group-move-to-display-next",
             "search-action-group-move-to-display-next-subtitle",
             "search-kw-group-move-to-display-next",
-            |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupToNextDisplay),
+            |st, _| {
+                other_display_needed(st)?;
+                request_group_shortcut(st, ShortcutAction::MoveGroupToNextDisplay)
+            },
+        ),
+        chrome(
+            "group.toggle-maximize",
+            "search-action-group-toggle-maximize",
+            "search-action-group-toggle-maximize-subtitle",
+            "search-kw-group-toggle-maximize",
+            |st, _| request_toggle_maximize(st),
         ),
         chrome(
             "group.maximize",
@@ -5339,6 +5377,10 @@ pub(crate) fn action_icon(id: &str) -> Option<ui::icons::Icon> {
         ("window.new.terminal", Icon::SquareTerminal),
         ("group.fullscreen", Icon::Maximize2),
         ("group.maximize", Icon::Maximize2),
+        ("group.toggle-maximize", Icon::Maximize2),
+        ("magnifier.zoom-in", Icon::ZoomIn),
+        ("magnifier.zoom-out", Icon::ZoomOut),
+        ("magnifier", Icon::Search),
         ("tab", Icon::AppWindow),
         ("window", Icon::AppWindow),
         ("group", Icon::AppWindow),
