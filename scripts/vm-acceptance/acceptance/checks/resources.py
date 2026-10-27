@@ -617,15 +617,17 @@ def describe_shell_parts(report: dict, n: int = 6) -> str:
 HEAP_MILESTONE = re.compile(r"HEAP-MILESTONE what=(\S+) in_use_mib=(\d+) free_mib=(\d+)")
 
 
-def heap_milestones(log: str, n: int = 8) -> str:
-    """The compositor's `HEAP-MILESTONE` lines (glibc heap in use/free at its start, its
-    renderer's first frame and each trim) as one fragment: `start 31/2, renderer-first-
-    frame 214/190, trim 205/12`, the first and the last `n - 1`. Whether the heap grew at
-    the renderer's first frame, where a CPU rasteriser compiles its shaders, or later."""
-    seen = [f"{m[1]} {m[2]}/{m[3]}" for m in HEAP_MILESTONE.finditer(log)]
-    if len(seen) > n:
-        seen = seen[:1] + ["…"] + seen[-(n - 1):]
-    return ", ".join(seen)
+def heap_milestones(log: str, trims: int = 3) -> str:
+    """The compositor's `HEAP-MILESTONE` lines (glibc heap in use/free at each step of its
+    startup, its renderer's first frame and each trim) as one fragment: every startup step
+    and the last `trims` trims, `start 4/0, backend-ready 9/1, …, trim 251/168`. Which step
+    the heap grew at, and whether it kept growing after."""
+    seen = [(m[1], f"{m[1]} {m[2]}/{m[3]}") for m in HEAP_MILESTONE.finditer(log)]
+    steps = [text for what, text in seen if what != "trim"]
+    trimmed = [text for what, text in seen if what == "trim"]
+    if len(trimmed) > trims:
+        trimmed = ["…"] + trimmed[-trims:]
+    return ", ".join(steps + trimmed)
 
 
 def heap_timeline(ctx) -> str:
@@ -742,11 +744,17 @@ def _open_several(ctx, apps: tuple[str, ...] = FOUR_APPS, name: str = "R"):
     ctx.facts["apps_failed_to_open"] = failed
     opened = [app for app in groups if app not in closed]
     ctx.facts["apps_open_for_memory"] = opened
+    ctx.facts["apps_open_groups"] = {app: groups[app] for app in opened}
     if failed or closed:
         problems = [f"{app}: {why}" for app, why in failed.items()]
         problems.extend(f"{app}: closed on its own after opening" for app in closed)
         raise core.Unobservable("could not establish the app workload: " + "; ".join(problems))
     return opened
+
+
+def still_open(state: dict, groups: dict | None) -> bool:
+    """Whether every window group `_open_several` opened (app → group id) is still there."""
+    return bool(groups) and all(core.group_by_id(state, gid) is not None for gid in groups.values())
 
 
 def software_renderer(ctx) -> bool:
@@ -954,7 +962,9 @@ def _record_memory(ctx, m: dict) -> None:
 @check("R03", AREA, "Memory: each open app's cgroup and the compositor stay within budget")
 def mem(ctx, res):
     opened = ctx.facts.get("apps_open_for_memory", [])
-    if set(opened) != set(FOUR_APPS):
+    if set(opened) != set(FOUR_APPS) or not still_open(ctx.state(), ctx.facts.get("apps_open_groups")):
+        # R02's windows are gone when its session restarted (every window goes with it):
+        # measuring then finds no app at all, so open them again.
         opened = _open_several(ctx)
     m = memory(ctx, opened)
     res.metrics.update(apps=m["apps"], shell=m["shell"], session_memory_mb=m["session_memory_mb"],
@@ -1010,7 +1020,7 @@ def mem(ctx, res):
                         "memory was not measured (see R-apps-closed-after-open.log)")
     # The same idle desktop once the apps have closed: what they leave behind.
     try:
-        after = _footprint_after_close(ctx)
+        after = _footprint_after_close(ctx, opened)
     except core.Unobservable as e:
         unobserved.append(f"memory after the apps closed: {e}")
     else:
@@ -1090,13 +1100,22 @@ def record_disk(ctx) -> dict:
     return disk
 
 
-def _footprint_after_close(ctx) -> dict:
-    """Close every window, wait for the apps' processes to exit and the compositor to
-    settle (it trims its heap after a close), then read the footprint."""
+def _footprint_after_close(ctx, apps: list[str]) -> dict:
+    """Close every window, wait for `apps`' processes to exit and the compositor to
+    settle (it trims its heap after a close), then read the footprint. Only the apps the
+    check opened: a session's own host agents (the geoclue agent) run in the launcher's
+    scope too and never close."""
     ctx.reset()
-    gone = wait_until(lambda: not any(p["app"] for p in core.processes(ctx)["procs"].values()), 20, 1.0)
-    if not gone:
-        raise core.Unobservable("app processes were still running 20 s after their windows closed")
+    last: dict = {}
+
+    def gone():
+        last["left"] = sorted({f"{p['app']}:{p['comm']}" for p in core.processes(ctx)["procs"].values()
+                               if p["app"] in apps})
+        return not last["left"]
+
+    if not wait_until(gone, 20, 1.0):
+        raise core.Unobservable("app processes were still running 20 s after their windows closed: "
+                                + ", ".join(last.get("left", [])[:8]))
     time.sleep(AFTER_CLOSE_SETTLE_S)
     return footprint(ctx)
 
@@ -1293,10 +1312,17 @@ echo "== blame"; systemd-analyze blame --no-pager | grep -v '\.device$' | head -
 echo "== stamps"
 echo "userspace_us=$(systemctl show -p UserspaceTimestampMonotonic --value)"
 echo "greetd_us=$(systemctl show greetd.service -p ActiveEnterTimestampMonotonic --value)"
+awk '$1 == "cpu" {print "cpu_ticks=" ($2+$3+$4+$5+$6+$7+$8+$9); print "steal_ticks=" $9}' /proc/stat
 echo "== end"
 """
 CHAIN_UNIT = re.compile(r"([A-Za-z0-9_@:.\\-]+\.(?:service|target|mount|socket|device|swap|path|timer|slice))[ @]")
 STAMP = re.compile(r"^(userspace|greetd)_us=(\d+)$", re.M)
+CHAIN_TIMES = re.compile(r"@(\d+(?:\.\d+)?)(ms|s)(?: \+(\d+(?:\.\d+)?)(ms|s))?")
+TICKS = re.compile(r"^(cpu|steal)_ticks=(\d+)$", re.M)
+
+
+def _secs(value: str, unit: str) -> float:
+    return float(value) / 1000 if unit == "ms" else float(value)
 # Nothing the greeter needs comes from the network: greetd waits for
 # systemd-user-sessions.service, which upstream orders After=network.target, so a network
 # start job queued before logins are allowed holds the greeter until NetworkManager is up.
@@ -1315,10 +1341,22 @@ def parse_boot_analysis(text: str) -> dict:
             sections[name] = []
         elif name is not None:
             sections[name].append(line)
-    chain = [m.group(1) for line in sections.get("critical-chain greetd.service", [])
-             if (m := CHAIN_UNIT.search(line + " "))]
+    chain, timed = [], []
+    for line in sections.get("critical-chain greetd.service", []):
+        if not (m := CHAIN_UNIT.search(line + " ")):
+            continue
+        chain.append(m.group(1))
+        t = CHAIN_TIMES.search(line)
+        at = f"@{_secs(t[1], t[2]):.1f}s" if t else ""
+        took = f" +{_secs(t[3], t[4]):.1f}s" if t and t[3] else ""
+        timed.append(f"{m.group(1)} {at}{took}".strip())
     stamps = {k: int(v) for k, v in STAMP.findall(text)}
-    out = {"greeter_chain": chain}
+    out = {"greeter_chain": chain, "greeter_chain_timed": timed}
+    ticks = {k: int(v) for k, v in TICKS.findall(text)}
+    if ticks.get("cpu"):
+        # The share of the guest's CPU time the host took back (steal) since boot: a boot
+        # slow because the host was busy shows it here, a slow unit does not.
+        out["boot_steal_pct"] = round(100 * ticks.get("steal", 0) / ticks["cpu"], 1)
     if stamps.get("greetd"):
         out["greeter_s"] = round(stamps["greetd"] / 1e6, 3)
         if stamps.get("userspace"):
@@ -1343,8 +1381,10 @@ def boot_attribution(ctx, res) -> list[str]:
     problems = [f"{unit} is on the greeter's critical chain" for unit in analysis["greeter_chain"]
                 if unit in GREETER_NEEDS_NO]
     if analysis.get("userspace_to_greeter_s", 0) > budget:
+        steal = analysis.get("boot_steal_pct")
         problems.append(f"userspace took {analysis['userspace_to_greeter_s']} s to the greeter > {budget} s "
-                        f"(chain: {' <- '.join(analysis['greeter_chain'][:6])})")
+                        f"(chain: {' <- '.join(analysis['greeter_chain_timed'][:8])}"
+                        + (f"; guest CPU steal since boot {steal}%" if steal is not None else "") + ")")
     return problems
 
 

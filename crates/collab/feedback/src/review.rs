@@ -3,7 +3,9 @@ use tilo_feedback_review::{
     TextOrigin,
 };
 
-use crate::{ContextField, Destination, Error, MaskedScreenshot, ReviewedFeedback, Submission};
+use crate::{
+    ContextField, Destination, Error, MaskedScreenshot, Recorded, ReviewedFeedback, Submission,
+};
 
 /// A user-authored issue. Context starts empty and must be explicitly attached.
 /// Raw draft/context text stays in memory until privacy review has masked it.
@@ -18,6 +20,7 @@ pub struct Preview {
     feedback: ReviewedFeedback,
     approved: bool,
     screenshot: Option<MaskedScreenshot>,
+    recording: Option<Recorded>,
 }
 
 impl Draft {
@@ -99,6 +102,7 @@ impl Draft {
             },
             approved: false,
             screenshot: None,
+            recording: None,
         })
     }
 }
@@ -119,6 +123,24 @@ impl Preview {
     pub fn remove_screenshot(&mut self) {
         self.screenshot = None;
         self.feedback.screenshot = None;
+        self.approved = false;
+    }
+
+    /// Adding a recording requires fresh approval.
+    pub fn attach_recording(&mut self, recording: Recorded) {
+        self.feedback.recording = Some(recording.reference().clone());
+        self.recording = Some(recording);
+        self.approved = false;
+    }
+
+    pub fn recording(&self) -> Option<&Recorded> {
+        self.recording.as_ref()
+    }
+
+    /// Leaving the recording out is a change to what the user approves.
+    pub fn remove_recording(&mut self) {
+        self.recording = None;
+        self.feedback.recording = None;
         self.approved = false;
     }
 

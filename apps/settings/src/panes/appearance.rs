@@ -845,6 +845,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_reflow_keeps_the_focused_control_and_it_still_works() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.effect(&crate::effects::open_pane(
+            crate::categories::Category::Appearance,
+        ))
+        .unwrap();
+        settle(&mut app);
+        let control = "appearance.hide_top_bar";
+        app.harness()
+            .perform_semantic_named(control, None, &ui::a11y::Action::Focus)
+            .unwrap();
+        let owner = app.harness().inspection().keyboard_focus_owner;
+        let focused = app.harness().focused_access_node().expect("focused");
+        assert!(owner.is_some() && focused.state.focused);
+        let widget = |app: &mut TestApp<SettingsShell>| {
+            std::ptr::from_ref(
+                ui::widget::find_test_id(app.harness().root_widget(), control).expect("shown"),
+            )
+            .cast::<()>()
+        };
+        let before = widget(&mut app);
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            for viewport in [(1472, 920), (440, 820)] {
+                app.harness()
+                    .relayout_themed(viewport, theme.clone())
+                    .unwrap();
+                app.harness().verify_retained_geometry().unwrap();
+                assert_eq!(widget(&mut app), before, "the control is kept");
+                assert_eq!(app.harness().inspection().keyboard_focus_owner, owner);
+                let now = app.harness().focused_access_node().expect("still focused");
+                assert_eq!(now.semantic_key, focused.semantic_key);
+                let wanted = !app.settings::<DesktopControls>().get().hide_top_bar;
+                app.harness()
+                    .perform_semantic_named(control, None, &ui::a11y::Action::Activate)
+                    .unwrap();
+                settle(&mut app);
+                assert_eq!(app.settings::<DesktopControls>().get().hide_top_bar, wanted);
+            }
+        }
+    }
+
     /// The ids of the controls the open pane of `app` shows.
     fn shown_ids(app: &mut TestApp<SettingsShell>) -> Vec<String> {
         fn walk(widget: &dyn Widget, ids: &mut Vec<String>) {

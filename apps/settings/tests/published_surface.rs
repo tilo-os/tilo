@@ -176,9 +176,9 @@ fn a_model_link_opens_agent_models() {
 /// Every section of the person's settings is published with its field
 /// edits, so an agent or assistive technology changes any of it by path,
 /// without a pane showing it, and the section's own check refuses what it
-/// does not hold. The session keeps and publishes the system's own; Settings
-/// publishes the rest, and its controls change the session's through the
-/// session's actions.
+/// does not hold. The session keeps and publishes every one, whether or not
+/// Settings is open; Settings' controls change them through the session's
+/// actions.
 #[test]
 fn every_settings_section_is_edited_by_path() {
     let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");
@@ -191,19 +191,6 @@ fn every_settings_section_is_edited_by_path() {
         .filter(|row| row["action"] == "field-edit")
         .filter_map(|row| row["resource"].as_str().map(str::to_owned))
         .collect();
-    for kind in [
-        "settings.desktop-controls",
-        "settings.agent-providers",
-        "settings.default-apps",
-        "settings.display-arrangement",
-        "settings.automatic-display",
-        "settings.osk-sources",
-    ] {
-        assert!(
-            published.contains(&format!("settings:{kind}")),
-            "{kind} is published with its field edits: {published:?}"
-        );
-    }
     for kept in [
         "settings.appearance",
         "settings.accessibility",
@@ -215,6 +202,13 @@ fn every_settings_section_is_edited_by_path() {
         "settings.display",
         "settings.locale",
         "settings.continuity",
+        "settings.desktop-controls",
+        "settings.agent-providers",
+        "settings.default-apps",
+        "settings.clock",
+        "settings.display-arrangement",
+        "settings.automatic-display",
+        "settings.osk-sources",
     ] {
         assert!(
             !published.contains(&format!("settings:{kept}")),
@@ -222,6 +216,17 @@ fn every_settings_section_is_edited_by_path() {
         );
     }
 
+    app.call_on(
+        "settings:settings.desktop-controls",
+        "field-edit",
+        serde_json::json!({ "edit": { "path": [{ "field": "vim_mode" }], "op": "set", "value": true } }),
+    )
+    .unwrap();
+    assert!(
+        app.settings::<settings::prefs::DesktopControls>()
+            .get()
+            .vim_mode
+    );
     app.call_on(
         "settings:settings.appearance",
         "field-edit",

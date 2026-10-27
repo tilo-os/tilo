@@ -11,7 +11,6 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 use settings_store::keyboard_shortcuts::{ShortcutCategory, ShortcutEntry, catalogue};
 use taffy::{NodeId, TaffyTree};
@@ -27,6 +26,7 @@ use winit::event::WindowEvent;
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
+pub use crate::prefs::DesktopControls;
 use crate::prefs::InputPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -39,30 +39,6 @@ crate::effects::effect_family!(ShortcutEffect => answer);
 
 /// The `shortcuts` section's verb that moves a shortcut to a chord.
 const REBIND: &str = "rebind";
-
-/// The shell's desktop navigation preferences, as the person's settings
-/// hold them.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
-)]
-#[model(defaults)]
-pub struct DesktopControls {
-    /// Add Super+Ctrl+h/j/k/l aliases for moving between windows and strips,
-    /// beside the arrow keys.
-    #[serde(default)]
-    pub vim_mode: bool,
-    /// Hide the top bar until the pointer reaches for it; shown in the
-    /// Appearance pane.
-    #[serde(default)]
-    pub hide_top_bar: bool,
-}
-
-impl ui::storage::SettingsSchema for DesktopControls {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("desktop_controls");
-}
-
-#[ui::tilo_resource::resource(kind = "settings.desktop-controls", label = "Desktop controls")]
-impl DesktopControls {}
 
 /// The keys that move around the desktop.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -528,6 +504,34 @@ mod tests {
             serde_json::json!({ "shortcut": shortcut, "chord": chord }),
         )
         .is_ok()
+    }
+
+    /// Each chord recorder changes its chord through the `shortcuts`
+    /// section's `rebind`, as an agent does; none is left without it.
+    #[test]
+    fn the_recorders_rebind_through_the_section() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::KeyboardShortcuts);
+        app.harness().resize((1200, 8000)).unwrap();
+        app.settle();
+        let recorders: Vec<_> =
+            ui::widget::controls::control_action_bindings(app.harness().root_widget())
+                .into_iter()
+                .filter(|binding| {
+                    binding.control_id.starts_with("shortcuts.")
+                        && binding.control_id != "shortcuts.vim_mode"
+                        && !binding.control_id.starts_with("shortcuts.paste.")
+                })
+                .collect();
+        assert!(!recorders.is_empty(), "the pane shows chord recorders");
+        assert!(
+            recorders.iter().all(|binding| matches!(
+                &binding.kind,
+                ui::widget::ControlBindingKind::Action(address)
+                    if address.resource == "settings:settings.shortcuts" && address.action == REBIND
+            )),
+            "{recorders:?}"
+        );
     }
 
     /// The catalogue names every shortcut, and only the editable ones are

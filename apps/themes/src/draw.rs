@@ -33,6 +33,25 @@ impl Painter<'_> {
             .stroke(&Stroke::new(width), self.transform, colour, None, shape);
     }
 
+    /// The previewed desktop's ground over the whole canvas and one window
+    /// tile on it, a gutter in from its edges; returns the tile.
+    fn desktop_with_window(&mut self) -> Rect {
+        let colors = &self.theme.tokens.colors;
+        let (ground, content, edge) = (
+            colors.surfaces.base,
+            colors.surfaces.content,
+            self.theme.window_edge(),
+        );
+        let radius = self.theme.tokens.radii.tile;
+        let gutter = f64::from(self.theme.tokens.spacing.s4);
+        let (width, height) = CANVAS;
+        self.fill(&Rect::new(0.0, 0.0, width, height), ground);
+        let tile = Rect::new(gutter, gutter, width - gutter, height - gutter);
+        self.fill(&rounded(tile, radius), content);
+        self.outline(&rounded(tile, radius), 1.0, edge);
+        tile
+    }
+
     fn label(&mut self, words: &str, role: TextRole, colour: Color, at: Point) {
         let style = self.theme.tokens.typography.style(role);
         self.text.draw_style(
@@ -72,14 +91,10 @@ pub fn miniature_list(
         transform,
         theme,
     };
-    let (width, height) = CANVAS;
     let gutter = f64::from(space.s4);
     let inset = f64::from(space.s2);
 
-    paint.fill(&Rect::new(0.0, 0.0, width, height), colors.surfaces.base);
-    let tile = Rect::new(gutter, gutter, width - gutter, height - gutter);
-    paint.fill(&rounded(tile, radii.tile), colors.surfaces.content);
-    paint.outline(&rounded(tile, radii.tile), 1.0, theme.window_edge());
+    let tile = paint.desktop_with_window();
 
     paint.label(
         "Inbox",
@@ -160,14 +175,9 @@ pub fn miniature_dialog(
         transform,
         theme,
     };
-    let (width, height) = CANVAS;
-    let gutter = f64::from(space.s4);
     let inset = f64::from(space.s2);
 
-    paint.fill(&Rect::new(0.0, 0.0, width, height), colors.surfaces.base);
-    let behind = Rect::new(gutter, gutter, width - gutter, height - gutter);
-    paint.fill(&rounded(behind, radii.tile), colors.surfaces.content);
-    paint.outline(&rounded(behind, radii.tile), 1.0, theme.window_edge());
+    let behind = paint.desktop_with_window();
 
     let dialog = Rect::new(
         behind.x0 + 70.0,
@@ -263,15 +273,11 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
         transform,
         theme,
     };
-    let (width, height) = CANVAS;
     let gutter = f64::from(space.s4);
     let inset = f64::from(space.s2);
 
     // The desktop ground and one window tile on it.
-    paint.fill(&Rect::new(0.0, 0.0, width, height), colors.surfaces.base);
-    let tile = Rect::new(gutter, gutter, width - gutter, height - gutter);
-    paint.fill(&rounded(tile, radii.tile), colors.surfaces.content);
-    paint.outline(&rounded(tile, radii.tile), 1.0, theme.window_edge());
+    let tile = paint.desktop_with_window();
 
     // The navigation region, with one selected row lifted.
     let sidebar = Rect::new(tile.x0, tile.y0, tile.x0 + 132.0, tile.y1);

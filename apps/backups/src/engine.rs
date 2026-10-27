@@ -1047,7 +1047,7 @@ mod tests {
         fs::write(source.join("notes/today.txt"), b"ship it").unwrap();
         let mut updates = Vec::new();
         let manifest = create_snapshot(&source, &destination, Stop::never(), |p| {
-            updates.push(p.clone())
+            updates.push(p.clone());
         })
         .unwrap();
         assert_eq!(manifest.files, 2);

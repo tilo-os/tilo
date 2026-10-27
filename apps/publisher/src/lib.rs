@@ -729,15 +729,10 @@ impl ResourceApp for App {
                         .with_intrinsic_height()
                         .with_rhythm(ui::tokens::Rhythm::Group)
                         .push(Box::new(key))
-                        .push(Box::new(Spacer::fixed(24.0)))
                         .push(Box::new(proof_places))
-                        .push(Box::new(Spacer::fixed(24.0)))
                         .push(Box::new(form))
-                        .push(Box::new(Spacer::fixed(24.0)))
                         .push(Box::new(apply_button))
-                        .push(Box::new(Spacer::fixed(24.0)))
                         .push(Box::new(timeline))
-                        .push(Box::new(Spacer::fixed(24.0)))
                         .push(Box::new(notice)),
                 )),
         )

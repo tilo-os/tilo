@@ -1780,6 +1780,12 @@ mod tests {
             let address = ip(address);
             async move { persistent.join(address, request(key)).await }
         });
+        admit(relay).await;
+        joining.await.unwrap().unwrap();
+    }
+
+    /// Answer the pre-admission `relay` was asked for, as the relay does.
+    async fn admit(relay: &mut Relay) {
         let OperatorCommand::PreAdmit { token_sha256, .. } = relay.command().await else {
             panic!("expected a pre-admission");
         };
@@ -1789,7 +1795,6 @@ mod tests {
                 invitation: "INV".into(),
             })
             .await;
-        joining.await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -2003,13 +2008,32 @@ mod tests {
     #[tokio::test]
     async fn admitted_guests_fill_the_room_before_the_relay_counts_them() {
         // An admitted guest's seat is held for 30 s of wall time; a loaded
-        // runner can take longer than that between the joins, and the held
-        // seats would lapse before the room is asked to be full. The wall
-        // clock stands still here, so the joins all fall inside the hold.
-        tilo_clock::freeze_wall(tilo_clock::wall());
+        // runner can take longer than that between the joins, and the first
+        // seat would lapse before the room is asked to be full. The seats
+        // are stood at now's reading after each join, which a live seat
+        // cannot tell from here, so both joins stay inside the hold — and
+        // the third join still reads the clock, which is the path it proves.
         let (persistent, mut relay, _dir) = persistent(2, 1000).await;
-        join_once(&persistent, &mut relay, "203.0.113.1", 7).await;
-        join_once(&persistent, &mut relay, "203.0.113.2", 8).await;
+        for (joined, (address, key)) in [("203.0.113.1", 7), ("203.0.113.2", 8)]
+            .into_iter()
+            .enumerate()
+        {
+            let joining = tokio::spawn({
+                let persistent = Arc::clone(&persistent);
+                let address = ip(address);
+                async move { persistent.join(address, request(key)).await }
+            });
+            admit(&mut relay).await;
+            joining.await.unwrap().unwrap();
+            // The guests' seats are held against the wall clock the check
+            // reads, and this test takes none of its own.
+            let held = {
+                let mut seats = persistent.shared.seats.lock_recover();
+                seats.stand_seats_at(tilo_clock::unix_now_ms());
+                seats.held()
+            };
+            assert_eq!(held, joined + 1, "each guest's seat is held");
+        }
         assert!(matches!(
             persistent.join(ip("203.0.113.3"), request(9)).await,
             Err(JoinRefusal::Full { .. })

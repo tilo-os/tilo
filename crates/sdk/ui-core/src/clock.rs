@@ -30,14 +30,21 @@ pub fn today() -> chrono::NaiveDate {
 /// Pin the wall clock to [`CAPTURE_LOCAL_TIME`] in the local time zone for
 /// the rest of the process. The launcher calls this before it builds an app
 /// for `--shots`; never call it in a live session.
+///
+/// A capture draws every frame of the process from the thread that calls
+/// this, so it pins the process's clock and not only its own thread's. A
+/// test does not: it holds its own thread with [`crate::time::testing`].
 pub fn freeze_for_capture() {
     if let Some(at) = capture_wall() {
-        crate::time::freeze_wall(at);
+        crate::time::pin_wall(at);
     }
 }
 
-/// [`CAPTURE_LOCAL_TIME`] in the local time zone, as a wall-clock reading.
-fn capture_wall() -> Option<crate::time::SystemTime> {
+/// The wall clock a capture shows, as a reading a test can hand its own
+/// thread with [`crate::time::testing::with_wall`]: what
+/// [`freeze_for_capture`] pins for the process.
+#[must_use]
+pub fn capture_wall() -> Option<crate::time::SystemTime> {
     use chrono::TimeZone;
     let (year, month, day, hour, minute) = CAPTURE_LOCAL_TIME;
     let local = chrono::NaiveDate::from_ymd_opt(year, month, day)
@@ -182,9 +189,8 @@ mod tests {
 
     #[test]
     fn a_capture_shows_the_same_local_date_and_time() {
-        // Pinned on this thread only: `freeze_for_capture` pins the whole
-        // process, which would stop the clock under every test beside this
-        // one.
+        // Pinned on this thread only: a capture pins the whole process,
+        // which would stop the clock under every test beside this one.
         let at = capture_wall().expect("the capture time exists in the local zone");
         crate::time::testing::with_wall(at, || {
             let now = local_now();

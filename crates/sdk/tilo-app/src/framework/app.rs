@@ -3,7 +3,7 @@
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tilo_resource::{Invoke, Reader, Resource};
 use ui_core::application::{
@@ -980,8 +980,19 @@ fn create_component(
     let file = context.take_open_file();
     let arguments = context.take_launch_arguments();
     let options = context.take_launch_options();
-    if created {
-        (app.new_record)(&mut context, &arguments, file.as_ref(), &options)?;
+    let replay = file
+        .as_ref()
+        .filter(|file| file.media_type() == tilo_content::RECORDING.mime)
+        .map(|file| replay_of(app, &mut context, file, created))
+        .transpose()?;
+    match &replay {
+        Some(recording) => initialize_record(&mut context, &mut |_| Ok(()), &mut |doc| {
+            tilo_automerge::ApplyIncoming::merge_incoming(doc, &mut recording.doc().clone())
+                .map(drop)
+                .map_err(|error| error.to_string())
+        })?,
+        None if created => (app.new_record)(&mut context, &arguments, file.as_ref(), &options)?,
+        None => {}
     }
     let capture = context.capture().is_some();
     let file_history = app.file_history.map(|_| FileHistorySource::default());
@@ -1042,7 +1053,51 @@ fn create_component(
         }
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     }
+    // A replay opens at the recording's first step: the state the window
+    // showed when the recording starts.
+    if let Some(start) = replay.as_ref().and_then(|recording| recording.heads_at(0)) {
+        for hash in start {
+            component
+                .open_history_at(ui_core::history_source::entry_id_from_hash(
+                    &hash.to_string(),
+                ))
+                .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        }
+    }
     Ok(component)
+}
+
+/// The recording `file` holds, opened in a window of its own: a private
+/// window on a record the launch created, which reads and is never written,
+/// so the recording reaches nothing outside it
+/// (`docs/architecture/session-replay.md`).
+///
+/// # Errors
+/// An app that keeps no History, a window that is not private or not on a
+/// new record, or bytes that are no recording.
+fn replay_of(
+    app: &AppHooks,
+    context: &mut HostContext,
+    file: &ui_core::application::OpenFile,
+    created: bool,
+) -> Result<tilo_resource::recording::Recording, LaunchError> {
+    if !app.document_history {
+        return Err(LaunchError::Operation(format!(
+            "{} keeps no History to replay a recording in",
+            app.title
+        )));
+    }
+    if !context.is_private() || !created {
+        return Err(LaunchError::Operation(
+            "a recording opens only in a private window of its own".into(),
+        ));
+    }
+    context.restrict_to_reading();
+    tilo_resource::recording::Recording::load(
+        file.bytes(),
+        &tilo_resource::recording::Limits::default(),
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// The item a launch on a record asked to show: the resource its `open`
@@ -1070,10 +1125,10 @@ fn record_content(context: &mut HostContext) {
     let Some(local) = context.content().cloned() else {
         return;
     };
-    let lane = ui_core::collaboration::record_content::ContentLane::of_record(
-        context.app_id(),
-        &context.record().id,
-    );
+    let lane = ui_core::collaboration::record_content::ContentLane::of_window();
+    // The window keeps its lane: another window of the app on this thread
+    // reads its own, never this one's queue of wants.
+    ui_core::collaboration::record_content::keep_lane(&context.wake_handle(), Arc::clone(&lane));
     context
         .provide_content(ui_core::collaboration::record_content::RecordContent::store(local, lane));
 }
@@ -1197,7 +1252,9 @@ fn prepare_hooked(
     let options = launch_options(app, args);
     let named = record
         .or_else(|| (app.launch_record)(&LaunchInput::new(arguments, None).with_options(&options)));
-    let private = app.private_windows && args.has(PRIVATE_FLAG);
+    // A recording replays in a private window: nothing it shows reaches
+    // the person's records, devices or collaborators.
+    let private = (app.private_windows && args.has(PRIVATE_FLAG)) || names_recording(arguments);
     let mut prepared = prepare_named(definition, args, named, private)?;
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);
@@ -1211,6 +1268,17 @@ fn prepare_hooked(
         prepared.context.provide_handoff(handoff);
     }
     Ok(prepared)
+}
+
+/// Whether the launch names a recording to replay: a first argument that
+/// is a path to one.
+#[cfg(tilo_native_runner)]
+fn names_recording(arguments: &[String]) -> bool {
+    arguments
+        .first()
+        .filter(|argument| !argument.contains("://"))
+        .and_then(|path| ui_core::dnd::mime_for_path(std::path::Path::new(path)))
+        == Some(tilo_content::RECORDING.mime)
 }
 
 /// The playback handoff the session handed this process at its start.

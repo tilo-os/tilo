@@ -165,13 +165,13 @@ pub fn catalogue_rows(provider: &str) -> Vec<CatalogueRow> {
     }]
 }
 
-fn failure(code: &str, message: String) -> Box<ActionFailure> {
-    Box::new(ActionFailure {
+fn failure(code: &str, message: String) -> ActionFailure {
+    ActionFailure {
         code: code.into(),
         message,
         details: None,
         retryable: false,
-    })
+    }
 }
 
 /// Answer an invocation of `address` with `argument` from `config`.
@@ -186,25 +186,25 @@ pub fn apply(
     argument: Option<&str>,
 ) -> Result<ActionOutput, Box<ActionFailure>> {
     let descriptor = descriptor_at(address).ok_or_else(|| {
-        failure(
+        Box::new(failure(
             "unknown_action",
             format!(
                 "no keyboard shortcut action `{}` on `{}`",
                 address.action, address.resource
             ),
-        )
+        ))
     })?;
     if let Some(slot) = argument.filter(|slot| !slot.is_empty()) {
         let json = slot.strip_prefix(ARGUMENTS_JSON_PREFIX).ok_or_else(|| {
-            failure(
+            Box::new(failure(
                 "invalid_arguments",
                 "keyboard shortcut actions take JSON arguments".into(),
-            )
+            ))
         })?;
         let supplied: Map<String, Value> = serde_json::from_str(json)
-            .map_err(|error| failure("invalid_arguments", error.to_string()))?;
+            .map_err(|error| Box::new(failure("invalid_arguments", error.to_string())))?;
         ActionArgs::bind_json(&descriptor.params, &supplied)
-            .map_err(|error| failure("invalid_arguments", error.to_string()))?;
+            .map_err(|error| Box::new(failure("invalid_arguments", error.to_string())))?;
     }
     Ok(ActionOutput {
         value: Some(list_json(config)),

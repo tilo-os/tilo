@@ -72,13 +72,8 @@ pub struct NoteDates {
 
 impl NoteDates {
     /// The dates as the one line the note header shows, in the local time
-    /// zone, read against the clock a capture pins. A date the history does
-    /// not know is left out; a note with no known date shows nothing.
-    pub fn labels(self) -> Vec<String> {
-        self.labels_at(ui::clock::local_now())
-    }
-
-    /// [`Self::labels`] against an explicit `now`.
+    /// zone, read against `now`. A date the history does not know is left
+    /// out; a note with no known date shows nothing.
     pub fn labels_at(self, now: chrono::DateTime<chrono::Local>) -> Vec<String> {
         use ui::i18n::I18nManager;
         let created = self.created.map(|seconds| when(seconds, now));

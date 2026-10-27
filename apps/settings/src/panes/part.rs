@@ -1,5 +1,5 @@
 //! The panes people open often' part of Settings: the areas, panes, effect
-//! families, live areas and settings sections they bring ([`crate::area::Part`]).
+//! families, live areas and settings rows they bring ([`crate::area::Part`]).
 
 use crate::categories::Category;
 use crate::effects::AreaVocabulary as _;
@@ -213,27 +213,6 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
     ),
 ];
 
-/// The sections of the person's settings the panes own.
-pub(crate) const SECTIONS: &[(u16, crate::area::SectionEntry)] = &[
-    (
-        10,
-        crate::area::section_entry!(keyboard_shortcuts::DesktopControls),
-    ),
-    (30, crate::area::section_entry!(personal_apps::DefaultApps)),
-    (
-        40,
-        crate::area::section_entry!(display::shared_displays::SharedDisplayPrefs),
-    ),
-    (
-        50,
-        crate::area::section_entry!(display::shared_displays::AutomaticDisplayPrefs),
-    ),
-    (
-        60,
-        crate::area::section_entry!(mouse_keyboard::keyboard_editor::OskSourceSettings),
-    ),
-];
-
 /// Every pane, by the categories it shows.
 pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     crate::area::PaneEntry {
@@ -442,6 +421,5 @@ pub const PART: crate::area::Part = crate::area::Part {
     panes: PANES,
     families: FAMILIES,
     live_areas: LIVE_AREAS,
-    sections: SECTIONS,
     settings: SETTINGS,
 };

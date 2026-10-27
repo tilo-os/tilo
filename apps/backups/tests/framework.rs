@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::panic, reason = "test assertions")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "test assertions read a job's own report by name"
+)]
 
 //! Backups on the framework: the retention controls edit the document
 //! through the resource's action, and backing up, verifying and restoring
@@ -59,18 +64,26 @@ fn an_unconfigured_device_offers_setup_and_refuses_to_back_up() {
 
 #[test]
 fn backups_run_as_jobs_against_this_devices_repository_and_follow_the_policy() {
+    // Both backups fall in one hour whenever the test runs: the retention
+    // policy buckets snapshots by the UTC hour they were taken in, and a
+    // running clock may cross into the next one between them.
+    let half_past = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_792_841_400);
+    ui::time::testing::with_wall(half_past, backups_run_and_follow_the_policy_at_once);
+}
+
+/// [`backups_run_as_jobs_against_this_devices_repository_and_follow_the_policy`]
+/// with the wall clock held at half past an hour.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario keeps each step and what it proves beside it"
+)]
+fn backups_run_and_follow_the_policy_at_once() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("documents");
     let destination = temp.path().join("drive");
     std::fs::create_dir_all(&source).unwrap();
     std::fs::create_dir_all(&destination).unwrap();
     std::fs::write(source.join("letter.txt"), b"dear backup").unwrap();
-    // Both backups below fall in one hour whenever the test runs: the
-    // retention policy buckets snapshots by the UTC hour they were taken
-    // in, and a running clock may cross into the next one between them.
-    let half_past = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_792_841_400);
-    ui::time::freeze_wall(half_past);
-
     let mut app = TestApp::<BackupsShell>::new().unwrap();
     // The location is this device's setting, not the document.
     app.settings::<BackupLocation>()

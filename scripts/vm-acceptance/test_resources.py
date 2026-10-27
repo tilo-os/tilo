@@ -180,6 +180,22 @@ class SpawnedApps(unittest.TestCase):
         self.assertIsNone(core.app_of_cgroup(f"{APPS}/app-dbus\\x2d:1.63\\x2dorg.a11y.atspi.Registry.slice/x"))
 
 
+class AppsStillOpen(unittest.TestCase):
+    """R03 measures R02's windows only while they are there: a session restart takes every
+    window with it."""
+
+    @staticmethod
+    def state(*gids):
+        return {"workspace_tree": {"workspaces": [{"strips": [{"window_groups": [{"id": g} for g in gids]}]}]}}
+
+    def test_every_group_must_still_be_open(self):
+        groups = {"so.tilo.notes": 7, "so.tilo.settings": 9}
+        self.assertTrue(resources.still_open(self.state(7, 9, 11), groups))
+        self.assertFalse(resources.still_open(self.state(7), groups))
+        self.assertFalse(resources.still_open(self.state(), groups))
+        self.assertFalse(resources.still_open(self.state(7, 9), None))
+
+
 class Footprint(unittest.TestCase):
     def test_buckets_cover_every_cgroup_once(self):
         fp = footprint()
@@ -337,14 +353,15 @@ class ShellMemoryMap(unittest.TestCase):
         self.assertIn("heap free 39.1 MiB", text)
         self.assertIn("heap_arenas 80.0 MiB, gpu_memfd 72.5 MiB", text)
 
-    def test_the_heap_timeline_keeps_the_start_and_the_latest(self):
+    def test_the_heap_timeline_keeps_every_startup_step_and_the_latest_trims(self):
         log = "\n".join([
             "[x] HEAP-MILESTONE what=start in_use_mib=31 free_mib=2 rss_anon_mib=40",
             "HEAP-MILESTONE what=renderer-first-frame in_use_mib=214 free_mib=190 rss_anon_mib=420",
         ] + [f"HEAP-MILESTONE what=trim in_use_mib={200 + i} free_mib=12 rss_anon_mib=230"
              for i in range(9)])
-        self.assertEqual(resources.heap_milestones(log, n=4),
-                         "start 31/2, …, trim 206/12, trim 207/12, trim 208/12")
+        self.assertEqual(resources.heap_milestones(log),
+                         "start 31/2, renderer-first-frame 214/190, …, trim 206/12, trim 207/12, "
+                         "trim 208/12")
         self.assertEqual(resources.heap_milestones(""), "")
 
     def test_records_are_valid_kpis_in_one_unit(self):

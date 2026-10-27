@@ -389,7 +389,7 @@ impl ShellOverlayHost {
     /// paint.
     pub fn fullscreen_hint_life(&self, now: Instant) -> Option<(Instant, Instant)> {
         self.fullscreen_hint_shown(now)
-            .map(|entered| (entered, entered + fullscreen_hint::FULLSCREEN_HINT_HOLD))
+            .map(|entered| (entered, fullscreen_hint::hint_gone_at(entered)))
     }
 
     /// When the way out of full screen next has something to settle without

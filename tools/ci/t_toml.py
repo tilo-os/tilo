@@ -459,11 +459,12 @@ CARGO_CHECKS: dict[str, dict] = {
     # and workflow, and the session scripts.
     "real-fuse": {
         "packages": lambda packages, root: {"tilo-relay", "tilo-fs", "tilo-runtime", "file-explorer",
-                                            "fs-protocol", "tilo-user-identity", "shell",
+                                            "fs-protocol", "tilo-user-identity",
                                             "tilo-session-record"},
         "tested": {"tilo-relay", "tilo-fs", "tilo-runtime", "file-explorer", "fs-protocol",
-                   "tilo-user-identity", "shell"},
-        "inputs": ["os/tests/tilo-session-lifecycle.sh", "os/usr/libexec/tilo-session",
+                   "tilo-user-identity"},
+        "inputs": ["os/tests/tilo-session-lifecycle.sh", "crates/session/shell/src/linux_main.rs",
+                   "os/usr/libexec/tilo-session",
                    "os/usr/lib/systemd/user/**", "os/usr/share/tilo/selinux/tilo-base.cil",
                    "os/usr/share/wayland-sessions/**", "os/dev-image/usr/lib/systemd/user/**",
                    "os/Containerfile", "dist/session/**",

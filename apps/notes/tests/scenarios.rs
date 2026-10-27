@@ -5,6 +5,11 @@
 //! own profile, record store and harness), so they run on several threads;
 //! the test reserves the runner in `.config/nextest.toml`.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "the capture's instant is the clock plus a notice's lifetime"
+)]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use notes::NotesShell;
@@ -40,8 +45,18 @@ const NARROW_SCENARIOS: &[&str] = &[
 
 #[test]
 fn semantic_markdown_import_reports_original_success_notification() {
+    // A capture pins the process's clock to 10:42 so its frame is the same
+    // on every run, and this test builds captures: it takes the process to
+    // itself, and no test beside it reads that time.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "semantic_markdown_import_reports_original_success_notification",
+        semantic_markdown_import_at_the_capture_instant,
+    );
+}
+
+fn semantic_markdown_import_at_the_capture_instant() {
     ui::clock::freeze_for_capture();
-    check(Some("import_success"), (1280, 720)).unwrap();
     let mut app = TestApp::<NotesShell>::capture_at(Some("import_success"), (1280, 720)).unwrap();
     // A capture retains its original notice in the window's bar even when
     // frame preparation exceeds the live notice lifetime. Draw the real app
@@ -57,9 +72,20 @@ fn semantic_markdown_import_reports_original_success_notification() {
 
 #[test]
 fn every_scenario_reaches_its_state() {
+    // A capture pins the process's clock to 10:42 so its frame is the same
+    // on every run, and this test builds many: it takes the process to
+    // itself, and no test beside it reads that time.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "every_scenario_reaches_its_state",
+        every_scenario_reaches_its_state_at_the_capture_instant,
+    );
+}
+
+fn every_scenario_reaches_its_state_at_the_capture_instant() {
+    ui::clock::freeze_for_capture();
     // Match --shots before starting capture workers: transient notifications
     // belong to the captured scene and must not expire while it is prepared.
-    ui::clock::freeze_for_capture();
     let mut captures = NotesShell::scenarios()
         .iter()
         .map(|scenario| (Some(*scenario), NotesShell::shot_viewport(Some(scenario))))
@@ -104,9 +130,15 @@ fn every_scenario_reaches_its_state() {
 
 #[test]
 fn imported_note_keeps_its_success_notification_in_capture() {
-    ui::clock::freeze_for_capture();
-    check(Some("import_success"), (1280, 720))
-        .expect("the imported document and its notification are both captured");
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "imported_note_keeps_its_success_notification_in_capture",
+        || {
+            ui::clock::freeze_for_capture();
+            check(Some("import_success"), (1280, 720))
+                .expect("the imported document and its notification are both captured");
+        },
+    );
 }
 
 #[test]

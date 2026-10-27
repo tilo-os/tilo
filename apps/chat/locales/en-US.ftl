@@ -350,6 +350,15 @@ chat-feedback-action = { $outcome ->
 # An action whose app gave it no label, by its id and resource kind.
 chat-feedback-action-unnamed = { $action } on { $resource }
 chat-feedback-recent = Just before: { $actions }
+# The recording a report carries: the app whose record it recorded, the
+# times it starts and ends, and how many changes it steps through.
+chat-feedback-recording = Recording of { $app } from { $from } to { $to }, { $steps ->
+    [one] one change
+   *[other] { $steps } changes
+}
+chat-feedback-replay = Replay the recording
+chat-feedback-replay-failed = The recording did not open
+chat-feedback-replay-description = Open the recording in { $app } and step through it
 chat-feedback-slow = Slow: { $slow } of the last { $frames } frames over { $budget } ms, the slowest { $worst } ms
 # A hidden span of a reported text, by what it hid.
 chat-feedback-hidden = { $kind ->

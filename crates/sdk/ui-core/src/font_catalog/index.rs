@@ -378,6 +378,17 @@ mod tests {
         assert!(bytes > 0, "a face's file is read when it is used");
     }
 
+    /// Move `path`'s mtime a second on, as time passing between two writes
+    /// does: on a filesystem whose timestamps are coarser than the time
+    /// between the index being stored and the change, the change's own
+    /// times can equal the ones recorded.
+    fn a_second_later(path: &Path) {
+        let file = std::fs::File::open(path).unwrap();
+        let modified = file.metadata().unwrap().modified().unwrap();
+        file.set_modified(modified + std::time::Duration::from_secs(1))
+            .unwrap();
+    }
+
     /// Anything the database was built from that changed, a font added to a
     /// font directory, or another root in front, makes the index not hold.
     #[test]
@@ -402,11 +413,13 @@ mod tests {
 
         let bytes = std::fs::read(&first).unwrap();
         std::fs::write(&first, &bytes).unwrap();
+        a_second_later(&first);
         assert!(load(&index_path, &roots).is_none(), "a rewritten font");
         store(&index_path, &roots, &root, &db);
         assert!(load(&index_path, &roots).is_some());
 
         std::fs::write(fonts.join("added.ttf"), &bytes).unwrap();
+        a_second_later(&fonts);
         assert!(load(&index_path, &roots).is_none(), "an added font");
         store(&index_path, &roots, &root, &db);
 
