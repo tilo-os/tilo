@@ -1,6 +1,10 @@
 //! What the client draws: the window's screens, the list column and its rows, the banner, the diff, the panels and the first-run screen.
 
-use super::*;
+use super::{
+    Banner, ButtonFace, ChangesHit, ControlSize, EmptyState, EmptyStateContent, GitClientApp, Hit,
+    OpenControls, PaintCtx, Point, PresenceCtx, Rect, Screen, ScrollRegion, Scroller, Staged,
+    Target, TextRole, Widget, changes, diffview, history, panels, t,
+};
 
 impl GitClientApp {
     /// Paint the whole window for this frame, record its targets, and show
