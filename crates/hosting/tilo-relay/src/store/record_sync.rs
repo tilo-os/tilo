@@ -135,6 +135,25 @@ impl WorkspaceStore {
         classes.reach(channel).unwrap_or(Reach::Everyone)
     }
 
+    /// Learn the record of `channel` from `bytes`, a frame about to be
+    /// retained on it, unless the channel is known already. A chain's later
+    /// part is then a head before any capture can list its lineage, so a
+    /// capture never takes an earlier part for the head because it met that
+    /// part first, nor misses a lineage the directory scan skipped: the
+    /// scan's change test compares directory times, which two lineages added
+    /// within one clock tick leave equal.
+    pub(super) fn learn_retained_record(&self, channel: &[u8; 32], bytes: &[u8]) {
+        if self.classes().channels.contains_key(channel) {
+            return;
+        }
+        let Some((route, _)) = super::retained::body_of(bytes, self.workspace_id)
+            .and_then(|body| self.payloads.open_document(&body))
+        else {
+            return;
+        };
+        self.classes().learn(*channel, &route.record_id);
+    }
+
     /// The channels of the chains' heads: what a device that subscribes now
     /// is replayed of each chain, and keeps following once a later part
     /// starts.
