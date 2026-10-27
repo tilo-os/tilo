@@ -27,7 +27,7 @@ instead of starting one, and leaves it running. `--app-only` runs the app loop o
 runtime without timing the runtime loop; `--skip-runtime` uses the session's own runtime.
 
   scripts/headless-examples/tilolang-dev-loops.py [--runs 5] [--session READY]
-      [--app-only | --skip-runtime]
+      [--app-only | --skip-runtime] [--no-build]
 """
 
 import argparse
@@ -270,12 +270,16 @@ def main() -> int:
     parser.add_argument("--app-only", action="store_true")
     parser.add_argument("--session", type=Path)
     parser.add_argument("--out", type=Path, default=REPO / "target/tilolang-dev-loops")
+    parser.add_argument("--no-build", action="store_true")
     args = parser.parse_args()
     out = args.out.resolve()
     shutil.rmtree(out / "src", ignore_errors=True)
     out.mkdir(parents=True, exist_ok=True)
     state = out / "state"
     tool = REPO / "target/nested/tilolang"
+    if not args.no_build:
+        # The tool of this checkout: one built before would time the loops of older code.
+        run(["cargo", "build", *PROFILE_ARGS, "-p", "tilolang-cli", "--bin", "tilolang"], cwd=REPO)
     if not tool.is_file():
         raise Failed(f"no {tool} (cargo build {' '.join(PROFILE_ARGS)} -p tilolang-cli)")
     # A copy of Notes to edit: the repository's sources stay as they are.
