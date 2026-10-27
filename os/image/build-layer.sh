@@ -242,12 +242,33 @@ PY
   export SOURCE_DATE_EPOCH=$epoch
 }
 
+# Date every file NAME's Containerfile reads from the tree (given GIVEN) by the build's clock.
+# A COPY keeps a file's time where it is older than the clock, and the times t's checkout gives
+# a file differ from one checkout to the next, so a copied file would make its layer differ
+# between builds of the same tree.
+pin_source_times() {
+  local globs
+  mapfile -t globs < <(python3 -I tools/ci/os/pieces.py inputs "$1" --given "$2")
+  python3 -I - "$SOURCE_DATE_EPOCH" "${globs[@]}" <<'PY'
+import glob, os, sys
+clock = int(sys.argv[1])
+for pattern in sys.argv[2:]:
+    for path in glob.glob(pattern, recursive=True):
+        os.utime(path, (clock, clock), follow_symlinks=False)
+        parent = os.path.dirname(path)
+        while parent:
+            os.utime(parent, (clock, clock))
+            parent = os.path.dirname(parent)
+PY
+}
+
 # Build TARGET of NAME's Containerfile through build-image.sh, given GIVEN (stage names) as
 # images; tagged $image.
 build_target() {
   local name=$1 target=$2 given=$3 file
   file=$scratch/$name.Containerfile
   python3 -I tools/ci/os/pieces.py containerfile "$name" --given "$given" > "$file"
+  pin_source_times "$name" "$given"
   TILO_IMAGE=$image TILO_LAYER_TARGET=$target TILO_CONTAINERFILE=$file \
     TILO_LAYER_ARGS="${layer_args[*]}" bash os/dev/build-image.sh
 }
