@@ -901,9 +901,16 @@ export async function startEntryPage({mode}) {
       });
     }
     if (hostActions) {
-      const offered = remembering(() => workspaceChoices({home: page.entry?.home, homeRoom: homeRoomOf(page.entry),
-        entered: enteredWorkspaces(), current: here})) ?? [];
-      hostActions('workspaces').setHostActions(workspaceSwitchActions(offered, {current: workspaceName}));
+      let offered = [];
+      const offer = own => {
+        offered = remembering(() => workspaceChoices({home: page.entry?.home, homeRoom: homeRoomOf(page.entry),
+          entered: enteredWorkspaces(), current: here, own})) ?? [];
+        hostActions('workspaces').setHostActions(workspaceSwitchActions(offered, {current: workspaceName}));
+      };
+      offer(false);
+      // The way back from a room to the person's own desktop, where they
+      // may have one: asked of the home's door, so offered once it answers.
+      if (!embed && here.kind !== 'own') void ownDesktopAllowed(page.entry?.home).then(open => { if (open) offer(true); });
       switchWorkspace = id => {
         const choice = offered.find(candidate => candidate.id === id);
         return choice ? openWorkspace({choice, page, status}) : undefined;
@@ -1172,6 +1179,7 @@ function homeRoomOf(entry) {
 /** The address that opens `choice` (`workspaceChoices`): the bare entry for the home. */
 function choiceUrl(choice, entry, link) {
   if (choice.home) return entry.base;
+  if (choice.own) return link.format({mode: 'desktop', target: {scope: {kind: 'own'}}});
   return link.format({mode: 'desktop', target: {scope: {kind: 'room', host: choice.origin, room: choice.room}}});
 }
 
@@ -1206,7 +1214,8 @@ async function openWorkspace({choice, page, status}) {
     await card('Your latest changes here are not saved yet, so Tilo stayed in this workspace. Try again in a moment.', [['OK', null]]);
     return;
   }
-  remembering(() => chooseWorkspace(choice.home ? null : choice));
+  // The own desktop is no room a bare entry could reopen: the choice kept stays.
+  if (!choice.own) remembering(() => chooseWorkspace(choice.home ? null : choice));
   status.textContent = `Opening ${choice.name}…`;
   await closeRoom(page);
   loadPage(url);
@@ -1432,7 +1441,8 @@ async function offerOtherWorkspaces({scope, entry, runtime}) {
   const choice = await card('Open another of your workspaces',
     [...choices.map(option => [option.unavailable ? `${option.name} (did not open last time)` : option.name, option]), ['Not now', null]]);
   if (!choice) return true;
-  remembering(() => chooseWorkspace(choice.home ? null : choice));
+  // The own desktop is no room a bare entry could reopen: the choice kept stays.
+  if (!choice.own) remembering(() => chooseWorkspace(choice.home ? null : choice));
   loadPage(choiceUrl(choice, entry, link));
   return true;
 }

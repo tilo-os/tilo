@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {chosenWorkspace, enteredWorkspaces, rememberEntered} from './workspaces.mjs';
+import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, rememberEntered} from './workspaces.mjs';
 import {AdmissionError} from './admission.mjs';
 
 const USER = 'aa'.repeat(32);
@@ -122,14 +122,14 @@ test('rooms another host held at the origin of the page host are no longer offer
     {origin: ORIGIN, room: 'gone-2', hostDevice: 'e2'.repeat(32), name: 'Other'},
     {origin: 'https://elsewhere.example', room: 'away', hostDevice: 'e3'.repeat(32), name: 'Away'},
   ]});
-  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open Other', 'Open Away', 'New workspace', 'Invite someone']);
+  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'Invite someone']);
   assert.deepEqual(enteredWorkspaces().map(entry => entry.room), ['current', 'other', 'away']);
 });
 
 test('the page keeps switch and invitation actions together and dispatches both', async () => {
   const {calls, shown, diagnostics} = await fixture();
   const actions = shown.at(-1);
-  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open Other', 'New workspace', 'Invite someone']);
+  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'Invite someone']);
   diagnostics.onHostAction('invite-someone');
   await tick();
   assert.deepEqual(calls, ['invite']);
@@ -141,6 +141,23 @@ test('the page keeps switch and invitation actions together and dispatches both'
   await tick();
   assert.deepEqual(calls, ['invite', 'flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
   assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, room: 'other'});
+});
+
+test('a room offers the way back to the person’s own desktop, and their own desktop does not offer itself', async () => {
+  const {calls, shown, diagnostics, page} = await fixture();
+  page.link.format = route => `https://web.example/#/${route.target.scope.kind === 'own' ? 'me' : route.target.scope.room}`;
+  chooseWorkspace({origin: ORIGIN, room: 'other'});
+  const back = shown.at(-1).find(action => action.title === 'Open your desktop');
+  assert.ok(back, 'a room is no dead end');
+  const urls = [];
+  globalThis.history.pushState = (_state, _title, url) => { urls.push(url); calls.push('history'); };
+  diagnostics.onHostAction(back.id);
+  await tick();
+  assert.deepEqual(calls.slice(-6), ['flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
+  assert.deepEqual(urls, ['https://web.example/#/me']);
+  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, room: 'other'}, 'the room a bare entry reopens stays');
+  const {shown: ownShown} = await fixture({own: true});
+  assert.ok(!ownShown.flat().some(action => action.title === 'Open your desktop'));
 });
 
 test('creating a workspace stays in the current room when pending work cannot be saved', async () => {
