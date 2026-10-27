@@ -85,14 +85,19 @@ pub fn pages(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
 /// position, so every replica adds the same notes under the same ids.
 #[must_use]
 pub fn import_action(pages: &[ImportedPage]) -> Invoke<Notebook> {
-    Invoke::group(pages.iter().map(|page| {
-        crate::actions::import_markdown_action(
-            None,
-            &page.title,
-            &page.markdown,
-            page.images.clone(),
-        )
-    }))
+    Invoke::group(pages.iter().filter_map(import_of))
+}
+
+/// The import of `page` as one invocation; `None` only if the action cannot
+/// be encoded, which plain owned data never causes.
+fn import_of(page: &ImportedPage) -> Option<Invoke<Notebook>> {
+    Invoke::apply(&crate::actions::import_markdown_action(
+        None,
+        &page.title,
+        &page.markdown,
+        page.images.clone(),
+    ))
+    .ok()
 }
 
 /// Whether `bytes` starts with a zip archive's signature: a Notion export is
@@ -122,7 +127,8 @@ fn pages_from_archive(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
         if !is_picture(name) {
             continue;
         }
-        if let Ok(bytes) = archive.read(name, crate::notebook::MAX_ASSET_BYTES) {
+        let cap = u64::try_from(crate::notebook::MAX_ASSET_BYTES).unwrap_or(u64::MAX);
+        if let Ok(bytes) = archive.read(name, cap) {
             pictures.insert(name.clone(), bytes);
         }
     }
@@ -133,7 +139,8 @@ fn pages_from_archive(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
         if !name.to_lowercase().ends_with(".md") {
             continue;
         }
-        let Ok(text) = archive.read_text(name, crate::notebook::MAX_MARKDOWN_IMPORT_BYTES) else {
+        let cap = u64::try_from(crate::notebook::MAX_MARKDOWN_IMPORT_BYTES).unwrap_or(u64::MAX);
+        let Ok(text) = archive.read_text(name, cap) else {
             continue;
         };
         let title = page_title(name, &text);
@@ -141,8 +148,8 @@ fn pages_from_archive(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
         let body = keep_pictures(&text, name, &pictures, &mut import);
         let mut markdown = body;
         for database in databases_of(name, &names) {
-            let Ok(csv) = archive.read_text(&database, crate::notebook::MAX_MARKDOWN_IMPORT_BYTES)
-            else {
+            let cap = u64::try_from(crate::notebook::MAX_MARKDOWN_IMPORT_BYTES).unwrap_or(u64::MAX);
+            let Ok(csv) = archive.read_text(&database, cap) else {
                 continue;
             };
             match csv_table(&csv) {
