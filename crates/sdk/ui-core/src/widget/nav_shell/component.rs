@@ -205,8 +205,16 @@ impl Described for NavShell {
             "overview_actions" => Column::Overview,
             _ => return None,
         };
+        let staged = matches!(self.pending.actions.get(header.index()), Some(Some(_)));
         let actions = self.take_header_actions(header);
-        self.slot_edit = Some(SlotEdit::Actions(header, actions));
+        self.slot_edit = Some(SlotEdit::Actions(
+            header,
+            actions,
+            ActionsEdit {
+                staged,
+                changed: false,
+            },
+        ));
         Some(self)
     }
 }
@@ -216,7 +224,16 @@ pub(super) enum SlotEdit {
     /// The body of a column: one view, or none.
     Column(Column),
     /// A header's actions, out of the header until the change is done.
-    Actions(Column, Vec<Element>),
+    Actions(Column, Vec<Element>, ActionsEdit),
+}
+
+/// Where a header's actions under change came from, and whether the change touched the row.
+#[derive(Clone, Copy)]
+pub(super) struct ActionsEdit {
+    /// They were waiting for the next build, not shown.
+    staged: bool,
+    /// An action came, went, moved or was built anew: the row changes.
+    changed: bool,
 }
 
 impl NavShell {
@@ -232,16 +249,32 @@ impl NavShell {
             .unwrap_or_default()
     }
 
-    /// Put the actions of the change under way back in their header, to be shown at the next
-    /// build.
+    /// Put the actions of the change under way back. A change that touched the row stages it
+    /// for the next build; one whose actions each took their change in place (a label, whether
+    /// one is enabled) puts them back where they were, and the row stays as it is.
     pub(super) fn finish_slot_edit(&mut self) {
-        let Some(SlotEdit::Actions(column, actions)) = self.slot_edit.take() else {
+        let Some(SlotEdit::Actions(column, actions, edit)) = self.slot_edit.take() else {
             return;
         };
+        if !edit.changed && !edit.staged {
+            if let Some(header) = self.headers.get_mut(column.index()) {
+                header.actions = actions;
+            }
+            return;
+        }
         if let Some(slot) = self.pending.actions.get_mut(column.index()) {
             *slot = Some(actions);
         }
-        self.pending_changed();
+        if edit.changed {
+            self.pending_changed();
+        }
+    }
+
+    /// Note that the actions under change touched the row.
+    fn actions_changed(&mut self) {
+        if let Some(SlotEdit::Actions(_, _, edit)) = &mut self.slot_edit {
+            edit.changed = true;
+        }
     }
 
     /// Whether `column` has a body at the next build.
@@ -265,7 +298,7 @@ impl NavShell {
 
     fn edit_actions(&mut self) -> Option<&mut Vec<Element>> {
         match &mut self.slot_edit {
-            Some(SlotEdit::Actions(_, actions)) => Some(actions),
+            Some(SlotEdit::Actions(_, actions, _)) => Some(actions),
             _ => None,
         }
     }
@@ -282,7 +315,7 @@ impl NavShell {
 impl SlotViews for NavShell {
     fn len(&self) -> usize {
         match &self.slot_edit {
-            Some(SlotEdit::Actions(_, actions)) => actions.len(),
+            Some(SlotEdit::Actions(_, actions, _)) => actions.len(),
             Some(SlotEdit::Column(column)) => usize::from(self.has_column_body(*column)),
             None => 0,
         }
@@ -306,6 +339,7 @@ impl SlotViews for NavShell {
     fn insert(&mut self, index: usize, view: Element) {
         if let Some(actions) = self.edit_actions() {
             actions.insert(index.min(actions.len()), view);
+            self.actions_changed();
             return;
         }
         if let Some(column) = self.edit_column() {
@@ -314,10 +348,11 @@ impl SlotViews for NavShell {
     }
 
     fn remove(&mut self, index: usize) {
-        if let Some(SlotEdit::Actions(_, actions)) = &mut self.slot_edit {
+        if let Some(SlotEdit::Actions(_, actions, edit)) = &mut self.slot_edit {
             if index < actions.len() {
                 let gone = actions.remove(index);
                 self.retired_actions.push(gone);
+                edit.changed = true;
             }
             return;
         }
@@ -336,14 +371,16 @@ impl SlotViews for NavShell {
         {
             let moved = actions.remove(from);
             actions.insert(to.min(actions.len()), moved);
+            self.actions_changed();
         }
     }
 
     fn replace(&mut self, index: usize, view: Element) {
-        if let Some(SlotEdit::Actions(_, actions)) = &mut self.slot_edit {
+        if let Some(SlotEdit::Actions(_, actions, edit)) = &mut self.slot_edit {
             if let Some(held) = actions.get_mut(index) {
                 let gone = std::mem::replace(held, view);
                 self.retired_actions.push(gone);
+                edit.changed = true;
             }
             return;
         }
