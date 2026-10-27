@@ -431,6 +431,19 @@ mod component_adapter {
         /// A complete-content capture laid the root out in a tree of its own:
         /// the host rebuilds its layout before the next frame.
         relayout: bool,
+        /// The record's durability changed and the root synced with it
+        /// ([`AppComponent::take_save_status_changed`]): what shows it is
+        /// measured and drawn by the next frame, as an `App` presents it.
+        /// Nothing about the tree changed, so it is not rebuilt (which
+        /// repaints the whole window for a save label after every key).
+        save_status_shown: SaveStatusShown,
+    }
+
+    /// What of a frame a save status change still asks for.
+    #[derive(Default)]
+    struct SaveStatusShown {
+        measure: bool,
+        draw: bool,
     }
 
     impl BoundAppWidget {
@@ -438,6 +451,7 @@ mod component_adapter {
             Self {
                 component,
                 relayout: false,
+                save_status_shown: SaveStatusShown::default(),
             }
         }
 
@@ -1038,6 +1052,7 @@ mod component_adapter {
             node: NodeId,
             origin: vello::kurbo::Point,
         ) {
+            self.save_status_shown.measure = false;
             self.in_root_mut(|root| {
                 if let Ok(children) = taffy.children(node)
                     && let Some(child) = children.first()
@@ -1356,8 +1371,9 @@ mod component_adapter {
         fn take_structure_dirty(&mut self) -> bool {
             self.take_structure_change().rebuilds()
         }
-        /// The root's change as it says it; the component's own reasons (a
-        /// relayout it asked for, a save status no `App` presented) rebuild.
+        /// The root's change as it says it, and a relayout the component
+        /// asked for, which rebuilds. A save status no `App` presented is
+        /// measured and drawn by the next frame ([`SaveStatusShown`]).
         fn take_structure_change(&mut self) -> crate::widget::StructureChange {
             use crate::widget::StructureChange;
             let relayout = StructureChange::of(std::mem::take(&mut self.relayout));
@@ -1365,34 +1381,42 @@ mod component_adapter {
             let Ok(_entry) = binding.enter() else {
                 return relayout;
             };
-            let save_status_changed =
-                StructureChange::of(self.component.take_save_status_changed());
+            if self.component.take_save_status_changed() {
+                self.save_status_shown = SaveStatusShown {
+                    measure: true,
+                    draw: true,
+                };
+            }
             let Some(root) = self.component.root.as_deref_mut() else {
                 return relayout;
             };
-            root.take_structure_change()
-                .join(save_status_changed)
-                .join(relayout)
+            root.take_structure_change().join(relayout)
         }
         fn needs_redraw(&self) -> bool {
-            self.in_root(|root| root.needs_redraw()).unwrap_or_default()
+            self.save_status_shown.draw
+                || self.in_root(|root| root.needs_redraw()).unwrap_or_default()
         }
         fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
             self.in_root(|root| root.collect_damage(regions));
         }
         fn mark_drawn(&mut self) {
+            self.save_status_shown.draw = false;
             self.in_root_mut(|root| root.mark_drawn());
         }
         fn release_scene_cache(&mut self) {
             self.in_root_mut(|root| root.release_scene_cache());
         }
         fn is_layout_dirty(&self) -> bool {
-            self.in_root(|root| root.is_layout_dirty())
-                .unwrap_or_default()
+            self.save_status_shown.measure
+                || self
+                    .in_root(|root| root.is_layout_dirty())
+                    .unwrap_or_default()
         }
         fn layout_needs_measure(&self) -> bool {
-            self.in_root(|root| root.layout_needs_measure())
-                .unwrap_or_default()
+            self.save_status_shown.measure
+                || self
+                    .in_root(|root| root.layout_needs_measure())
+                    .unwrap_or_default()
         }
         fn draw_overlay(
             &mut self,
