@@ -267,6 +267,7 @@ impl NotificationsArea {
         sample: bool,
         per_app: &BTreeMap<String, AppNotificationRule>,
     ) -> Vec<InstalledNotificationApp> {
+        crate::device_read::off_ui_thread();
         if sample {
             sample_apps()
         } else {
