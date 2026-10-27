@@ -6,6 +6,7 @@ terminal-target-manage = Umgebungen verwalten…
 terminal-target-choose = Wählen, wo dies läuft
 terminal-start-failed-title = Die Shell konnte nicht starten
 terminal-start-retry = Erneut versuchen
+terminal-restart = Shell neu starten
 terminal-reconnecting = Verbindung wird wiederhergestellt…
 terminal-reconnect-superseded = Diese Sitzung ist in einem anderen Terminal geöffnet
 terminal-run-on = Ausführen auf:
