@@ -54,7 +54,12 @@ pub(super) fn control_of(
     if revision > applied {
         return Err("task lease claims an unacknowledged direction".into());
     }
-    let latest = run.latest_revision();
+    // A paused run's agent takes no step, so it is handed none of the
+    // messages after the boundary a person paused it at: the run resumed
+    // hands them over then, and no message is read twice.
+    let latest = run
+        .paused_through
+        .map_or_else(|| run.latest_revision(), |through| through.min(revision));
     let skip = usize::try_from(revision).unwrap_or(usize::MAX);
     let directions = run
         .directions
@@ -86,10 +91,24 @@ pub(super) fn control_of(
     Ok(control)
 }
 
+/// What an agent is told about a run a person paused: it takes no further
+/// step, and what it already did stays. `stopped` for the run that ended
+/// instead.
+fn paused_at(stopped: bool) -> String {
+    if stopped {
+        "the person paused this task and it stopped".into()
+    } else {
+        "the person paused this task: it takes no further step until they let it go on".into()
+    }
+}
+
 /// The step `run` is paused at: its question, while the person has not
 /// answered it, so an agent that restarted resumes there rather than asking
 /// again.
 pub(super) fn paused_step(run: &TrackerRun) -> Option<runtime_collab::TaskRunPausedStep> {
+    if run.paused_through.is_some() {
+        return None;
+    }
     let question = run
         .question
         .as_ref()
@@ -254,7 +273,7 @@ impl CapnpBrokerState {
                 task_id: run.issue.clone(),
                 agent_id: run.agent.clone(),
                 epoch: run.epoch,
-                revision: 0,
+                revision: run.paused_through.unwrap_or(0),
                 starter: Some(run.starter.clone()),
             },
             TaskRunEnvelope {
@@ -357,6 +376,9 @@ impl CapnpBrokerState {
         action: &mut dyn FnMut() -> Result<StagedJob, String>,
     ) -> Result<StagedJob, String> {
         let current = self.tracker_run_of(run)?;
+        if current.paused_through.is_some() {
+            return Err(paused_at(false));
+        }
         if current.applied_revision() != binding.revision
             || current.latest_revision() != binding.revision
         {
@@ -465,6 +487,9 @@ impl CapnpBrokerState {
         launch: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
         let current = self.tracker_run_of(run)?;
+        if current.paused_through.is_some() {
+            return Err(paused_at(false));
+        }
         if current.applied_revision() != binding.revision
             || current.latest_revision() != binding.revision
         {

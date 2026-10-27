@@ -113,7 +113,7 @@ fn the_proposed_grant_is_the_least_each_step_needs() {
     let steps = vec![
         list(),
         create(&json!({})),
-        step(json!({"id": "ai", "step": "ai", "transform": "summarise",
+        step(json!({"id": "ai", "step": "ai", "prompt": "Summarise this",
                     "input": {"literal": "x"}})),
         list(),
     ];
@@ -143,8 +143,8 @@ fn the_proposed_grant_is_the_least_each_step_needs() {
             ),
             (
                 tilo_automation::AGENT_APP_ID.into(),
-                "summarise".into(),
-                tilo_action_policy::ActionKind::Read
+                tilo_automation::AGENT_FREEFORM_ACTION.into(),
+                tilo_action_policy::ActionKind::Undoable
             ),
         ]
     );

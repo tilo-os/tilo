@@ -152,6 +152,7 @@ impl ChatApp {
 
     /// Read and write the chat's messages through `chain` from now on.
     pub(crate) fn attach_chain(&mut self, chain: ui::framework::Chain<crate::parts::ChatPart>) {
+        self.scrollback.pager = Some(ui::framework::ChainPager::new(chain.clone()));
         self.chain = Some(chain);
         self.chain_seen = None;
         self.reselect();

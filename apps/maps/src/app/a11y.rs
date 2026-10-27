@@ -1,6 +1,6 @@
 //! What assistive technology addresses on the map: the controls and rows the last paint recorded, under stable keys.
 
-use super::*;
+use super::{AccessibilityTarget, Hit, MapMenu, MapsApp, Rect, TransitTimeMode};
 
 impl MapsApp {
     /// Immediate-mode controls exported as one semantic list. Keeping this

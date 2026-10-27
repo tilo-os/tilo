@@ -416,6 +416,102 @@ fn profile_proof_places(profile: &Publisher) -> Vec<String> {
     places
 }
 
+/// Run one of the key pane's effects, keeping `pane_state` busy while it
+/// runs and recording what it says.
+fn handle_key_effect(
+    effect: KeyEffect,
+    cx: &mut EffectCx<Publisher>,
+    pane_state: &LocalState<Pane>,
+    secrets: &SecretStore,
+) -> Result<Effected, String> {
+    if matches!(
+        effect,
+        KeyEffect::ApplyForNamespaces | KeyEffect::CheckStatus
+    ) {
+        let profile = cx.live().with(Clone::clone);
+        pane_state.set(Pane {
+            busy: true,
+            notice: None,
+            ..pane_state.get()
+        });
+        let pane = pane_state.clone();
+        let (remote_secrets, reload_secrets) = (secrets.clone(), secrets.clone());
+        return Ok(cx.thread(
+            move |_| remote(&effect, &profile, &remote_secrets),
+            move |(), result: Result<Notice, String>, _| {
+                let mut next = pane.get();
+                next.key = KeyState::load(&reload_secrets);
+                next.busy = false;
+                next.notice = Some(result.clone().unwrap_or_else(Notice::error));
+                if let Ok(notice) = &result {
+                    let summary = notice
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| notice.title.clone());
+                    next.history
+                        .push((ui::time::try_unix_now_ms().unwrap_or(0), summary));
+                }
+                pane.set(next);
+                result.map(|_| Effected::done())
+            },
+        ));
+    }
+    if matches!(effect, KeyEffect::ExportKey) {
+        let key = key::resolve(None, secrets).map_err(|error| format!("{error:#}"))?;
+        let bytes = format!(
+            "{{\"secret_key_hex\":\"{}\"}}\n",
+            hex::encode(key.to_bytes())
+        )
+        .into_bytes();
+        let request =
+            ui::portal::PickRequest::save("Back up publisher key", "Save", "publisher-key.json");
+        let pane = pane_state.clone();
+        return Ok(cx.save_file(request, bytes, move |(), saved, _| {
+            let mut next = pane.get();
+            next.notice = Some(if saved {
+                Notice::success("publisher-key-exported").explained("publisher-key-exported-detail")
+            } else {
+                Notice::info("publisher-key-export-cancelled")
+            });
+            pane.set(next);
+            Ok(Effected::done())
+        }));
+    }
+    if matches!(effect, KeyEffect::CopySecret) {
+        // The copy settles without the UI thread waiting on it; the
+        // effect finishes once it has.
+        let copy = copy_secret(secrets)?;
+        pane_state.set(Pane {
+            busy: true,
+            notice: None,
+            ..pane_state.get()
+        });
+        let pane = pane_state.clone();
+        let reload_secrets = secrets.clone();
+        return Ok(cx.thread(
+            move |_| copy.wait(),
+            move |(), copied: bool, _| {
+                let result = copied_secret(copied);
+                pane.set(Pane {
+                    key: KeyState::load(&reload_secrets),
+                    busy: false,
+                    notice: Some(result.clone().unwrap_or_else(Notice::error)),
+                    history: pane.get().history,
+                });
+                result.map(|_| Effected::done())
+            },
+        ));
+    }
+    let result = local(&effect, secrets);
+    pane_state.set(Pane {
+        key: KeyState::load(secrets),
+        busy: false,
+        notice: Some(result.clone().unwrap_or_else(Notice::error)),
+        history: pane_state.get().history,
+    });
+    result.map(|_| Effected::done())
+}
+
 /// Where to publish the proof line, following the domain and forge fields as
 /// they are edited. The projection reads the document, so the places are
 /// the current claims rather than the state at window construction.
@@ -443,9 +539,9 @@ fn proof_places_section() -> ModelView<Vec<String>> {
                 ));
                 return Box::new(column);
             }
-            for (index, place) in places.iter().enumerate() {
+            for ((index, place), number) in places.iter().enumerate().zip(1_usize..) {
                 column = column.push(value_group(
-                    &format!("Publish at {}", index + 1),
+                    &format!("Publish at {number}"),
                     place,
                     &format!("proof-place-{index}"),
                     None,
@@ -599,104 +695,11 @@ impl ResourceApp for App {
             history: Vec::new(),
         });
         let handler = pane.clone();
-        cx.effects(move |effect: KeyEffect, cx| {
-            if matches!(
-                effect,
-                KeyEffect::ApplyForNamespaces | KeyEffect::CheckStatus
-            ) {
-                let profile = cx.live().with(Clone::clone);
-                handler.set(Pane {
-                    busy: true,
-                    notice: None,
-                    ..handler.get()
-                });
-                let pane = handler.clone();
-                let (remote_secrets, reload_secrets) = (secrets.clone(), secrets.clone());
-                return Ok(cx.thread(
-                    move |_| remote(&effect, &profile, &remote_secrets),
-                    move |(), result: Result<Notice, String>, _| {
-                        let mut next = pane.get();
-                        next.key = KeyState::load(&reload_secrets);
-                        next.busy = false;
-                        next.notice = Some(result.clone().unwrap_or_else(Notice::error));
-                        if let Ok(notice) = &result {
-                            if let Some(summary) = notice
-                                .message
-                                .clone()
-                                .or_else(|| Some(notice.title.clone()))
-                            {
-                                next.history
-                                    .push((ui::time::try_unix_now_ms().unwrap_or(0), summary));
-                            }
-                        }
-                        pane.set(next);
-                        result.map(|_| Effected::done())
-                    },
-                ));
-            }
-            if matches!(effect, KeyEffect::ExportKey) {
-                let key = key::resolve(None, &secrets).map_err(|error| format!("{error:#}"))?;
-                let bytes = format!(
-                    "{{\"secret_key_hex\":\"{}\"}}\n",
-                    hex::encode(key.to_bytes())
-                )
-                .into_bytes();
-                let request = ui::portal::PickRequest::save(
-                    "Back up publisher key",
-                    "Save",
-                    "publisher-key.json",
-                );
-                let pane = handler.clone();
-                return Ok(cx.save_file(request, bytes, move |_, saved, _| {
-                    let mut next = pane.get();
-                    next.notice = Some(if saved {
-                        Notice::success("publisher-key-exported")
-                            .explained("publisher-key-exported-detail")
-                    } else {
-                        Notice::info("publisher-key-export-cancelled")
-                    });
-                    pane.set(next);
-                    Ok(Effected::done())
-                }));
-            }
-            if matches!(effect, KeyEffect::CopySecret) {
-                // The copy settles without the UI thread waiting on it; the
-                // effect finishes once it has.
-                let copy = copy_secret(&secrets)?;
-                handler.set(Pane {
-                    busy: true,
-                    notice: None,
-                    ..handler.get()
-                });
-                let pane = handler.clone();
-                let reload_secrets = secrets.clone();
-                return Ok(cx.thread(
-                    move |_| copy.wait(),
-                    move |(), copied: bool, _| {
-                        let result = copied_secret(copied);
-                        pane.set(Pane {
-                            key: KeyState::load(&reload_secrets),
-                            busy: false,
-                            notice: Some(result.clone().unwrap_or_else(Notice::error)),
-                            history: pane.get().history,
-                        });
-                        result.map(|_| Effected::done())
-                    },
-                ));
-            }
-            let result = local(&effect, &secrets);
-            handler.set(Pane {
-                key: KeyState::load(&secrets),
-                busy: false,
-                notice: Some(result.clone().unwrap_or_else(Notice::error)),
-                history: handler.get().history,
+        cx.effects(move |effect: KeyEffect, cx| handle_key_effect(effect, cx, &handler, &secrets))
+            .status({
+                let pane = pane.clone();
+                move || unavailable(&pane.get())
             });
-            result.map(|_| Effected::done())
-        })
-        .status({
-            let pane = pane.clone();
-            move || unavailable(&pane.get())
-        });
 
         let actions = cx.actions();
         let apply_button = actions.bind_effect_invocation(

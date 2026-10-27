@@ -1,6 +1,10 @@
 //! What the pointer, a shortcut and the volume controls do, and the preferences they persist.
 
-use super::*;
+use super::{
+    ContentsOutcome, ElementState, LibraryTab, PLAYBACK_RATES, Picked, PickerChannel, PlayerApp,
+    PlayerResource, PlayerSettingEvent, PortalOpenOutcome, PortalOutcome, TogetherStep,
+    VOLUME_SETTLE_MS, VideoEffect, configure_player_settings, unix_now_ms, verbs,
+};
 
 impl PlayerApp {
     /// Show and keep the preferences just changed.

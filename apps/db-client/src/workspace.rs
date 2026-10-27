@@ -38,7 +38,7 @@ impl Placeholder {
     /// "No table selected" and what to do about it.
     fn no_table(message: &str) -> Self {
         Self {
-            empty: EmptyState::new(&t("db-no-table")).with_message(message),
+            empty: EmptyState::new(t("db-no-table")).with_message(message),
         }
     }
 
@@ -46,10 +46,10 @@ impl Placeholder {
     fn first_run(link: &Link) -> Self {
         let link = link.clone();
         Self {
-            empty: EmptyState::new(&t("db-no-connections"))
+            empty: EmptyState::new(t("db-no-connections"))
                 .with_icon(Icon::HardDrive)
-                .with_message(&t("db-no-connections-hint"))
-                .with_action(&t("db-new-connection"))
+                .with_message(t("db-no-connections-hint"))
+                .with_action(t("db-new-connection"))
                 .with_action_id("db.new-connection")
                 .on_view(move || link.ask(Intent::NewConnection)),
         }

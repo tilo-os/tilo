@@ -404,6 +404,7 @@ features = [
   "print-centre/runtime-engine",
   "imager/runtime-engine", "browser/runtime-engine",
   "store/runtime-engine", "chat/runtime-engine", "osk/runtime-engine",
+  "notes/runtime-engine",
 ]
 layer = "direct"
 files = [

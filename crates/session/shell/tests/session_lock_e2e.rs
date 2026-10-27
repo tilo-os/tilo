@@ -65,6 +65,7 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
         .env("TILO_IDLE_LOCK_SECS", "2")
         .env("TILO_IDLE_BLANK_SECS", "0")
         .env("TILO_HEADLESS_SIZE", "1280x800")
+        .env("HOME", crate::support::desktop::private_home(&runtime_dir))
         .env("XDG_RUNTIME_DIR", &runtime_dir)
         .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
         .env("XDG_DATA_HOME", runtime_dir.join("data"))

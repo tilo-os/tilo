@@ -5,7 +5,8 @@
 //! usually wants: [`FakeDocumentNet::publish`] sends the changes a document
 //! holds that the net does not carry yet — so offering a replica again after a
 //! heal sends only what was written meanwhile — and
-//! [`FakeDocumentNet::converged`] reports which device or path disagrees.
+//! [`FakeDocumentNet::converged`] checks that each device has taken in what the
+//! others sent it, and that they read the same values.
 //!
 //! ```
 //! use automerge::transaction::Transactable as _;
@@ -90,6 +91,10 @@ impl FakeDocumentNet {
     /// published a change before a partition, or in an earlier step, does not
     /// publish it a second time. A device therefore catches up after a heal by
     /// offering the same replica again.
+    ///
+    /// What the message carries is recorded, not what the device holds: a
+    /// replica forked from shared history owns changes this net never carried,
+    /// and a message between devices that already share them is not those.
     pub fn publish(&mut self, device: &Peer, document: &mut AutoCommit) {
         let carried = self.offered.entry(device.name().to_owned()).or_default();
         let novel = unwritten(document, carried);
@@ -98,9 +103,11 @@ impl FakeDocumentNet {
         }
         let delta = document.save_after(carried);
         let reached = self.net.log().len();
+        let carried_in_message = delta_hashes(document, &novel);
         self.net.publish(device, delta);
         if self.net.log().len() > reached {
-            carried.extend(novel);
+            carried.retain(|hash| !novel.contains(hash));
+            carried.extend(carried_in_message);
         }
     }
 
@@ -137,7 +144,7 @@ impl FakeDocumentNet {
     }
 
     /// Whether `first` and `second` agree: each holds every change the other
-    /// published, and both hold the same value at each of `paths` (a path is
+    /// sent it, and both hold the same value at each of `paths` (a path is
     /// read by [`at_path`]).
     #[must_use]
     pub fn converged(
@@ -232,7 +239,9 @@ impl FakeDocumentNet {
 ///
 /// A change is compared by hash rather than looked up through the document, so
 /// a device that has taken in the first change of a run and not the second is
-/// missing exactly the second, whichever actor wrote them.
+/// missing exactly the second, whichever actor wrote them. What is named here
+/// is what a delta closing the gap has to carry; [`delta_hashes`] says which
+/// of them it did.
 fn unwritten(document: &mut AutoCommit, written: &[ChangeHash]) -> Vec<ChangeHash> {
     let held = written_hashes(document);
     held.into_iter()
@@ -247,6 +256,40 @@ fn written_hashes(document: &mut AutoCommit) -> Vec<ChangeHash> {
         .into_iter()
         .map(|change| change.hash())
         .collect()
+}
+
+/// The hashes of the changes a delta carries: which of `novel`, the changes a
+/// sender holds and this net has not carried, the bytes it published hold.
+///
+/// A delta is not the changes named: one that closes a gap other devices hold
+/// already carries the history they hang from and leaves out changes it can
+/// say nothing with, so `novel` on its own cannot say what a device now holds.
+/// Each change is therefore saved on its own and its bytes looked for in what
+/// the sender saves; `document` is left holding the changes it was given.
+fn delta_hashes(document: &mut AutoCommit, novel: &[ChangeHash]) -> Vec<ChangeHash> {
+    if novel.is_empty() {
+        return Vec::new();
+    }
+    let heads = document.get_heads();
+    let with = document.save();
+    let mut carried = Vec::with_capacity(novel.len());
+    for hash in novel {
+        document.isolate_at(&[*hash]);
+        let alone = document.save();
+        document.integrate_all();
+        let start = alone.len().saturating_sub(1);
+        let found = alone
+            .get(..start)
+            .is_some_and(|prefix| with.windows(start).any(|window| window == prefix));
+        if found {
+            carried.push(*hash);
+        }
+    }
+    if document.get_heads() != heads {
+        document.isolate_at(&heads);
+        document.integrate_all();
+    }
+    carried
 }
 
 /// The value at `path` in `document`, as a person sees it: a map key or a list
@@ -314,6 +357,14 @@ mod tests {
         let mut b = AutoCommit::new();
         b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
         (net, alice, bob, a, b)
+    }
+
+    /// A replica forked from shared history answers about itself, not about the
+    /// actor that wrote that history: both actors are the forking device's.
+    fn forked_from(document: &mut AutoCommit) -> AutoCommit {
+        let mut forked = document.fork();
+        forked.set_actor(automerge::ActorId::from(b"bob".as_slice()));
+        forked
     }
 
     #[test]
@@ -550,8 +601,11 @@ mod tests {
 
     #[test]
     fn a_net_carries_every_device_it_is_given() {
-        let (mut net, alice, bob, mut a, mut b) = two_devices();
+        let (mut net, alice, _bob, mut a, _b) = two_devices();
+        let bob = net.peer("bob");
         let carol = net.peer("carol");
+        let mut b = AutoCommit::new();
+        b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
         let mut c = AutoCommit::new();
         c.set_actor(automerge::ActorId::from(b"carol".as_slice()));
         a.put(automerge::ROOT, "title", "from alice").unwrap();
@@ -559,10 +613,129 @@ mod tests {
         net.publish(&alice, &mut a);
         net.publish(&carol, &mut c);
         net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b), (&carol, &mut c)]);
+        assert_eq!(
+            at_path(&mut b, "body"),
+            Some(serde_json::Value::String("from carol".into())),
+            "a device that published nothing still takes the net in",
+        );
         net.assert_converged(
             &mut [(&alice, &mut a), (&bob, &mut b), (&carol, &mut c)],
             &["title", "body"],
         );
         assert_eq!(net.names(), vec!["alice", "bob", "carol"]);
+    }
+
+    #[test]
+    fn replicas_forked_from_shared_history_converge_through_the_net() {
+        let (mut net, alice, bob, mut a, _b) = two_devices();
+        a.put(automerge::ROOT, "title", "shared").unwrap();
+        net.publish(&alice, &mut a);
+        // Bob joins with the document he holds, and both write on their own
+        // device while the net is cut between them.
+        let mut b = forked_from(&mut a);
+        a.put(automerge::ROOT, "title", "alice's").unwrap();
+        b.put(automerge::ROOT, "note", "bob's").unwrap();
+        net.net().partition(&["bob"]);
+        a.put(automerge::ROOT, "body", "alice's").unwrap();
+        b.put(automerge::ROOT, "pinned", true).unwrap();
+        net.publish(&alice, &mut a);
+        net.publish(&bob, &mut b);
+        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+        let converged = net.converged(&alice, &mut a, &bob, &mut b, &["title", "note"]);
+        assert!(
+            !converged.holds(),
+            "they wrote on either side of the cut, so neither has what the other wrote: {:?}",
+            converged.disagreements(),
+        );
+
+        net.net().heal(&["bob"]);
+        net.publish(&alice, &mut a);
+        net.publish(&bob, &mut b);
+        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+        assert_eq!(
+            at_path(&mut a, "note"),
+            Some(serde_json::Value::String("bob's".into())),
+            "bob's change reached alice",
+        );
+        net.assert_converged(
+            &mut [(&alice, &mut a), (&bob, &mut b)],
+            &["title", "body", "note"],
+        );
+    }
+
+    #[test]
+    fn a_converged_net_is_reported_converged() {
+        let (mut net, alice, bob, mut a, _b) = two_devices();
+        a.put(automerge::ROOT, "title", "shared").unwrap();
+        let mut b = forked_from(&mut a);
+        a.put(automerge::ROOT, "body", "alice's").unwrap();
+        b.put(automerge::ROOT, "note", "bob's").unwrap();
+        b.put(automerge::ROOT, "title", "theirs").unwrap();
+        net.publish(&alice, &mut a);
+        net.publish(&bob, &mut b);
+        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+        net.converged(&alice, &mut a, &bob, &mut b, &["title", "body", "note"])
+            .assert_holds();
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "both hold the same changes, whichever device wrote each",
+        );
+    }
+
+    #[test]
+    fn a_change_one_device_never_received_is_still_reported() {
+        let (mut net, alice, bob, mut a, mut b) = two_devices();
+        a.put(automerge::ROOT, "title", "shared").unwrap();
+        net.publish(&alice, &mut a);
+        net.publish(&bob, &mut a);
+        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+
+        // Alice writes while bob is off the net, and bob never takes it in.
+        // Their paths still read the same, so only the changes tell them apart.
+        net.net().partition(&["bob"]);
+        a.put(automerge::ROOT, "count", 2_i64).unwrap();
+        net.publish(&alice, &mut a);
+        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+        net.net().heal(&["bob"]);
+        assert_eq!(
+            at_path(&mut a, "title"),
+            at_path(&mut b, "title"),
+            "the value bob reads is the one alice wrote",
+        );
+        let converged = net.converged(&alice, &mut a, &bob, &mut b, &["title"]);
+        assert!(!converged.holds(), "bob was cut before the change was sent");
+        assert!(
+            converged
+                .disagreements()
+                .iter()
+                .any(|line| line.contains("bob has not taken in what alice published")),
+            "the report names the change bob is missing: {:?}",
+            converged.disagreements(),
+        );
+    }
+
+    #[test]
+    fn a_device_holding_no_change_of_its_own_still_misses_a_published_one() {
+        let (mut net, alice, bob, mut a, mut b) = two_devices();
+        a.put(automerge::ROOT, "title", "shared").unwrap();
+        b.put(automerge::ROOT, "note", "bob's").unwrap();
+        net.net().partition(&["bob"]);
+        net.publish(&alice, &mut a);
+        net.publish(&bob, &mut b);
+        net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
+        let converged = net.converged(&alice, &mut a, &bob, &mut b, &[]);
+        assert!(
+            !converged.holds(),
+            "bob was offered a change it did not take in"
+        );
+        assert!(
+            converged
+                .disagreements()
+                .iter()
+                .any(|line| line.contains("bob has not taken in what alice published")),
+            "the report names the change bob is missing: {:?}",
+            converged.disagreements(),
+        );
     }
 }

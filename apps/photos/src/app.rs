@@ -35,7 +35,7 @@ use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::{
     Button, DateIndexMarker, DateIndexedScrollbar, EmptyState, ImageViewer, ModalLayout,
-    ProgressBar, ScrollMetrics, TextInput, TextInputKind, Widget,
+    ProgressBar, ScrollMetrics, ScrollRegion, TextInput, TextInputKind, Widget,
 };
 
 use crate::model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary, Rect01};
@@ -782,15 +782,19 @@ pub struct PhotosApp {
     /// Tab order within the active section plus Cancel and Save.
     metadata_editor_focus: usize,
     metadata_editor_hits: Vec<(MetadataEditorHit, Rect)>,
-    /// Scroll offset of the sheet's field list. The sheet is capped at the
-    /// viewport and its footer is pinned, so when the fields need more room
-    /// than that leaves (200% text on an 800×900 window) they scroll under
-    /// the footer instead of the footer painting over the last field.
-    metadata_editor_scroll: f64,
+    /// The field list's scroll region: the toolkit's, so the list fills the
+    /// sheet from the tabs down to the pinned footer, scrolls under its edge
+    /// fade and lands between fields at rest (the sheet's editor and Edit
+    /// album's share it).
+    editor_scroll: ScrollRegion,
+    /// Where each field and the map landed in the painted list, in content
+    /// coordinates — what [`Self::land_editor_scroll`] snaps to and what
+    /// keyboard focus is revealed from.
+    editor_field_bands: Vec<Rect>,
     /// The field list's visible region from the last paint — where wheel
     /// events scroll and outside which presses are not forwarded to a
     /// scrolled-away input.
-    metadata_editor_body: Rect,
+    editor_scroll_viewport: Rect,
     /// Set when keyboard focus moves; the next paint scrolls that field into
     /// view.
     metadata_editor_reveal_focus: bool,
@@ -1139,8 +1143,9 @@ impl PhotosApp {
             metadata_editor_section: MetadataEditorSection::Organize,
             metadata_editor_focus: 0,
             metadata_editor_hits: Vec::new(),
-            metadata_editor_scroll: 0.0,
-            metadata_editor_body: Rect::ZERO,
+            editor_scroll: ScrollRegion::vertical().with_edge_fade(),
+            editor_field_bands: Vec::new(),
+            editor_scroll_viewport: Rect::ZERO,
             metadata_editor_reveal_focus: false,
             metadata_editor_buttons: build_metadata_editor_buttons(None),
             metadata_editor_pending,

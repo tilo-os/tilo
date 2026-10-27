@@ -1031,6 +1031,28 @@ impl Messages {
             .unwrap_or_default()
     }
 
+    /// The first top-level message of `channel` held after `mark`: where a
+    /// reader who read up to `mark` starts reading again. When `mark` lies
+    /// in a part not held, the first one held after it.
+    #[must_use]
+    pub fn first_unread(&self, channel: &Id, mark: parts::ReadMark) -> Option<&Id> {
+        self.parts.iter().find_map(|(index, part)| {
+            let index = i64::try_from(*index).unwrap_or(i64::MAX);
+            let skip = match index.cmp(&mark.part) {
+                std::cmp::Ordering::Less => return None,
+                std::cmp::Ordering::Equal => {
+                    usize::try_from(mark.seen.max(0)).unwrap_or(usize::MAX)
+                }
+                std::cmp::Ordering::Greater => 0,
+            };
+            part.messages
+                .iter()
+                .filter(|(_, message)| message.channel == *channel && message.parent.is_none())
+                .nth(skip)
+                .map(|(id, _)| id)
+        })
+    }
+
     /// The top-level messages of `channel` held after `mark`.
     #[must_use]
     pub fn unread(&self, channel: &Id, mark: parts::ReadMark) -> usize {

@@ -1,6 +1,11 @@
 //! The places panel: its dock and width, its groups and rows, the results still arriving, and the explore panel beside it.
 
-use super::*;
+use super::{
+    ARRIVING_RESULTS, Affine, BlendMode, ButtonFace, ButtonRole, CardFace, ControlSize, EmptyState,
+    EmptyStateContent, Fill, GEOCODER, Hit, Icon, Interaction, LatLon, ListRowFace, MapsApp,
+    PaintCtx, Panel, Place, Point, RESULT_ROW, Rect, RowLeading, Scene, TextRenderer, TextRole,
+    Theme, draw, geo, on_panel,
+};
 
 impl MapsApp {
     /// The places panel: a floating panel down the leading edge (a drawer in
