@@ -295,6 +295,7 @@ impl ShellOverlayHost {
         };
         let asks = chrome.borrow_mut().take_agent_asks();
         let mut asked = false;
+        let mut starts = Vec::new();
         for ask in asks {
             let Some(broker) = self.shortcut_triggers.broker() else {
                 break;
@@ -313,15 +314,17 @@ impl ShellOverlayHost {
                 identity_revision,
             };
             let actions = self.agent_actions.entry(owner.clone()).or_default();
-            let start = !live && actions.start_once(Instant::now());
+            if !live && actions.start_once(Instant::now()) {
+                starts.push((ask.room, owner.agent.clone()));
+            }
             if actions.open_and_ask(source, &owner, (&ask.title, &ask.body), ask.show) {
                 asked = true;
             } else {
                 tracing::warn!(agent = %owner.agent, "work could not be handed to the agent");
             }
-            if start {
-                self.start_agent_for(&ask.room, &owner.agent);
-            }
+        }
+        for (room, agent) in starts {
+            self.start_agent_for(&room, &agent);
         }
         asked
     }
