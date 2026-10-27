@@ -4834,7 +4834,7 @@ impl InstallerPreview {
             .secondary(secondary)
             .two_line_secondary()
             .disclosure()
-            .on_activate(move || {
+            .on_effect(move || {
                 commands
                     .borrow_mut()
                     .push(InstallerPreviewEffect::EditPreview {
