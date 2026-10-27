@@ -2336,7 +2336,7 @@ mod restated_schema_tests {
 
     /// Whether `supplied` is admitted by the parameter, as a host reads the
     /// answer: the bound arguments, or the refusal.
-    fn admitted(param: &ActionParam, supplied: serde_json::Value) -> Result<Vec<String>, String> {
+    fn admitted(param: &ActionParam, supplied: &serde_json::Value) -> Result<Vec<String>, String> {
         ActionArgs::bind_json(
             std::slice::from_ref(param),
             supplied.as_object().expect("an argument object"),
@@ -2413,8 +2413,8 @@ mod restated_schema_tests {
             );
             for supplied in values {
                 assert_eq!(
-                    admitted(&with_schema, supplied.clone()),
-                    admitted(&published, supplied.clone()),
+                    admitted(&with_schema, &supplied),
+                    admitted(&published, &supplied),
                     "{} admits {supplied} the same either way",
                     published.name
                 );
@@ -2490,8 +2490,8 @@ mod restated_schema_tests {
                 json!({}),
             ] {
                 assert_eq!(
-                    admitted(&parameter, supplied.clone()),
-                    admitted(&published, supplied.clone()),
+                    admitted(&parameter, &supplied),
+                    admitted(&published, &supplied),
                     "{ty:?} admits {supplied} the same either way"
                 );
             }
