@@ -3961,7 +3961,11 @@ impl Widget for NavShell {
     // what continues on another device, what a diagnostic input reads) is
     // the content it frames.
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn crate::widget::controls::ActionControls>() {
+        // The shell itself, for a harness that reads its sidebar through a
+        // root that stands in for it (a framework app's view).
+        if request.wants::<Self>() {
+            request.provide::<Self>(self);
+        } else if request.wants::<dyn crate::widget::controls::ActionControls>() {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
         } else if request.wants::<dyn WindowHeader>() {
             request.provide::<dyn WindowHeader>(self);

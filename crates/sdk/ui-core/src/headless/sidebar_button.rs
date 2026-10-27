@@ -153,11 +153,15 @@ impl FrameHarness {
 }
 
 /// The shell whose sidebar the window bar's button toggles: the first laid
-/// out shell, depth first, that has a sidebar.
+/// out shell, depth first, that has a sidebar. A widget standing in for a
+/// shell (a framework app's root, which lists the shell's parts as its own)
+/// answers for it as a capability.
 fn window_sidebar_shell(widget: &dyn Widget) -> Option<&NavShell> {
-    if let Some(shell) = widget
+    let shell = widget
         .as_any()
         .and_then(|any| any.downcast_ref::<NavShell>())
+        .or_else(|| crate::widget::capability::capability::<NavShell>(widget));
+    if let Some(shell) = shell
         && shell.has_sidebar()
     {
         return Some(shell);
