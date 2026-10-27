@@ -870,7 +870,7 @@ its own is a defect of the same class as a hand-rolled text field (§8).
 | `AttachmentSummary`, `AttachmentAction` | The ladder: the inline preview, the picture at full size, a copy saved where the person says, and the saved copy shown in the file manager. Rungs that cannot be offered are absent, with the reason where they would have been. |
 | `DraftBook`, `draft::line` | A draft is per conversation, blank is not a draft, sending clears it only while it is still what was sent, and the words are shown wherever the conversation is listed ("Draft: …"). A draft you cannot find is a draft you have lost. |
 | `ComposerRule` | Enter sends, Shift+Enter breaks the line, Escape lets the draft go. One rule, both apps; a comment field inside a document is the one other rule (`ModEnter`). |
-| `ConversationList` | The message list for a widget-tree app: the same day breaks, the same clock, the same delivery line, measured by the same code as the pieces above. A painting app composes its own rows from the same pieces. |
+| `ConversationList` | The message list for a widget-tree app: the same day breaks, the same clock, the same delivery line, measured by the same code as the pieces above — and measured once. A frame keeps the boxes it measured and shapes only the rows its viewport shows, so a thread of a few hundred messages costs what is on screen. A painting app composes its own rows from the same pieces. |
 
 Consequences a person feels: a screenshot in Chat opens full size, a message in
 Messages has a time, a draft in either app is visible in the list, and Enter

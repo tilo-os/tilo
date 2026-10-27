@@ -3519,7 +3519,7 @@ pub use conversation::{
     AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, ComposerIntent,
     ComposerRule, ConversationClock, ConversationDay, ConversationLine, ConversationList,
     ConversationRole, DayBreaks, DayDividerFace, DeliveryFace, DeliveryState, DeliveryStep,
-    DraftBook, ListFace, SavedCopy, UploadProgress,
+    DraftBook, ListCache, ListFace, ListWork, SavedCopy, UploadProgress,
 };
 pub mod card;
 mod tone;
