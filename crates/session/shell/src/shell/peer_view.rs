@@ -202,6 +202,9 @@ pub(crate) fn stream_tab_in(
                     )
             })
             .map(|candidate| candidate.id)
+            // A Tilo app's window someone shared is that app opened here:
+            // no stream of it shows.
+            .filter(|id| !tree.is_shared_app_window(*id))
             .filter(|id| unclaimed(*id));
     }
     tree.desktop.active_workspace().and_then(|workspace| {
@@ -213,7 +216,12 @@ pub(crate) fn stream_tab_in(
                     }
                     | TileContent::HostedWindow {
                         app_id: candidate, ..
-                    } if candidate == app_id && unclaimed(tab.id) => Some(tab.id),
+                    } if candidate == app_id
+                        && !tree.is_shared_app_window(tab.id)
+                        && unclaimed(tab.id) =>
+                    {
+                        Some(tab.id)
+                    }
                     _ => None,
                 })
             })
