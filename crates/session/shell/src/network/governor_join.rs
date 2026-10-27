@@ -134,7 +134,6 @@ mod tests {
             &device,
             std::slice::from_ref(&device),
             "Garden",
-            1,
         )
         .unwrap();
         let now = std::time::SystemTime::now();

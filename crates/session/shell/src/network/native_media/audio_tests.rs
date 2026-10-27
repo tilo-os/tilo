@@ -25,6 +25,8 @@ use collab_types::ChannelId;
 
 const RATE: f64 = 48_000.0;
 const FRAME: usize = 960;
+/// 20 ms of audio at 48 kHz.
+const FRAME_TIME: Duration = Duration::from_millis(20);
 /// A loop turn this late let a received frame wait past the client's
 /// 200 ms receive budget, with margin for when in the turn it arrived.
 const LOOP_STALL: Duration = Duration::from_millis(100);
@@ -41,6 +43,10 @@ const BEFORE_STARVED: Duration = Duration::from_millis(400);
 /// A frame sent this soon after a starved stretch can still meet a receiver
 /// that is catching up on its backlog.
 const AFTER_STARVED: Duration = Duration::from_millis(200);
+/// A frame handed to the transport later than this never enters it: it is
+/// dropped and counted. Twice the client's own 100 ms send budget, so a frame
+/// the loop let go this late is refused there rather than raced against it.
+const SEND_DEADLINE: Duration = Duration::from_millis(200);
 
 /// The time every thread of this process has spent runnable and waiting for
 /// a core, per the scheduler's `/proc/self/task/*/schedstat`.
@@ -228,6 +234,19 @@ fn percentile(values: &mut [f64], q: f64) -> f64 {
     values[((values.len() - 1) as f64 * q).round() as usize]
 }
 
+/// How many of the first `count` frames, none of them exposed to starvation,
+/// arrived. The loop publishes the frames in order, so the ones the sender
+/// never published are its last.
+fn delivered_in(rows: &[(usize, f64, Vec<i16>)], count: usize) -> usize {
+    rows.iter().filter(|row| row.0 < count).count()
+}
+
+/// Frames of a burst track offset by `offset_ms` whose media time lies wholly
+/// inside a 200 ms burst: 10 of every 50.
+fn tone_positions(frames: usize, offset_ms: usize) -> usize {
+    (0..frames).filter(|n| is_tone_frame(*n, offset_ms)).count()
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one end-to-end audio scenario over live loopback endpoints; each phase asserts on \
@@ -290,7 +309,9 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
         side.client.enable_publication().unwrap();
     }
     let frames = sides[0].packets.len().min(sides[1].packets.len());
-    let mut sent_at = vec![vec![None; frames]; 2];
+    let mut sent_at: Vec<Vec<Option<Instant>>> = vec![vec![None; frames]; 2];
+    // Every frame the transport took, as its sender's own counters saw it.
+    let mut sent = [0_usize; 2];
     let side_packets: Vec<Vec<Vec<u8>>> = sides.iter().map(|side| side.packets.clone()).collect();
     let mut decoders = [
         OpusDecoder::new().expect("opusdec"),
@@ -308,15 +329,23 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
     let probe = StarvationProbe::start();
     let mut stalls: Vec<(Instant, Instant)> = Vec::new();
     let mut last_turn = Instant::now();
+    // When the next frame's 20 ms slot began: the frames are one live call's
+    // capture, so a late loop sends late frames, not a burst of catch-up.
+    let mut sent_due = Instant::now();
     let mut next = 0;
     while drain_until.is_none_or(|until| Instant::now() < until) && Instant::now() < bound {
         ticker.tick().await;
+        sent_due += FRAME_TIME;
         let turn = Instant::now();
         if turn.duration_since(last_turn) > LOOP_STALL {
             stalls.push((last_turn, turn));
         }
         last_turn = turn;
-        if next < frames {
+        // The transport drops anything older than its send budget, counting
+        // it. A frame this late is a write that never happened, so `sent_at`
+        // must not record it: the call decides once, here, whether the frame
+        // enters the transport at all.
+        if next < frames && Instant::now() < sent_due + SEND_DEADLINE {
             for (index, side) in sides.iter().enumerate() {
                 let now = Instant::now();
                 let header = ((next * FRAME) as u64, FRAME as u16);
@@ -332,6 +361,7 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
                     )
                     .expect("native publication");
                 sent_at[index][next] = Some(now);
+                sent[index] = sent[index].saturating_add(1);
             }
             next += 1;
             if next == frames {
@@ -392,13 +422,10 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
                     .is_some_and(|at| starved.iter().any(|(from, to)| at >= *from && at <= *to))
             })
             .collect();
-        let delivered_unexposed = rows.iter().filter(|row| !exposed.contains(&row.0)).count();
         let unexposed = frames - exposed.len();
+        let delivered_unexposed = delivered_in(rows, unexposed);
         let offset = sides[sender].offset_ms;
-        let tone_expected = rows
-            .iter()
-            .filter(|row| is_tone_frame(row.0, offset))
-            .count();
+        let tone_expected = tone_positions(frames, offset).max(unexposed / 5);
         let decoded_samples: usize = rows.iter().map(|row| row.2.len()).sum();
         let tone_frames = rows
             .iter()
@@ -410,6 +437,16 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
             .count();
         // Bursts are 200 ms of every second: 10 of every 50 frames carry tone.
         let expected_tone_frames = frames / 5;
+        // The transport may drop a frame only by counting it: late to its
+        // send budget, late to its receive budget, over capacity or a
+        // duplicate. Anything else it took vanished.
+        let sender_counters = sides[sender].client.counters();
+        let counters = sides[receiver].client.counters();
+        let taken = sender_counters.sent;
+        let accounted = counters.received
+            + counters.late_dropped
+            + counters.capacity_dropped
+            + counters.duplicate_dropped;
         let summary = serde_json::json!({
             "direction": format!("{}->{}", ['A', 'B'][sender], ['A', 'B'][receiver]),
             "frequencyHz": expected,
@@ -419,27 +456,32 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
             "toneFrames": tone_frames,
             "expectedToneFrames": expected_tone_frames,
             "ownToneFrames": own_frames,
-            "senderCounters": format!("{:?}", sides[sender].client.counters()),
-            "receiverCounters": format!("{:?}", sides[receiver].client.counters()),
+            "senderCounters": format!("{sender_counters:?}"),
+            "receiverCounters": format!("{counters:?}"),
+            "publishedPackets": taken,
             "deliveredTonePositions": tone_expected,
             "starvedMs": stalls.iter().map(|(from, to)| to.duration_since(*from).as_millis()).sum::<u128>(),
             "exposedFrames": exposed.len(),
-            "missing": (0..frames).filter(|n| !rows.iter().any(|row| row.0 == *n)).collect::<Vec<_>>(),
+            "missing": (0..frames).filter(|n| sent_at[sender][*n].is_some() && !rows.iter().any(|row| row.0 == *n)).collect::<Vec<_>>(),
             "transportLatencyMs": if latencies.is_empty() { serde_json::Value::Null } else { serde_json::json!({
                 "p50": percentile(&mut latencies, 0.5), "p90": percentile(&mut latencies, 0.9), "max": percentile(&mut latencies, 1.0)}) },
         });
         eprintln!("{summary}");
+        // A frame the sender handed the transport may miss one it never
+        // started on: the send loop and the reader share one runtime, and
+        // under starvation the loop can run past a slot before writing its
+        // frame. That frame was never published, so the sender's own count is
+        // what the receiver owes an account for.
+        assert_eq!(
+            taken, sent[sender] as u64,
+            "the sender counts the frames it handed the transport, and only those"
+        );
         // The transport may drop a frame only by counting it: late to its
         // budget, over capacity or a duplicate. Anything else vanished.
-        let counters = sides[receiver].client.counters();
-        let accounted = counters.received
-            + counters.late_dropped
-            + counters.capacity_dropped
-            + counters.duplicate_dropped;
         assert!(
-            accounted >= frames as u64,
-            "{} of {frames} frames vanished without a drop reason: {counters:?}",
-            frames as u64 - accounted
+            accounted >= taken,
+            "{} of {taken} frames vanished without a drop reason: {counters:?}",
+            taken - accounted.min(taken)
         );
         // Of the frames sent while the reader could run, the transport
         // delivers nearly all; those it could not read were counted above.
@@ -460,6 +502,10 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
             "per-frame arrival follows publication"
         );
         report.insert(summary["direction"].as_str().unwrap().into(), summary);
+        // The call ends with at least one frame sent: a run whose loop was
+        // starved past every slot published nothing and proves nothing about
+        // the transport.
+        assert!(taken > 0, "the call publishes frames");
     }
     report.insert(
         "relayCounters".into(),

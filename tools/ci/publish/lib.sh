@@ -97,9 +97,12 @@ registry_login() {
 }
 
 # skopeo copy SRC DST (docker://REGISTRY/...), with the auth file AUTH and further skopeo flags,
-# logged in afresh before each attempt: an identity token lasts minutes, so a push that outlives
-# it (a multi-GB image) fails to authenticate its next blob; the next attempt logs in again, and
-# the blobs already pushed are not sent twice. DOCKER_CONFIG, when set, gets the same login.
+# logged in afresh before each attempt. skopeo takes the credentials once: t's identity token lasts
+# 5 minutes and the registry token it buys 10, and when that runs out skopeo asks again with the
+# expired identity token, so a copy that takes longer fails its next blob. One that sends a GB or
+# more takes longer (the first push of a new package set, kernel or base, at the 1-2 MB/s the
+# registry takes in); the next attempt logs in again and sends only the blobs not yet there.
+# DOCKER_CONFIG, when set, gets the same login.
 registry_copy() {
   local auth=$1 src=$2 dst=$3 registry attempt
   shift 3

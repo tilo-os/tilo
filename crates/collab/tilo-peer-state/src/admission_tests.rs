@@ -2541,34 +2541,48 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
 }
 
 #[test]
-fn nonowner_topology_and_record_route_changes_are_rejected_before_admission() {
-    use automerge::{ObjType, ReadDoc};
+fn a_rebound_record_route_is_rejected_before_admission() {
+    use tilo_desktop_model::ownership::SharedDesktop;
+    use tilo_desktop_model::{
+        DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+        WorkspaceId, shared_record,
+    };
     let (a, ac, b, bc, now) = fixtures();
     let room = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     let changes = seed_room(room, &ac, &[ac.clone(), bc.clone()]).unwrap();
     let mut doc = room::candidate(None, &changes).unwrap();
-    let owners = doc
-        .put_object(ROOT, "contents_owners_v1", ObjType::Map)
-        .unwrap();
-    doc.put(&owners, "0002", hex::encode(ac.device_public_key))
-        .unwrap();
-    let contents = doc.put_object(ROOT, "contents", ObjType::Map).unwrap();
-    let strip = doc
-        .put_object(contents, "0002000000000001", ObjType::Map)
-        .unwrap();
-    doc.put(&strip, "name", "Shared").unwrap();
-    doc.put(&strip, "order", 0_u64).unwrap();
-    let groups = doc.put_object(&strip, "groups", ObjType::Map).unwrap();
-    let group = doc
-        .put_object(groups, "0002000000000002", ObjType::Map)
-        .unwrap();
-    let tabs = doc.put_object(&group, "tabs", ObjType::Map).unwrap();
-    let tab = doc
-        .put_object(tabs, "0002000000000003", ObjType::Map)
-        .unwrap();
-    doc.put(&tab, "title", "Original").unwrap();
-    doc.put(&tab, "record_id", "tab:0000000000000001").unwrap();
-    doc.commit_edit("fixture", "record_id");
+    let tab = 0x0002_0000_0000_0003;
+    let mut workspace = Workspace::new(WorkspaceId(1), "Room");
+    let mut strip = Strip::new(StripId(0x0002_0000_0000_0001), "Shared");
+    strip.window_groups.push(WindowGroup {
+        id: 0x0002_0000_0000_0002,
+        tabs: vec![Tab {
+            id: tab,
+            title: "Original".into(),
+            tile: TileContent::LocalApp {
+                app_id: "so.tilo.notes".into(),
+                label: "Notes".into(),
+                note: String::new(),
+            },
+            app_title: None,
+        }],
+        active_tab: tab,
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    });
+    workspace.strips.push(strip);
+    let mut desktop = SharedDesktop {
+        tree: DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        },
+        records: vec![(tab, "tab:0000000000000001".into())],
+        authors: [(tab, hex::encode(ac.user_public_key))].into(),
+    };
+    shared_record::write(&mut doc, &desktop).unwrap();
+    doc.commit();
     let mut peer =
         StatePeer::new(room, ac.clone(), vec![ac, bc], RevocationList::new(), now).unwrap();
     peer.install_seed(
@@ -2588,9 +2602,9 @@ fn nonowner_topology_and_record_route_changes_are_rejected_before_admission() {
     doc.set_actor(automerge::ActorId::from(
         b.verifying_key().to_bytes().to_vec(),
     ));
-    doc.put(&tab, "title", "Stolen").unwrap();
-    doc.put(&tab, "record_id", "tab:0000000000000012").unwrap();
-    doc.commit_edit("fixture", "record_id");
+    desktop.records = vec![(tab, "tab:0000000000000012".into())];
+    shared_record::write(&mut doc, &desktop).unwrap();
+    doc.commit();
     let result = peer.receive(
         b.verifying_key().to_bytes(),
         NeighbourMsg::SyncResp {
@@ -2605,14 +2619,13 @@ fn nonowner_topology_and_record_route_changes_are_rejected_before_admission() {
     );
     assert!(
         result.is_err(),
-        "another certified device must not overwrite owned topology"
+        "even a device of the window's own person must not rebind its record"
     );
     assert_eq!(
         peer.durable().unwrap(),
         before,
-        "unadmitted topology must never become visible"
+        "an unadmitted layout must never become visible"
     );
-    let _ = doc.get(ROOT, "contents").unwrap();
 }
 
 #[path = "copy_on_write_tests.rs"]

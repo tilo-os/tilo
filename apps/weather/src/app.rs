@@ -283,10 +283,9 @@ impl WeatherApp {
             "weather.places",
             items,
         )])
-        .with_id("weather.rail")
         .with_accessible_name("Places")
         .rail()
-        .on_select({
+        .on_view("weather.rail", {
             let core = Rc::clone(core);
             move |id| core.borrow_mut().select_place(&id)
         });

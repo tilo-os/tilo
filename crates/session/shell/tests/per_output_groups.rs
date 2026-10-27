@@ -856,7 +856,7 @@ fn the_partition_is_never_replicated() {
         "the desktop document carries the strip's windows: {desktop_keys:?}"
     );
     assert!(
-        room_keys.contains(&format!("{:016x}", ON_PRIMARY[0])),
+        room_keys.contains(&ON_PRIMARY[0].to_string()),
         "the room document carries the strip's windows: {room_keys:?}"
     );
     for (name, found) in [("desktop", &desktop_keys), ("room", &room_keys)] {
