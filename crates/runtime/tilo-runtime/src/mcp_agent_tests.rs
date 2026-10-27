@@ -11,6 +11,8 @@ use tilo_actions::{ActionParam, InvocationUpdate, ParamType, ResourceSemanticIde
 
 const APP: &str = "so.tilo.notes";
 const WORKSPACE: &str = "workspace:room";
+/// The peer of [`Notes::with_unpublished_instance`]'s newer instance.
+const UNPUBLISHED: &str = "2";
 const NOTEBOOK: &str = "notes.notebook";
 const TODO: &str = "notes.page:3fa2c1d0-1111-4222-8333-444455556666";
 const SHOP: &str = "notes.page:9b8e7d6c-1111-4222-8333-777788889999";
@@ -37,6 +39,8 @@ struct Notes {
     /// read: while it is above zero the app's top level comes in two pages,
     /// and asking for the second finds the revision changed.
     moves: Arc<Mutex<u32>>,
+    /// A second, newer Notes instance that runs but has published nothing yet.
+    unpublished: bool,
 }
 
 impl Notes {
@@ -46,6 +50,16 @@ impl Notes {
             publication: "2a4120d7-2f63-4578-aed8-11cb91ed3628",
             invoked: Arc::default(),
             moves: Arc::default(),
+            unpublished: false,
+        }
+    }
+
+    /// As [`Notes::new`], with a newer instance beside it that lists as
+    /// running before it has published its directory.
+    fn with_unpublished_instance() -> Self {
+        Self {
+            unpublished: true,
+            ..Self::new(true)
         }
     }
 
@@ -313,6 +327,13 @@ impl ActionHost for Notes {
                         browsable: true,
                     })
                     .into_iter()
+                    .chain((running && self.unpublished).then(|| CatalogueProvider {
+                        provider: UNPUBLISHED.into(),
+                        app_id: APP.into(),
+                        room: "room".into(),
+                        record_id: String::new(),
+                        browsable: true,
+                    }))
                     .collect(),
                 ..CataloguePage::default()
             }));
@@ -320,7 +341,11 @@ impl ActionHost for Notes {
         if provider != WORKSPACE && !running {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
-        let mut rows = self.rows(&provider);
+        let mut rows = if provider == UNPUBLISHED {
+            Vec::new()
+        } else {
+            self.rows(&provider)
+        };
         for row in &mut rows {
             row.provider.clone_from(&provider);
         }
@@ -758,6 +783,22 @@ fn a_do_answers_with_its_result_and_never_a_receipt() {
         assert_eq!(*resource, host.id(TODO_BODY));
         assert_eq!(action, "append-paragraph");
         assert_eq!(*arguments, json!({"text": "Buy milk"}));
+        let (text, failed) = tool(
+            &agent(&host),
+            "tilo_do",
+            json!({"path": "notes/Todo#delete"}),
+        )
+        .await;
+        assert_eq!((text.as_str(), failed), ("ok", false));
+    });
+}
+
+#[test]
+fn a_newer_instance_with_nothing_published_does_not_hide_the_app() {
+    let host = Notes::with_unpublished_instance();
+    run(async {
+        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "notes"})).await;
+        assert!(!failed && text.contains("#new-page"), "{text}");
         let (text, failed) = tool(
             &agent(&host),
             "tilo_do",

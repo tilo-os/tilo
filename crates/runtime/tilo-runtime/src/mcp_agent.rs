@@ -1111,17 +1111,55 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// Resolve a whole path.
     async fn resolve(&self, parsed: &ParsedPath) -> Result<Result<Resolved, String>, String> {
-        let (app_id, provider) = match self.app_ref(&parsed.app).await? {
+        let (app_id, newest) = match self.app_ref(&parsed.app).await? {
             AppRef::Running { app_id, provider } => (app_id, provider),
             AppRef::Installed { .. } => {
                 return Ok(Err(Self::not_running_note(&parsed.app)));
             }
         };
         let app = parsed.app.to_lowercase();
-        let mut levels = Levels::new();
-        let (chain, here) = self
-            .resolve_segments(&provider, &app, &parsed.segments, &mut levels)
-            .await?;
+        // A path names the app, not one of its processes. The newest instance
+        // answers first, but one that has not published its directory yet (it
+        // lists as running a moment before) must not hide an older instance
+        // that has: an agent saw an app's actions, and the next call found
+        // none.
+        let older: Vec<String> = self
+            .instances()
+            .await?
+            .1
+            .iter()
+            .rev()
+            .filter(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
+            .map(|(peer, _)| peer.to_string())
+            .filter(|peer| *peer != newest)
+            .collect();
+        let providers = std::iter::once(newest).chain(older);
+        let mut found = None;
+        let mut first_error = None;
+        for provider in providers {
+            let mut levels = Levels::new();
+            match self
+                .resolve_segments(&provider, &app, &parsed.segments, &mut levels)
+                .await
+            {
+                Ok((chain, here)) => {
+                    let published =
+                        !chain.is_empty() || !here.own.is_empty() || !here.children.is_empty();
+                    if found.is_none() || published {
+                        found = Some((provider, levels, chain, here));
+                    }
+                    if published {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        let Some((provider, mut levels, chain, here)) = found else {
+            return Err(first_error.unwrap_or_else(|| format!("{app} answers nothing")));
+        };
         let mut written = app;
         let mut here = here;
         if let Some(owner) = chain.last() {
