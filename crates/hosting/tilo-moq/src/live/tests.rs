@@ -482,9 +482,17 @@ async fn host_injection_reaches_current_subscribers_without_a_client() {
 }
 
 async fn group_frames(subscriber: &mut moq_net::track::Subscriber) -> Vec<Vec<u8>> {
+    group_sequence_frames(subscriber).await.1
+}
+
+/// The next group that carries a frame, with the sequence the relay gave it.
+/// A stream's groups only ever advance: a reader that finished a group is
+/// never handed that sequence again, and no group in flight is displaced.
+async fn group_sequence_frames(subscriber: &mut moq_net::track::Subscriber) -> (u64, Vec<Vec<u8>>) {
     tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             let mut group = subscriber.recv_group().await.unwrap().unwrap();
+            let sequence = group.sequence;
             let mut frames = Vec::new();
             while let Ok(Some(frame)) = group.read_frame().await {
                 if !frame.payload.is_empty() {
@@ -492,7 +500,7 @@ async fn group_frames(subscriber: &mut moq_net::track::Subscriber) -> Vec<Vec<u8
                 }
             }
             if !frames.is_empty() {
-                return frames;
+                return (sequence, frames);
             }
         }
     })
@@ -578,6 +586,7 @@ async fn host_streams_group_by_sequence_and_late_subscribers_start_at_its_head()
         None,
         "a new sequence finishes the group"
     );
+    let open_sequence = open.sequence;
     let mut late = ops_subscriber(&viewer, A).await;
     assert!(
         f.live
@@ -588,7 +597,12 @@ async fn host_streams_group_by_sequence_and_late_subscribers_start_at_its_head()
     f.live.relay.end_stream(ROOM, A, RECORD);
     assert!(!f.live.relay.stream_open(ROOM, A, RECORD));
     let expected = vec![b"key-2".to_vec(), b"delta-2".to_vec()];
-    assert_eq!(group_frames(&mut first).await, expected);
+    let (sequence, received) = group_sequence_frames(&mut first).await;
+    assert_eq!(received, expected);
+    assert!(
+        sequence > open_sequence,
+        "the group after {open_sequence} is newer, not {sequence} again"
+    );
     assert_eq!(
         group_frames(&mut late).await,
         expected,
