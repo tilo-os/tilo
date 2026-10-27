@@ -2147,10 +2147,11 @@ mod tests {
         }
     }
 
-    fn row_id(surface: &ui::serde_json::Value, kind: &str) -> String {
-        surface["actions"]
-            .as_array()
-            .and_then(|rows| rows.iter().find(|row| row["resource_kind"] == kind))
+    fn row_id(surface: &ui::tilo_actions::AgentSurface, kind: &str) -> String {
+        surface
+            .rows()
+            .iter()
+            .find(|row| row["resource_kind"] == kind)
             .and_then(|row| row["resource"].as_str())
             .unwrap_or_else(|| panic!("no {kind} row in {surface}"))
             .to_owned()
@@ -2185,9 +2186,8 @@ mod tests {
             let audit = app.harness().native_app_audit();
             assert!(audit.is_certified(), "{audit:?}");
             let surface = app.agent_surface();
-            let actions = surface["actions"]
-                .as_array()
-                .unwrap()
+            let actions = surface
+                .rows()
                 .iter()
                 .filter(|row| row["resource_kind"] == "print-centre.defaults")
                 .filter_map(|row| row["action"].as_str())
@@ -2225,13 +2225,9 @@ mod tests {
             let frame = app.harness().inspection_json().unwrap();
             assert!(frame.contains("print-centre.scan.resolution"), "{frame}");
             assert!(
-                app.agent_surface()["actions"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(
-                        |row| row["resource"] == job.as_str() && row["action"] == "cancel-document"
-                    ),
+                app.agent_surface().rows().iter().any(
+                    |row| row["resource"] == job.as_str() && row["action"] == "cancel-document"
+                ),
                 "a printing document can be cancelled"
             );
 

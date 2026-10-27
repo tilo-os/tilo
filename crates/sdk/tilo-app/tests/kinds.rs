@@ -56,9 +56,8 @@ fn a_kind_publishes_the_document_operations_the_running_app_publishes() {
         .unwrap();
     assert_eq!(published.label, "Tally of visitors");
     let surface = app.agent_surface();
-    let running: Vec<(String, String)> = surface["actions"]
-        .as_array()
-        .unwrap()
+    let running: Vec<(String, String)> = surface
+        .rows()
         .iter()
         .map(|row| {
             (

@@ -930,11 +930,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// agent, a script or a screen reader works with, and what it costs in
     /// context.
     ///
-    /// The snapshot is one schema document: `actions` holds the rows, and
-    /// `$defs` the shapes their parameter schemas repeat, which each of them
-    /// names with a local `$ref` (`tilo_actions::params`). A shape is stated
-    /// once and every constraint, description and example is still there.
-    pub fn agent_surface(&mut self) -> serde_json::Value {
+    /// The snapshot is [`AgentSurface`], one schema document: its `format`
+    /// and `version` say what a reader is reading, `actions` holds the rows,
+    /// and `$defs` the shapes their parameter schemas repeat, which each of
+    /// them names with a local `$ref` (`tilo_actions::params`). A shape is
+    /// stated once and every constraint, description and example is still
+    /// there.
+    pub fn agent_surface(&mut self) -> tilo_actions::agent_surface::AgentSurface {
         let mut resources = self.harness().resources();
         // Another provider publishes what it runs, not this window.
         resources.iter_mut().for_each(published_here);
@@ -953,7 +955,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             })
             .collect();
         rows.sort_by_key(|row| (row["resource"].to_string(), row["action"].to_string()));
-        published_surface(rows)
+        tilo_actions::agent_surface::AgentSurface::of_rows(rows)
     }
 
     /// Run a view or effect operation (`look`, `export`) through the host
@@ -2020,41 +2022,6 @@ fn split_command_line(
         }
     }
     (arguments, named)
-}
-
-/// `rows` as the surface document: every parameter schema in it takes part
-/// in one `$defs`, so a shape that several actions take (`select.rect` and
-/// `set-artwork.crop` are the same region) is stated once for all of them.
-fn published_surface(mut rows: Vec<serde_json::Value>) -> serde_json::Value {
-    let mut schemas: Vec<serde_json::Value> = rows
-        .iter()
-        .flat_map(|row| {
-            row["params"]
-                .as_array()
-                .map(Vec::as_slice)
-                .unwrap_or_default()
-        })
-        .filter_map(|param| param.get("schema").cloned())
-        .collect();
-    let definitions = tilo_actions::params::share_repeated_subschemas_among(&mut schemas);
-    let mut shared = schemas.into_iter();
-    for param in rows
-        .iter_mut()
-        .flat_map(|row| row["params"].as_array_mut())
-        .flatten()
-    {
-        // The parameters that publish a schema are the ones gathered above,
-        // in this order.
-        if param.get("schema").is_some()
-            && let Some(schema) = shared.next()
-        {
-            param["schema"] = schema;
-        }
-    }
-    serde_json::Value::Object(serde_json::Map::from_iter([
-        ("actions".into(), serde_json::Value::Array(rows)),
-        ("$defs".into(), definitions),
-    ]))
 }
 
 /// What `A` publishes and how its view binds to it, as `tilo-app surface`

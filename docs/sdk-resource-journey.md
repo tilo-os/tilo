@@ -36,10 +36,16 @@ scripts and accessibility use:
 It reads the production permission-filtered component catalogue and propagates
 observation errors rather than treating them as an empty surface. Descriptors include
 parameter schemas, authority requirements, confirmation, execution and result
-contracts. `agent_surface()` retains its compact snapshot format: one schema
-document, whose `actions` are the rows and whose `$defs` are the shapes their
-parameter schemas repeat, named by a local `$ref` (`tilo_actions::params`) and
-resolved by `scoped` where a reader holds one parameter's schema alone.
+contracts. `agent_surface()` answers the compact snapshot format as a typed
+root (`tilo_actions::agent_surface::AgentSurface`): `format` names the document
+and `version` says which format it is written in, `actions` are the rows, and
+`$defs` are the shapes their parameter schemas repeat, named by a local `$ref`
+(`tilo_actions::params`) and resolved by `scoped` where a reader holds one
+parameter's schema alone. A reader hands what it was given to
+`AgentSurface::read`, which answers the surface or the reason it is not one this
+build reads — a document of another version, or the prealpha bare array of rows,
+is refused rather than read as an empty surface — so a tool, a script or a
+non-Rust consumer checks one field instead of guessing.
 Discovery carries no authority: the host checks current permissions and
 arguments at each invocation. `call_confirmed` and `call_confirmed_on` represent an explicit
 confirmation in a test; they use the existing host dispatch, not a second

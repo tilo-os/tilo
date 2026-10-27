@@ -466,11 +466,11 @@ mod tests {
     use crate::sample::sample_config;
     use ui::prelude::TestApp;
 
-    fn action<'a>(surface: &'a serde_json::Value, id: &str) -> Option<&'a serde_json::Value> {
-        surface["actions"]
-            .as_array()?
-            .iter()
-            .find(|row| row["resource"] == "firewall.config" && row["action"] == id)
+    fn action<'a>(
+        surface: &'a ui::tilo_actions::AgentSurface,
+        id: &str,
+    ) -> Option<&'a serde_json::Value> {
+        surface.row("firewall.config", id)
     }
 
     /// A configuration from before a rule's match was stored as its variant

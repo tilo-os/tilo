@@ -9,13 +9,14 @@ use backups::actions::BackupsEffect;
 use backups::{BackupLocation, BackupsShell};
 use ui::framework::testing::TestApp;
 
-fn row<'a>(surface: &'a serde_json::Value, resource: &str, action: &str) -> &'a serde_json::Value {
-    surface["actions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["resource"] == resource && row["action"] == action)
-        .unwrap_or_else(|| panic!("{resource}#{action} is published: {surface:#}"))
+fn row<'a>(
+    surface: &'a ui::tilo_actions::AgentSurface,
+    resource: &str,
+    action: &str,
+) -> &'a serde_json::Value {
+    surface
+        .row(resource, action)
+        .unwrap_or_else(|| panic!("{resource}#{action} is published: {surface:#?}"))
 }
 
 #[test]
@@ -128,9 +129,8 @@ fn backups_run_as_jobs_against_this_devices_repository_and_follow_the_policy() {
     app.settle();
     let surface = app.agent_surface();
     assert!(
-        !surface["actions"]
-            .as_array()
-            .unwrap()
+        !surface
+            .rows()
             .iter()
             .any(|row| row["resource"] == snapshot.as_str()),
         "the pruned snapshot left the catalog"

@@ -692,9 +692,8 @@ fn model_capabilities_are_mount_local() {
         (chain.as_str(), "stream-output"),
     ] {
         assert!(
-            surface["actions"]
-                .as_array()
-                .unwrap()
+            surface
+                .rows()
                 .iter()
                 .any(|row| { row["resource"] == resource && row["action"] == action }),
             "missing {resource}#{action}"

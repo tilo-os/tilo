@@ -1923,9 +1923,8 @@ mod tests {
 
         // The palette: the conflict's row.
         let surface = app.agent_surface();
-        let conflict = surface["actions"]
-            .as_array()
-            .unwrap()
+        let conflict = surface
+            .rows()
             .iter()
             .find(|row| {
                 row["resource_kind"] == "diffmerge.session.change" && row["action"] == "take-theirs"

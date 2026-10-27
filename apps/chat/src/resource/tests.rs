@@ -610,9 +610,8 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     let surface = app.agent_surface();
     let on = |resource: &str| {
-        surface["actions"]
-            .as_array()
-            .unwrap()
+        surface
+            .rows()
             .iter()
             .filter(|row| row["resource"] == resource)
             .map(|row| row["action"].as_str().unwrap().to_owned())

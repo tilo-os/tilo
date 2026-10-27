@@ -72,6 +72,17 @@
 //! [`Cow<'static, str>`](std::borrow::Cow) rather than `&'static str` because an
 //! app builds its parameters per frame out of live document state — a `const`
 //! declaration is `Cow::Borrowed` and costs nothing.
+//!
+//! ## The surface an agent reads
+//!
+//! [`agent_surface`] is the one document an agent, a script or a tool in
+//! another language reads of a running app: its `actions`, one row per
+//! published action, and its `$defs`, the shapes their parameter schemas
+//! repeat. The root names the format ([`AGENT_SURFACE_FORMAT`]) and the
+//! version of it ([`AGENT_SURFACE_VERSION`]), and [`AgentSurface::read`]
+//! answers a document of another version — or one that names none, or the
+//! prealpha bare array of rows — instead of an empty surface, so a reader
+//! never mistakes a document it does not speak for an app with nothing to do.
 
 #![cfg_attr(
     test,
@@ -122,6 +133,7 @@ macro_rules! read_through_json_value {
 }
 
 pub mod action;
+pub mod agent_surface;
 pub mod appearance;
 pub mod compact;
 pub mod content;
@@ -153,6 +165,9 @@ pub mod task_step;
 pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind, asks_first,
     undo_takes_back,
+};
+pub use agent_surface::{
+    AGENT_SURFACE_FORMAT, AGENT_SURFACE_VERSION, AgentSurface, AgentSurfaceError,
 };
 pub use appearance::{Appearance, AppearanceError, Persona};
 pub use content::{

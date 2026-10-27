@@ -60,7 +60,9 @@ fn outline(resource: &tilo_actions::Resource) -> serde_json::Value {
 }
 
 /// What the window publishes: its resource tree and every action on it.
-fn published(app: &mut TestApp<SettingsShell>) -> (serde_json::Value, serde_json::Value) {
+fn published(
+    app: &mut TestApp<SettingsShell>,
+) -> (serde_json::Value, ui::tilo_actions::AgentSurface) {
     let resources = app.harness().resources().iter().map(outline).collect();
     (resources, app.agent_surface())
 }

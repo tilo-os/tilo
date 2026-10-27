@@ -154,7 +154,7 @@ fn an_agent_edits_the_body_as_a_resource_of_its_own() {
     let mut app = open(Role::Owner);
     let declared = app.agent_surface();
     assert!(
-        declared["actions"].as_array().unwrap().iter().any(|row| {
+        declared.rows().iter().any(|row| {
             row["resource"] == body_id().as_str() && row["resource_kind"] == RichText::KIND
         }),
         "the body is published as a rich-text resource: {declared}"

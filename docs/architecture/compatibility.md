@@ -74,9 +74,17 @@ mounted image.
 | App ↔ runtime (the session services the launcher connects) | `runtime_portal::RUNTIME_INTERFACE_VERSION` | `crates/runtime/runtime-portal/interface.toml` | the launcher, before it connects any service |
 | Device ↔ device (handshake, relay frames, peer-sync messages) | `neighbour_wire::PEER_PROTOCOL_VERSION` | `crates/collab/neighbour-wire/interface.toml` | the first field of the certified handshake's `Hello` and `HelloAck` (relay sessions, compute, environments, the HTTPS carrier), and of the `IdentityHello` a device announces on a room's gossip topic, whose index never moves |
 | Store package format (`.tapp`, its manifest, and the registry's snapshots, version indexes and channel authorizations) | `registry_types::PACKAGE_FORMAT_VERSION` (`tilo_app_package::TAPP_FORMAT_VERSION` is it) | `crates/packaging/tilo-app-package/interface.toml` | the archive header, when a package is read; a snapshot's `protocol`, when the catalogue is verified |
+| App ↔ agent (the surface document an app publishes of what an agent may do with it) | `tilo_actions::agent_surface::AGENT_SURFACE_VERSION` | `crates/collab/actions/interface.toml` | the document's `version`, whenever a reader takes one (`AgentSurface::read`, and so every consumer of `agent_surface()`): a document of another version, or none, is refused rather than read as an empty surface |
 
 - There is no negotiation and no code for an older number. A side at another
-  number says so and stops.
+  number says so and stops. The agent surface's number is the document's own:
+  the format before it, a bare array of rows with no `version` to read, is
+  refused as that (prealpha's `v0`), and so is a document of this format at
+  another number.
+- The agent surface is not a service an app is handed, so the image serves no
+  version of it (`served_to_apps = false`): it is the number the app and
+  whatever reads its published surface agree on, and it moves on its own when
+  that vocabulary changes, not when the shell-ui connection does.
 - The Rust runtime a native app links has no stable ABI, so a build names the
   exact runtime build it links (`package.runtime`), and the store fetches that
   runtime with the app.

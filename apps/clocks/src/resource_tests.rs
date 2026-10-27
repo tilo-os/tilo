@@ -222,9 +222,8 @@ fn edits_that_make_no_sense_are_refused() {
 
 /// The published tree, flattened to `(resource, action)` pairs.
 fn published(app: &mut TestApp<ClocksShell>) -> Vec<(String, String)> {
-    app.agent_surface()["actions"]
-        .as_array()
-        .unwrap()
+    app.agent_surface()
+        .rows()
         .iter()
         .map(|row| {
             (

@@ -392,9 +392,8 @@ mod tests {
         let mut changes = TestApp::<GitClientShell>::capture(Some("changes")).unwrap();
         assert_eq!(changes.harness().inspection().viewport, [1280, 800]);
         let surface = changes.agent_surface();
-        let rows: Vec<_> = surface["actions"]
-            .as_array()
-            .unwrap()
+        let rows: Vec<_> = surface
+            .rows()
             .iter()
             .filter(|row| row["resource_kind"] == "git_client.diff")
             .collect();
@@ -639,9 +638,8 @@ mod tests {
         app.settle();
         let surface = app.agent_surface();
         let offered = |resource: &str, action: &str| {
-            surface["actions"]
-                .as_array()
-                .unwrap()
+            surface
+                .rows()
                 .iter()
                 .any(|row| row["resource"] == resource && row["action"] == action)
         };
@@ -740,9 +738,8 @@ mod tests {
         app.settle();
         let surface = app.agent_surface();
         assert!(
-            surface["actions"]
-                .as_array()
-                .unwrap()
+            surface
+                .rows()
                 .iter()
                 .any(|row| row["action"] == "create-worktree")
         );
@@ -843,9 +840,8 @@ mod tests {
         app.settle();
         let offered_layout = |app: &mut TestApp<GitClientShell>| {
             let palette = app.agent_surface();
-            palette["actions"]
-                .as_array()
-                .unwrap()
+            palette
+                .rows()
                 .iter()
                 .find(|row| row["resource"] == "git_client.repo" && row["action"] == "diff-layout")
                 .map_or_else(

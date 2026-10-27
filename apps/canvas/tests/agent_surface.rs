@@ -12,16 +12,19 @@
 use canvas::App;
 use serde_json::{Value, json};
 use ui::prelude::TestApp;
+use ui::tilo_actions::AgentSurface;
 
 /// The most the whole surface may weigh, in bytes of JSON: what an agent
 /// reads before it can act. Growing past it is a design decision, not drift.
 ///
-/// `actions` holds the rows; `$defs` holds the shapes their parameter
-/// schemas repeat, which each of them names with a local `$ref` and which
-/// `tilo_actions::params` resolves. So a shape several actions take — a
-/// region, a pair of units, the operations a field edit takes — is stated
-/// once for all of them, and every constraint, description, example and
-/// path is still there: an agent resolves it, it does not read less.
+/// The document is `tilo_actions::agent_surface::AgentSurface`: `format` and
+/// `version` say what a reader is reading, `actions` holds the rows, and
+/// `$defs` holds the shapes their parameter schemas repeat, which each of
+/// them names with a local `$ref` and which `tilo_actions::params` resolves.
+/// So a shape several actions take — a region, a pair of units, the
+/// operations a field edit takes — is stated once for all of them, and every
+/// constraint, description, example and path is still there: an agent
+/// resolves it, it does not read less.
 ///
 /// `apply` and `group` name the actions they repeat; the field-edit listing
 /// names each editable path once with its operations and its value's kind,
@@ -43,8 +46,10 @@ use ui::prelude::TestApp;
 /// already given, and the shapes the schemas share — brought the same
 /// vocabulary to 68,823 bytes: inside the 68 KiB this held before the mark's
 /// style and shape became paths, with all 72 actions, their parameters and
-/// all 150 editable paths intact. The budget stays where it was; raising it
-/// is not how a representation earns its room.
+/// all 150 editable paths intact. Naming the format and its version at the
+/// root costs the 42 bytes those two keys take, so the document is 68,865
+/// and the budget stays where it was: raising it is not how a representation
+/// earns its room.
 const BUDGET: usize = 68 * 1024;
 
 #[test]
@@ -59,6 +64,8 @@ fn the_agent_surface_matches_its_golden_file_and_budget() {
         "the window settles"
     );
     let surface = app.agent_surface();
+    assert_eq!(surface.format, ui::tilo_actions::AGENT_SURFACE_FORMAT);
+    assert_eq!(surface.version, ui::tilo_actions::AGENT_SURFACE_VERSION);
     let text = serde_json::to_string_pretty(&surface).unwrap() + "\n";
     let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agent-surface.json");
     if std::env::var_os("TILO_UPDATE_GOLDEN").is_some() {
@@ -80,7 +87,15 @@ fn the_agent_surface_matches_its_golden_file_and_budget() {
         expected == text,
         "the agent surface changed ({compact} bytes); review the diff and update with TILO_UPDATE_GOLDEN=1:\n{text}"
     );
+    // The committed golden is a document this build reads: an agent handed
+    // the file, rather than the app, is handed the same surface, at the
+    // version it says it is. A golden a reader refuses would be a snapshot
+    // nobody could act on.
+    let committed = ui::tilo_actions::AgentSurface::read_json(expected.as_bytes())
+        .expect("the golden file is the surface this build writes");
+    assert_eq!(committed, surface);
     assert_shapes_are_shared(&surface);
+    assert_narrowed_surface_states_only_what_its_rows_name(&surface);
     assert_shapes_admit_what_the_declarations_do(&surface, &mut app);
     assert_header_inventory(&surface, &mut app);
     let actions: Vec<&str> = rows(&surface)
@@ -136,30 +151,74 @@ fn the_agent_surface_matches_its_golden_file_and_budget() {
     assert_eq!(editable, 150, "every editable path is still named");
 }
 
+/// A surface narrowed to one resource kind — what a caller allowed to see
+/// that much is handed — states only the definitions its own rows name, and
+/// every `$ref` it still writes is one it carries: filtering a surface never
+/// leaves the shapes, names or descriptions of what was filtered out.
+fn assert_narrowed_surface_states_only_what_its_rows_name(surface: &AgentSurface) {
+    let kinds: std::collections::BTreeSet<&str> = surface
+        .rows()
+        .iter()
+        .filter_map(|row| row["resource_kind"].as_str())
+        .collect();
+    assert!(kinds.len() > 1, "the surface publishes several kinds");
+    for kind in kinds {
+        let mut narrowed = surface.clone();
+        narrowed.retain(|row| row["resource_kind"] == kind);
+        assert!(!narrowed.rows().is_empty(), "{kind} has rows");
+        assert!(
+            narrowed
+                .rows()
+                .iter()
+                .all(|row| row["resource_kind"] == kind),
+            "only {kind}'s rows remain"
+        );
+        let mut named = std::collections::BTreeSet::new();
+        let mut pending: Vec<String> = references_in(&Value::Array(narrowed.rows().to_vec()));
+        while let Some(reference) = pending.pop() {
+            let name = reference
+                .strip_prefix("#/$defs/")
+                .unwrap_or_else(|| panic!("{kind} narrowed a schema naming `{reference}`"));
+            assert!(
+                narrowed.definitions().contains_key(name),
+                "{kind} keeps the definition `{name}` its rows name"
+            );
+            if named.insert(name.to_owned()) {
+                pending.extend(references_in(&narrowed.definitions()[name]));
+            }
+        }
+        let unkept: Vec<&String> = narrowed
+            .definitions()
+            .keys()
+            .filter(|name| !named.contains(*name))
+            .collect();
+        assert!(
+            unkept.is_empty(),
+            "{kind} states no definition its rows do not name: {unkept:?}"
+        );
+    }
+}
+
 /// The rows of the surface document.
-fn rows(surface: &Value) -> &[Value] {
-    surface["actions"]
-        .as_array()
-        .expect("the surface document holds its rows")
+fn rows(surface: &AgentSurface) -> &[Value] {
+    surface.rows()
 }
 
 /// Every shape a schema names is one the surface states once, and every
 /// definition is a schema the validator reads: a reference that a reader
 /// cannot resolve would be a contract nobody can hold.
-fn assert_shapes_are_shared(surface: &Value) {
-    let definitions = surface["$defs"]
-        .as_object()
-        .expect("the surface document holds the shapes it states once");
+fn assert_shapes_are_shared(surface: &AgentSurface) {
+    let definitions = surface.definitions();
     assert!(!definitions.is_empty(), "the surface shares its shapes");
     for (name, definition) in definitions {
         // A definition may name another; the document is what states them.
-        let definition = ui::tilo_actions::params::scoped(surface, definition);
+        let definition = surface.scoped(definition);
         ui::tilo_actions::params::validate_schema_definition(&definition)
             .unwrap_or_else(|reason| panic!("definition `{name}` is a schema: {reason}"));
     }
     let mut references = 0_usize;
     for (name, schema) in schemas(surface) {
-        let schema = ui::tilo_actions::params::scoped(surface, &schema);
+        let schema = surface.scoped(&schema);
         ui::tilo_actions::params::validate_schema_definition(&schema)
             .unwrap_or_else(|reason| panic!("`{name}` publishes a schema: {reason}"));
         for reference in references_in(&schema) {
@@ -200,7 +259,7 @@ fn references_in(schema: &Value) -> Vec<String> {
 }
 
 /// Each `(resource, action, parameter)` a schema belongs to.
-fn schemas(surface: &Value) -> Vec<(String, Value)> {
+fn schemas(surface: &AgentSurface) -> Vec<(String, Value)> {
     let mut found = Vec::new();
     for row in rows(surface) {
         for param in row["params"].as_array().into_iter().flatten() {
@@ -224,7 +283,7 @@ fn schemas(surface: &Value) -> Vec<(String, Value)> {
 /// A published schema and the declaration it stands for admit the same
 /// values: sharing a shape is a representation of the contract, not a
 /// different one.
-fn assert_shapes_admit_what_the_declarations_do(surface: &Value, app: &mut TestApp<App>) {
+fn assert_shapes_admit_what_the_declarations_do(surface: &AgentSurface, app: &mut TestApp<App>) {
     let declarations: Vec<Value> = app
         .actions()
         .expect("the app publishes its actions")
@@ -291,7 +350,7 @@ fn assert_shapes_admit_what_the_declarations_do(surface: &Value, app: &mut TestA
                 continue;
             };
             // One parameter's schema names what the document states once.
-            let published_schema = ui::tilo_actions::params::scoped(surface, published_schema);
+            let published_schema = surface.scoped(published_schema);
             for probe in probes(&published_schema) {
                 let here = ui::tilo_actions::validate_json_schema(&probe, &published_schema);
                 let there = ui::tilo_actions::validate_json_schema(&probe, declared_schema);
@@ -369,7 +428,7 @@ fn probes(schema: &Value) -> Vec<Value> {
     probes
 }
 
-fn assert_header_inventory(surface: &Value, app: &mut TestApp<App>) {
+fn assert_header_inventory(surface: &AgentSurface, app: &mut TestApp<App>) {
     // Header controls remain real AT controls even where the artwork also
     // exposes their canonical commands. Suppressing their semantic leaves
     // creates orphan bindings; their public UI door is chiefly native focus.

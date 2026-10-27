@@ -1479,9 +1479,9 @@ mod tests {
             .is_err()
         );
     }
-    fn effect(surface: &serde_json::Value, id: &str) -> Option<serde_json::Value> {
-        surface["actions"]
-            .as_array()?
+    fn effect(surface: &ui::tilo_actions::AgentSurface, id: &str) -> Option<serde_json::Value> {
+        surface
+            .rows()
             .iter()
             .find(|action| action["action"] == id)
             .cloned()

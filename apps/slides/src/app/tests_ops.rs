@@ -205,9 +205,10 @@ fn the_selection_publishes_its_bound_edits() {
     ));
     let mut bench = Bench::open(&deck_of(vec![slide]), super::bench::WINDOW);
     let published = |bench: &mut Bench| -> Vec<String> {
-        bench.app.agent_surface()["actions"]
-            .as_array()
-            .unwrap()
+        bench
+            .app
+            .agent_surface()
+            .rows()
             .iter()
             .filter(|row| row["resource"] == "slides.deck")
             .filter_map(|row| row["action"].as_str().map(str::to_owned))

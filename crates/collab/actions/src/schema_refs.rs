@@ -60,16 +60,34 @@ pub(crate) fn local_reference<'a>(root: &'a Value, reference: &str) -> Result<&'
 /// resolves it with this and then validates, rather than keeping a resolver
 /// of its own.
 pub fn scoped(document: &Value, schema: &Value) -> Value {
-    let Some(definitions) = document.get(DEFS) else {
-        return schema.clone();
-    };
+    scoped_from(schema, || {
+        document
+            .get(DEFS)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default()
+    })
+}
+
+/// [`scoped`] with the definitions a document states, as whoever holds them
+/// keeps them: a document in a value, or a
+/// [`AgentSurface`](crate::agent_surface::AgentSurface)'s own map, which a
+/// reader of one schema should not have to lay out as a document first.
+/// `definitions` runs only when `schema` names something, and only once.
+pub(crate) fn scoped_from(
+    schema: &Value,
+    definitions: impl FnOnce() -> Map<String, Value>,
+) -> Value {
     let Value::Object(fields) = schema else {
         return schema.clone();
     };
     let mut scoped = fields.clone();
-    scoped
-        .entry(DEFS.to_owned())
-        .or_insert_with(|| definitions.clone());
+    let stated = definitions();
+    if !stated.is_empty() {
+        scoped
+            .entry(DEFS.to_owned())
+            .or_insert(Value::Object(stated));
+    }
     Value::Object(scoped)
 }
 
