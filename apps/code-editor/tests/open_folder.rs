@@ -24,9 +24,23 @@ const OPEN_FOLDER: &str = "empty-state:No folder open";
 fn click_open_folder(app: &mut TestApp<CodeEditorShell>) {
     let harness = app.harness();
     if let Err(error) = harness.click_named(OPEN_FOLDER) {
-        let mut targets: Vec<_> = harness.targets().into_keys().collect();
+        let mut targets: Vec<_> = harness
+            .targets()
+            .into_iter()
+            .map(|(name, rect)| format!("{name} {rect:?}"))
+            .collect();
         targets.sort();
-        panic!("the sidebar offers Open folder: {error}; targets: {targets:?}");
+        let labels: Vec<_> = harness
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| {
+                node.label()
+                    .map(|label| format!("{:?} {label}", node.role()))
+            })
+            .collect();
+        panic!(
+            "the sidebar offers Open folder: {error}; targets: {targets:#?}; labels: {labels:#?}"
+        );
     }
 }
 
