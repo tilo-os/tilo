@@ -70,7 +70,9 @@ pub struct DeviceProfile {
 const BTN_LEFT: u16 = 0x110;
 const ABS_X: u16 = 0x00;
 const ABS_Y: u16 = 0x01;
+const ABS_MISC: u16 = 0x28;
 const ABS_MT_SLOT: u16 = 0x2f;
+const ABS_MT_TOOL_TYPE: u16 = 0x37;
 const ABS_MT_POSITION_X: u16 = 0x35;
 const ABS_MT_POSITION_Y: u16 = 0x36;
 const ABS_MT_TRACKING_ID: u16 = 0x39;
@@ -131,6 +133,15 @@ pub fn profile(name: &str) -> Result<DeviceProfile, String> {
     Ok(profile)
 }
 
+/// Whether libinput accepts an axis whose range is empty (its `evdev_reject_device`):
+/// it skips `ABS_MISC`, `ABS_MT_SLOT` and `ABS_MT_TOOL_TYPE`, and disables a 0..0
+/// axis from `ABS_MISC` up to the multitouch ones. Any other empty axis makes it
+/// refuse the device, so the compositor never sees it.
+fn libinput_ignores_empty_range(axis: &AbsAxis) -> bool {
+    matches!(axis.code, ABS_MISC | ABS_MT_SLOT | ABS_MT_TOOL_TYPE)
+        || (axis.min == 0 && (ABS_MISC..ABS_MT_SLOT).contains(&axis.code))
+}
+
 impl DeviceProfile {
     pub fn axis(&self, code: u16) -> Option<&AbsAxis> {
         self.abs.iter().find(|axis| axis.code == code)
@@ -171,6 +182,13 @@ impl DeviceProfile {
         for axis in &self.abs {
             if axis.min > axis.max {
                 return Err(format!("axis {} has min above max", axis.code));
+            }
+            if axis.min == axis.max && !libinput_ignores_empty_range(axis) {
+                return Err(format!(
+                    "axis {:#x} has min == max: libinput rejects the whole device for it \
+                     (sysfs bitmaps carry no ranges; read them from the device)",
+                    axis.code
+                ));
             }
         }
         match self.class {
@@ -277,5 +295,28 @@ mod tests {
         let mut skewed = profile("lenovo-83ed-touchpad").unwrap();
         skewed.abs[0].min = skewed.abs[0].max + 1;
         assert!(skewed.check().unwrap_err().contains("min above max"));
+    }
+
+    /// A keyboard with a 0..0 `ABS_VOLUME`, as the keyboard capture once had: libinput
+    /// rejects such a device, so the slot's compositor never opened it.
+    #[test]
+    fn an_axis_libinput_rejects_the_device_for_is_refused() {
+        let volume = AbsAxis {
+            code: 0x20,
+            min: 0,
+            max: 0,
+            fuzz: 0,
+            flat: 0,
+            resolution: 0,
+        };
+        let mut keyboard = profile("lenovo-83ed-keyboard").unwrap();
+        keyboard.abs = vec![volume];
+        assert!(keyboard.check().unwrap_err().contains("0x20"));
+        // An empty axis libinput only disables is fine.
+        keyboard.abs = vec![AbsAxis {
+            code: ABS_MISC + 1,
+            ..volume
+        }];
+        assert!(keyboard.check().is_ok());
     }
 }
