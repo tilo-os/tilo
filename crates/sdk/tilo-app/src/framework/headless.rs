@@ -1811,6 +1811,15 @@ pub(super) fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot) ->
 
 impl<A: ResourceApp> Drop for HeadlessApp<A> {
     fn drop(&mut self) {
+        // A test that failed is unwinding: close the app without running
+        // its frames again, so whatever failed it cannot fail closing too
+        // and abort the whole test binary.
+        if std::thread::panicking() {
+            if let Some(mut harness) = self.harness.take() {
+                harness.close_components();
+            }
+            return;
+        }
         let _ = self.close();
     }
 }
