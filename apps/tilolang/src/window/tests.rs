@@ -14,6 +14,8 @@ use ui::widget::{ItemRow, ListItemProps};
 
 use super::*;
 
+mod opening;
+
 const HOST: &str = "tl:host";
 
 struct Room {

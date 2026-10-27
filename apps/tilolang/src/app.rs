@@ -14,7 +14,7 @@ use std::sync::{Mutex, OnceLock};
 
 use tilolang_tilo::host::Host;
 use tilolang_tilo::tilolang::PackageMeta;
-use ui::framework::{AppName, ResourceApp, ViewCx};
+use ui::framework::{AppName, OpeningCx, OpeningView, ResourceApp, ViewCx};
 use ui::widget::Element;
 
 use crate::resource::Room;
@@ -113,6 +113,27 @@ impl ResourceApp for TlApp {
         hosted().map_or(&[], scenario_names)
     }
 
+    // The first frame shows what the room's indexes hold; the record is read off the frame.
+    const OPENS_BEFORE_RECORD: bool = true;
+
+    /// The window over the room's indexes, kept from an earlier session (or built once the
+    /// record is had, the platform's loading state meanwhile).
+    fn opening(cx: &OpeningCx<'_>) -> Option<Box<dyn OpeningView>> {
+        crate::i18n::ensure();
+        let meta = hosted()?;
+        let indexes = indexes(&cx.files())?;
+        Some(Box::new(
+            Window::new(
+                meta.app.clone(),
+                cx.me().to_owned(),
+                ui::framework::RunMode::Live,
+            )
+            .keep_indexes_in(indexes)
+            .in_room(cx.room())
+            .opening(cx.record().clone()),
+        ))
+    }
+
     fn view(cx: &mut ViewCx<Room>) -> Element {
         crate::i18n::ensure();
         let Some(meta) = hosted() else {
@@ -120,14 +141,26 @@ impl ResourceApp for TlApp {
                 "tilolang-open-failed",
             )));
         };
-        let mut window = Window::new(
-            meta.app.clone(),
-            cx.me().unwrap_or_default().to_owned(),
-            cx.mode(),
-        );
-        if let Some(cache) = ui::host::environment().paths.cache_dir() {
-            window = window.keep_indexes_in(cache.join("tilolang"));
-        }
+        // The window shown before the record, taken over with what the person did in it.
+        let opened = cx
+            .take_lent::<ui::framework::Opened>()
+            .and_then(|opened| opened.take::<Window>());
+        let window = if let Some(window) = opened {
+            (*window).taken_over()
+        } else {
+            let mut window = Window::new(
+                meta.app.clone(),
+                cx.me().unwrap_or_default().to_owned(),
+                cx.mode(),
+            );
+            if let Some(indexes) = indexes(&cx.storage().files()) {
+                window = window.keep_indexes_in(indexes);
+            }
+            if let Some(room) = cx.room() {
+                window = window.in_room(&room);
+            }
+            window
+        };
         // A search hit, or an agent's `open`, shows the resource it names.
         let opens = window.open_requests();
         cx.on_open(move |anchor: &str| {
@@ -135,6 +168,16 @@ impl ResourceApp for TlApp {
         });
         cx.surface(window)
     }
+}
+
+/// Where windows keep their rooms' indexes: in the app's cache area, which its host gives it.
+pub fn indexes(files: &ui::storage::AppFiles) -> Option<std::path::PathBuf> {
+    files
+        .paths()
+        .cache()
+        .native_path()
+        .ok()
+        .map(|cache| cache.join("indexes"))
 }
 
 /// The built-in packages, compiled in the test process, which the window's tests run side by
