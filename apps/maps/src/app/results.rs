@@ -52,7 +52,7 @@ impl MapsApp {
                             );
                         }
                         Err(e) => {
-                            self.model.status = failure::say(failure::SEARCH, &e.to_string());
+                            self.model.status = failure::say(failure::SEARCH, e);
                         }
                     }
                 }
@@ -121,7 +121,7 @@ impl MapsApp {
                     Err(e) => {
                         self.model.status = format!(
                             "{} The offline estimate is shown.",
-                            failure::say(failure::ROUTE, &e.to_string())
+                            failure::say(failure::ROUTE, e)
                         );
                     }
                 },
@@ -144,7 +144,7 @@ impl MapsApp {
                     }
                     Ok(_) => self.model.status = failure::t("maps-no-transit"),
                     Err(e) => {
-                        self.model.status = failure::say(failure::TRANSIT, &e.to_string());
+                        self.model.status = failure::say(failure::TRANSIT, e);
                     }
                 },
                 NetMsg::Pois { generation, pois } => {
@@ -165,7 +165,7 @@ impl MapsApp {
                                 }
                             }
                             Err(e) => {
-                                self.model.status = failure::say(failure::NEARBY, &e.to_string());
+                                self.model.status = failure::say(failure::NEARBY, e);
                             }
                         }
                     }

@@ -141,10 +141,10 @@ impl MapsApp {
                 .route
                 .as_ref()
                 .and_then(|current| {
-                    self.model.route_alternatives.iter().position(|offered| {
-                        offered.duration_s == current.duration_s
-                            && offered.distance_m == current.distance_m
-                    })
+                    self.model
+                        .route_alternatives
+                        .iter()
+                        .position(|offered| offered.is_same_trip(current))
                 })
                 .unwrap_or(0);
             let label = format!(
