@@ -31,7 +31,7 @@ sys.modules[SPEC.name] = resolver
 SPEC.loader.exec_module(resolver)
 
 FAKE_CURL = textwrap.dedent("""\
-    #!/usr/bin/env python3
+    #!/usr/bin/env -S python3 -S
     import os, sys
     from pathlib import Path
     store = Path(os.environ["FAKE_STORE"])
@@ -84,7 +84,7 @@ FAKE_CURL = textwrap.dedent("""\
     """)
 
 FAKE_COSIGN = textwrap.dedent("""\
-    #!/usr/bin/env python3
+    #!/usr/bin/env -S python3 -S
     import hashlib, sys
     from pathlib import Path
     args = sys.argv[1:]
@@ -143,7 +143,7 @@ class Publish(unittest.TestCase):
         bin_dir.mkdir()
         for name, text in (("curl", FAKE_CURL), ("cosign", FAKE_COSIGN)):
             path = bin_dir / name
-            path.write_text(text.replace("#!/usr/bin/env python3", f"#!{sys.executable}", 1))
+            path.write_text(text.replace("#!/usr/bin/env -S python3 -S", f"#!{sys.executable}", 1))
             path.chmod(path.stat().st_mode | stat.S_IXUSR)
         (self.root / "runner").mkdir()
         self.env = {
