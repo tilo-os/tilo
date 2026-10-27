@@ -115,6 +115,7 @@ impl ChatApp {
                 ))
             })
             .collect();
+        self.read_scrollback(&chat, &held);
         // Drop the body views of messages no longer loaded.
         let shown: HashSet<&str> = self.messages.iter().map(|m| m.id.as_str()).collect();
         self.body_views
