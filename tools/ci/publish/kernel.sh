@@ -19,6 +19,10 @@
 # kernel-acceptance.sh, beside this script, boots and checks what this builds, on the kernel's
 # architecture.
 #
+#   kernel.sh signer-crate OUT  project the module signer (tilo-crypto) into OUT as a crate of its
+#                               own with a lockfile of only its dependencies, which the build
+#                               takes in place of the workspace
+#
 #   kernel.sh provenance DIR    write each DIR/<arch>/provenance.json: the kernel-rpm/v1 SLSA
 #                               predicate os/dev/verify-kernel-provenance.sh checks, binding the
 #                               signed buildroot it was built FROM and the architecture it was
@@ -121,6 +125,26 @@ case ${1:-} in
     cat os/kernel-snapshot.env
     exit 0
     ;;
+  signer-crate)
+    # The module signer as the kernel compiles it: tilo-crypto projected into a crate of its
+    # own whose lockfile holds only what it links, checked against the root lockfile. The
+    # kernel builds from this, never from the workspace, so a Cargo.lock change that moves
+    # none of the signer's dependencies leaves the kernel's key where it was.
+    out=${2:?usage: kernel.sh signer-crate OUT}
+    rm -rf "$out" && mkdir -p "$out/src"
+    python3 os/kernel/project-crate.py --workspace Cargo.toml \
+      --member crates/system/tilo-crypto/Cargo.toml --lockfile Cargo.lock --output "$out"
+    cp crates/system/tilo-crypto/src/lib.rs crates/system/tilo-crypto/src/main.rs "$out/src/"
+    # Resolving the projected crate prunes the copied lockfile to its own dependencies. Where
+    # there is no cargo (the compiler cache's image) it stays the whole lockfile, which the
+    # kernel build's own cargo prunes as it resolves.
+    if command -v cargo >/dev/null; then
+      (cd "$out" && { cargo fetch --offline 2>/dev/null || cargo fetch; })
+      python3 os/kernel/project-crate.py --lockfile Cargo.lock --verify-lock "$out/Cargo.lock"
+    fi
+    printf 'signer crate: %s locked packages\n' "$(grep -c '^\[\[package\]\]' "$out/Cargo.lock")"
+    exit 0
+    ;;
 esac
 
 arch=${2:-}
@@ -153,7 +177,15 @@ case ${1:-} in
     cosign verify --key keys/cosign.pub "$buildroot" >/dev/null
     assets=$(pinned_assets v4l2loopback-0.15.3-a7e4a4d.tar.gz)
     # The kernel's SOURCE_DATE_EPOCH keeps its default of 0 beside the fixed layer timestamps.
+    # The signer's crate the kernel-signer-crate check made, or one made here where no
+    # check gave it (the compiler cache, a build outside t).
+    signer=${KERNEL_SIGNER_CRATE:-/target/publish/kernel-signer}
+    if [[ ! -s $signer/Cargo.lock ]]; then
+      signer=$scratch/signer-crate
+      bash tools/ci/publish/kernel.sh signer-crate "$signer"
+    fi
     args=(--platform "$platform" --build-context "github-assets=$assets"
+      --build-context "signer-crate=$signer"
       --build-arg "KERNEL_BUILDROOT_REF=$buildroot" --build-arg "KERNEL_ARCH=$arch"
       --build-arg "KERNEL_BUILD_JOBS=$(nproc)")
     use_buildah kernel

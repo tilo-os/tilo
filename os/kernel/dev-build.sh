@@ -79,7 +79,7 @@ key="$(
   {
     printf '%s\n%s\n' "$KERNEL_BUILDROOT_REF" "$arch"
     cd "$repo"
-    find os/kernel/Containerfile os/kernel/project-crate.py os/tests/secureboot_vm_app.c \
+    find os/kernel/Containerfile os/kernel/project-crate.py tools/ci/publish/kernel.sh os/tests/secureboot_vm_app.c \
          Cargo.toml Cargo.lock crates/system/tilo-crypto/Cargo.toml \
          crates/system/tilo-crypto/src/lib.rs crates/system/tilo-crypto/src/main.rs \
          os/external-assets/github-assets.tsv -type f -print0 \
@@ -93,9 +93,12 @@ else
   say "building the builder image $image (os/kernel/Containerfile --target build-toolchain)"
   assets="$cache_root/assets"
   TILO_GITHUB_ASSET_CACHE="$assets" "$repo/os/dev/cache-github-assets.sh" v4l2loopback-0.15.3-a7e4a4d.tar.gz >&2
+  signer="$cache_root/signer-crate"
+  (cd "$repo" && bash tools/ci/publish/kernel.sh signer-crate "$signer") >&2
   podman build -f "$repo/os/kernel/Containerfile" --target build-toolchain \
     --build-arg "KERNEL_BUILDROOT_REF=$KERNEL_BUILDROOT_REF" \
     --build-context "github-assets=$assets" \
+    --build-context "signer-crate=$signer" \
     -t "$image" "$repo" >&2
 fi
 builder_id="$(podman image inspect --format '{{.Id}}' "$image")"
