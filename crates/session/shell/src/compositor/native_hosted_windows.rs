@@ -59,9 +59,10 @@ pub(super) fn desired_legacy_shares(
             };
             // Each member's windows in a room whose layout is personal stay on
             // their device: no host or member of the room is shown them, but
-            // for a window its person shared with the room.
+            // for an outside window its person shared with the room. A Tilo
+            // app's window is shared as what it shows, never as pixels.
             let shared_layout =
-                shared_layout || tree.is_window_shared(workspace.room(), tab.id, now_ms);
+                shared_layout || tree.streams_shared_window(workspace.room(), tab.id, now_ms);
             let mut peers = std::collections::HashSet::new();
             if active
                 && let Some(shared) = workspace
@@ -140,7 +141,7 @@ pub(super) fn rooms_hosting_windows(
                 .any(|tab| {
                     matches!(tab.tile, crate::shell::state::TileContent::Foreign { .. })
                         && (shared_layout
-                            || tree.is_window_shared(workspace.room(), tab.id, now_ms))
+                            || tree.streams_shared_window(workspace.room(), tab.id, now_ms))
                 })
         })
         .map(crate::shell::state::Workspace::room)
@@ -530,5 +531,126 @@ mod tests {
             "once the share ends, nothing streams again"
         );
         assert!(super::rooms_hosting_windows(&tree).is_empty());
+    }
+
+    /// The boundary for a Tilo app's window shared with a room whose layout
+    /// is personal: it is shared as what it shows, so none of its pixels
+    /// streams to the room's members or hosts, while an outside window
+    /// shared beside it still does.
+    #[test]
+    fn a_shared_tilo_app_window_streams_nothing_to_members_or_hosts() {
+        use crate::shell::network::RoomWindowViewer;
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
+        use automerge::transaction::Transactable as _;
+        use tilo_desktop_model::projection;
+        use tilo_desktop_model::window_share::{
+            WindowShows, shows_node, window_node, window_share_id, window_shows_share_id,
+        };
+
+        let salt: u16 = 0x0A51;
+        let own = |counter: u64| (u64::from(salt) << 48) | counter;
+        let (terminal, notes) = (own(3), own(4));
+        let mut tree = WorkspaceTree::bootstrap_default_with_salt(salt);
+        let room = tree.desktop.workspaces[0].room();
+        tree.desktop.workspaces[0].strips.truncate(1);
+        tree.desktop.workspaces[0].strips[0].window_groups = vec![WindowGroup {
+            id: own(2),
+            tabs: [
+                (terminal, "org.alacritty.Alacritty", 31),
+                (notes, "so.tilo.notes", 32),
+            ]
+            .into_iter()
+            .map(|(id, app, surface)| Tab {
+                id,
+                title: app.into(),
+                tile: TileContent::Foreign {
+                    app_id: app.into(),
+                    surface_id: surface,
+                },
+                app_title: None,
+            })
+            .collect(),
+            active_tab: notes,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }];
+        tree.remember_package_launch(notes, "so.tilo.notes".into());
+        let viewer = |peer: u64| RoomWindowViewer {
+            peer,
+            room,
+            width: 800,
+            height: 600,
+            decode_limits: std::collections::BTreeMap::new(),
+        };
+        let members =
+            MemberViewers::from([(terminal, vec![viewer(601)]), (notes, vec![viewer(601)])]);
+        let hosts: RoomHosts = [(room, [42].into_iter().collect())].into_iter().collect();
+        let nobody = std::collections::BTreeMap::new();
+
+        let room_text = room.to_string();
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, projection::ROOM_ID_KEY, room_text.as_str())
+            .unwrap();
+        doc.put(
+            automerge::ROOT,
+            projection::ROOM_LAYOUT_KEY,
+            projection::RoomLayout::Personal.id(),
+        )
+        .unwrap();
+        let owners = doc
+            .put_object(
+                automerge::ROOT,
+                projection::ROOM_CONTENTS_OWNERS_KEY,
+                automerge::ObjType::Map,
+            )
+            .unwrap();
+        doc.put(&owners, format!("{salt:04x}"), hex::encode([0x5a; 32]))
+            .unwrap();
+        let mut policy = projection::room_policy_of(&doc, &room_text);
+        let note = WindowShows {
+            record: String::new(),
+            item: Some("7".into()),
+        };
+        for (id, node) in [
+            (
+                window_shows_share_id(notes),
+                shows_node(&room_text, "so.tilo.notes", notes, "notes.notebook", &note),
+            ),
+            (
+                window_share_id(notes),
+                window_node(&room_text, "so.tilo.notes", notes),
+            ),
+            (
+                window_share_id(terminal),
+                window_node(&room_text, "org.alacritty.Alacritty", terminal),
+            ),
+        ] {
+            policy.grants.extend(
+                tilo_action_policy::share::share_grants(
+                    &room_text,
+                    "ana",
+                    &id,
+                    &node,
+                    tilo_action_policy::share::ShareAccess::View,
+                )
+                .unwrap(),
+            );
+        }
+        projection::project_room_policy(&mut doc, &policy).unwrap();
+        doc.commit();
+        tree.project_room_document_for_test(room, &doc);
+        let now_ms = tilo_clock::unix_now_ms();
+        assert!(tree.is_window_shared(room, notes, now_ms));
+
+        let desired = desired_legacy_shares(&tree, true, &hosts, &nobody, &members);
+        assert!(
+            !desired.contains_key(&32),
+            "no pixel of the shared Notes reaches a member or a host"
+        );
+        let (share, _) = desired
+            .get(&31)
+            .expect("the shared terminal, an outside window, streams");
+        assert_eq!(share.viewers, [601, 42].into());
     }
 }

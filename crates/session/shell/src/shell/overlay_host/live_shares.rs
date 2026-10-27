@@ -210,6 +210,70 @@ impl ShellOverlayHost {
         })
     }
 
+    /// What the Tilo app's window `tab` (of `app_id`, in `room`) shows, as
+    /// the node a share of it names
+    /// ([`tilo_desktop_model::window_share::shows_node`]): the record its
+    /// app says the window shows, at the item its bar anchors. A window
+    /// whose app has said nothing yet shows the app's own record. `None`
+    /// for a window not launched as a Tilo package: an outside window,
+    /// streamed when shared.
+    pub(super) fn window_shows(
+        &self,
+        tree: &WorkspaceTree,
+        room: crate::shell::state::RoomId,
+        tab: TabId,
+        app_id: &str,
+    ) -> Option<String> {
+        use tilo_desktop_model::window_share::{WindowShows, shows_node};
+        if tree.package_launches.get(&tab).map(String::as_str) != Some(app_id) {
+            return None;
+        }
+        let (record, kind) = self
+            .live_shares
+            .records
+            .get(&tab)
+            .map(|(_, record, kind)| (record.clone(), kind.clone()))
+            .unwrap_or_default();
+        let item = self
+            .window_toolbars
+            .toolbar(tab)
+            .and_then(|toolbar| toolbar.location.as_ref())
+            .and_then(|location| location.anchor.clone())
+            .filter(|anchor| !anchor.is_empty());
+        // Without a kind no node names a record or an item of it: the
+        // window shows its app's own record, as far as the share can say.
+        let shows = if kind.is_empty() {
+            WindowShows::default()
+        } else {
+            WindowShows { record, item }
+        };
+        Some(shows_node(&room.to_string(), app_id, tab, &kind, &shows).to_string())
+    }
+
+    /// Fill in what a Tilo app's window shows on a request to share it
+    /// ([`Self::window_shows`]), whichever door asked: the window's menus,
+    /// its bar's, the palette's `tab.share`.
+    pub(super) fn say_what_a_shared_window_shows(&self, job: &mut super::peer_sync_dispatch::Job) {
+        use crate::shell::peer_sync_overlay::PeerSyncRequest;
+        let PeerSyncRequest::ShareWindow {
+            room,
+            tab,
+            app_id,
+            share: true,
+            shows: None,
+        } = &job.request
+        else {
+            return;
+        };
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let shows = self.window_shows(&chrome.borrow().tree(), *room, *tab, app_id);
+        if let PeerSyncRequest::ShareWindow { shows: slot, .. } = &mut job.request {
+            *slot = shows;
+        }
+    }
+
     /// List the windows on a record and keep the share items in their
     /// menus, hand the sharing app what the menus asked, and run the views
     /// the sharing app's shown windows embed. Runs every frame, after the
