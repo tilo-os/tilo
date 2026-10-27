@@ -12,13 +12,16 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui::LocalState;
-use ui::framework::{ActionControl, Actions, Dispatcher, EffectAnswer, Effected, Refused, RunMode};
+use ui::framework::{
+    ActionControl, Actions, Dispatcher, EffectAnswer, EffectCx, Effected, Refused, RunMode,
+};
 use ui::storage::{AppStorage, Settings as StoredSettings, SettingsRevision, SettingsSchema};
 use ui::tilo_resource::{Binds, Effect};
 
 use crate::area::missing;
 use crate::effects::SettingsEffect;
 use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
 
 /// The door a hosted pane's controls go through.
 #[derive(Clone)]
@@ -356,16 +359,52 @@ impl PaneCx {
             .downcast_ref::<HeldSection<T>>()
     }
 
-    /// Change section `T` with `action` as the person, through the record
-    /// the panes follow: the same typed action its own controls use, so the
-    /// change writes the fields it made rather than the whole value.
+    /// Change section `T` with `action` through the record the panes follow:
+    /// the same typed action its own controls use, so the change writes the
+    /// fields it made rather than the whole value. The answer comes once the
+    /// record's door applied it (or refused it), as the effect's invoker: an
+    /// action submitted for a remote or agent caller keeps that caller's
+    /// actor and lease, and is never retried as some other person's.
     ///
     /// # Errors
-    /// When the window holds no such section.
-    pub fn apply_section<T: Section>(&self, action: &T::Action) -> Result<(), String> {
+    /// When the window holds no such section, or its record is unavailable.
+    pub fn apply_section<T: Section>(
+        &self,
+        action: &T::Action,
+        cx: &mut EffectCx<Settings, SettingsApp>,
+        then: impl FnOnce(&mut SettingsApp, &mut EffectCx<Settings, SettingsApp>) -> EffectAnswer
+        + 'static,
+    ) -> EffectAnswer {
         let section = self.section::<T>().ok_or_else(missing)?;
-        section.dispatcher.apply(action);
-        Ok(())
+        // The record's dispatcher shares the effect door's queue and waits;
+        // it takes the effect's custody too, so a remote or agent caller's
+        // lease is checked as its own.
+        section
+            .dispatcher
+            .following_custody(&cx.dispatcher())
+            .apply(action);
+        // The held dispatcher shares the effect door's queue: this waits for
+        // the very submission queued above, not for a receipt any caller can
+        // manufacture. An unqueued refusal (a read-only or absent record)
+        // leaves nothing to wait for, and fails here rather than claiming it
+        // was saved.
+        cx.when_landed(move |app, _landed, cx| then(app, cx))
+    }
+
+    /// Queue one typed change of section `T` and keep the door's receipt,
+    /// for work that finishes outside an effect (a sign-in landing on a
+    /// later frame) and must answer only once the record kept it. The
+    /// section and record still have to exist; a detached pane has no
+    /// receipt to claim.
+    ///
+    /// # Errors
+    /// When the window holds no such section, or the action cannot encode.
+    pub fn submit_section<T: Section>(
+        &self,
+        action: &T::Action,
+    ) -> Result<std::sync::mpsc::Receiver<Result<ui::framework::Landed, String>>, String> {
+        let section = self.section::<T>().ok_or_else(missing)?;
+        section.dispatcher.apply_with_receipt(action)
     }
 
     /// `control`, setting the field of section `T` at `path` to each

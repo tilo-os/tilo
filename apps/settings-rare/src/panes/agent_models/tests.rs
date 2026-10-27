@@ -295,24 +295,29 @@ fn collect_accessibility(widget: &dyn Widget, nodes: &mut Vec<ui::a11y::AccessNo
 /// offers to take one; once the vault holds it, it says it is stored.
 #[test]
 fn a_hosted_provider_without_a_key_here_asks_for_one() {
-    let mut pane = model_over(mock(snapshot(None)));
-    pane.change_providers(ProviderEffect::AddProvider {
-        preset: "anthropic".into(),
+    let mut app = provider_app();
+    run_provider(
+        &mut app,
+        ProviderEffect::AddProvider {
+            preset: "anthropic".into(),
+        },
+    );
+    let profile = app.settings::<AgentProviders>().get().config.profiles[0].clone();
+    with_provider_model(&mut app, |pane| {
+        pane.keys
+            .insert(profile.id.clone(), Ok(CredentialStatus::Missing));
+        assert!(pane.needs_key(&profile));
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(
+            text.iter().any(|line| line == "Needs a key on this device"),
+            "{text:#?}"
+        );
+
+        pane.keys
+            .insert(profile.id.clone(), Ok(CredentialStatus::Configured));
+        assert!(!pane.needs_key(&profile));
     })
     .unwrap();
-    let profile = pane.providers.get().config.profiles[0].clone();
-    pane.keys
-        .insert(profile.id.clone(), Ok(CredentialStatus::Missing));
-    assert!(pane.needs_key(&profile));
-    let text = crate::widgets::announced_text(pane.compose().as_ref());
-    assert!(
-        text.iter().any(|line| line == "Needs a key on this device"),
-        "{text:#?}"
-    );
-
-    pane.keys
-        .insert(profile.id.clone(), Ok(CredentialStatus::Configured));
-    assert!(!pane.needs_key(&profile));
     let save = SettingsEffect::from(ProviderEffect::SaveProviderKey {
         provider: profile.id,
         key: None,
@@ -323,25 +328,30 @@ fn a_hosted_provider_without_a_key_here_asks_for_one() {
 
 #[test]
 fn a_legacy_key_requires_an_explicit_endpoint_and_offers_removal() {
-    let mut pane = model_over(mock(snapshot(None)));
-    pane.change_providers(ProviderEffect::AddProvider {
-        preset: "anthropic".into(),
+    let mut app = provider_app();
+    run_provider(
+        &mut app,
+        ProviderEffect::AddProvider {
+            preset: "anthropic".into(),
+        },
+    );
+    let profile = app.settings::<AgentProviders>().get().config.profiles[0].clone();
+    with_provider_model(&mut app, |pane| {
+        pane.keys
+            .insert(profile.id.clone(), Ok(CredentialStatus::MigrationRequired));
+        assert!(pane.needs_key(&profile));
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(
+            text.iter()
+                .any(|line| line.contains("unbound legacy API key")),
+            "{text:#?}"
+        );
+        assert!(
+            text.iter().any(|line| line == "Remove unbound legacy key"),
+            "{text:#?}"
+        );
     })
     .unwrap();
-    let profile = pane.providers.get().config.profiles[0].clone();
-    pane.keys
-        .insert(profile.id.clone(), Ok(CredentialStatus::MigrationRequired));
-    assert!(pane.needs_key(&profile));
-    let text = crate::widgets::announced_text(pane.compose().as_ref());
-    assert!(
-        text.iter()
-            .any(|line| line.contains("unbound legacy API key")),
-        "{text:#?}"
-    );
-    assert!(
-        text.iter().any(|line| line == "Remove unbound legacy key"),
-        "{text:#?}"
-    );
     let migration = SettingsEffect::from(ProviderEffect::MigrateProviderKey {
         provider: profile.id,
         original_endpoint: String::new(),
@@ -359,12 +369,15 @@ fn a_legacy_key_requires_an_explicit_endpoint_and_offers_removal() {
 /// location and model chosen; it shows its sign-in rather than a key,
 /// and removing it forgets its own grant and no other.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one test walks the sign-in, save, update and removal in order"
+)]
 fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
     use account_custody::TokenSet;
     use account_custody::cloud_projects::CloudProject;
+    let mut app = provider_app();
     let vault = tempfile::tempdir().unwrap();
-    let mut pane = model_over(mock(snapshot(None)));
-    pane.custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
     let grant = |refresh: &str| TokenSet {
         access_token: "access".into(),
         scope: Some("https://www.googleapis.com/auth/cloud-platform".into()),
@@ -373,47 +386,84 @@ fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
         obtained_at: 0,
     };
     let mail = accounts::AccountId::new("ada@example.com");
-    pane.custodian
-        .seal_oauth(&mail, &grant("mail-refresh"))
-        .unwrap();
-
-    pane.vertex = Some(VertexSetup::adding());
-    let id = pane.vertex.as_ref().unwrap().profile_id.clone();
-    let add = |project: &str| VertexChange::Vertex {
-        provider: None,
-        project: project.into(),
-        location: None,
-        model: None,
-    };
+    let id = with_provider_model(&mut app, |pane| {
+        pane.custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
+        pane.custodian
+            .seal_oauth(&mail, &grant("mail-refresh"))
+            .unwrap();
+        pane.vertex = Some(VertexSetup::adding());
+        pane.vertex.as_ref().unwrap().profile_id.clone()
+    })
+    .unwrap();
     assert_eq!(
-        pane.change_vertex(&add("tilo-509618")),
-        Err(t("agent-vertex-sign-in-first")),
+        with_provider_model(&mut app, |pane| pane
+            .vertex_action(&VertexChange::Vertex {
+                provider: None,
+                project: "tilo-509618".into(),
+                location: None,
+                model: None,
+            })
+            .unwrap_err())
+        .unwrap(),
+        t("agent-vertex-sign-in-first"),
         "nothing is saved before the sign-in"
     );
-    pane.custodian
-        .seal_oauth(&agent_vertex::grant_id(&id), &grant("vertex-refresh"))
-        .unwrap();
-    pane.vertex
-        .as_mut()
-        .unwrap()
-        .signed_in_for_test(vec![CloudProject {
-            id: "tilo-509618".into(),
-            name: "Tilo".into(),
-        }]);
-    let text = crate::widgets::announced_text(pane.compose().as_ref());
-    assert!(
-        text.iter().any(|line| line == "Tilo (tilo-509618)"),
-        "{text:#?}"
-    );
+    with_provider_model(&mut app, |pane| {
+        pane.custodian
+            .seal_oauth(&agent_vertex::grant_id(&id), &grant("vertex-refresh"))
+            .unwrap();
+        pane.vertex
+            .as_mut()
+            .unwrap()
+            .signed_in_for_test(vec![CloudProject {
+                id: "tilo-509618".into(),
+                name: "Tilo".into(),
+            }]);
+        pane.changed = true;
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(
+            text.iter().any(|line| line == "Tilo (tilo-509618)"),
+            "{text:#?}"
+        );
+    })
+    .unwrap();
     assert_eq!(
-        pane.change_vertex(&add("Not A Project")),
-        Err(t("agent-vertex-project-invalid"))
+        with_provider_model(&mut app, |pane| pane
+            .vertex_action(&VertexChange::Vertex {
+                provider: None,
+                project: "Not A Project".into(),
+                location: None,
+                model: None,
+            })
+            .unwrap_err())
+        .unwrap(),
+        t("agent-vertex-project-invalid")
     );
-    assert!(pane.providers.get().config.profiles.is_empty());
+    assert!(
+        app.settings::<AgentProviders>()
+            .get()
+            .config
+            .profiles
+            .is_empty()
+    );
 
-    pane.change_vertex(&add("tilo-509618")).unwrap();
-    assert!(pane.vertex.is_none(), "the setup ends once saved");
-    let stored = pane.cx.settings::<AgentProviders>().get().config;
+    with_provider_model(&mut app, |pane| {
+        let (action, _) = pane
+            .vertex_action(&VertexChange::Vertex {
+                provider: None,
+                project: "tilo-509618".into(),
+                location: None,
+                model: None,
+            })
+            .unwrap();
+        pane.cx
+            .submit_section::<AgentProviders>(&stamped(action))
+            .unwrap();
+        pane.vertex = None;
+    })
+    .unwrap();
+    app.settle();
+    let stored = app.settings::<AgentProviders>().get().config;
     let profile = &stored.profiles[0];
     assert_eq!(profile.id, id, "the grant was sealed for this provider");
     assert!(profile.signs_in_with_google());
@@ -432,36 +482,41 @@ fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
     );
     assert!(stored.validation_errors().is_empty());
 
-    shows_its_sign_in_and_forgets_only_its_grant(&mut pane, &id, &mail);
+    shows_its_sign_in_and_forgets_only_its_grant(&mut app, &id, &mail);
 }
 
 fn shows_its_sign_in_and_forgets_only_its_grant(
-    pane: &mut AgentModelsModel,
+    app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
     id: &str,
     mail: &accounts::AccountId,
 ) {
     use account_custody::GrantState;
     let id = id.to_string();
-    pane.vertex_keys.insert(id.clone(), Ok(false));
-    let text = crate::widgets::announced_text(pane.compose().as_ref());
-    assert!(text.iter().any(|line| line == "Sign in again"), "{text:#?}");
-    assert!(!text.iter().any(|line| line == "Save key"), "{text:#?}");
-    pane.vertex_keys.insert(id.clone(), Ok(true));
-    let text = crate::widgets::announced_text(pane.compose().as_ref());
-    assert!(
-        text.iter()
-            .any(|line| line == "Signed in with Google on this device."),
-        "{text:#?}"
-    );
-
-    pane.change_vertex(&VertexChange::Vertex {
-        provider: Some(id.clone()),
-        project: "other-project".into(),
-        location: Some("europe-west4".into()),
-        model: Some("gemini-2.5-pro".into()),
+    with_provider_model(app, |pane| {
+        pane.vertex_keys.insert(id.clone(), Ok(false));
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(text.iter().any(|line| line == "Sign in again"), "{text:#?}");
+        assert!(!text.iter().any(|line| line == "Save key"), "{text:#?}");
+        pane.vertex_keys.insert(id.clone(), Ok(true));
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(
+            text.iter()
+                .any(|line| line == "Signed in with Google on this device."),
+            "{text:#?}"
+        );
     })
     .unwrap();
-    let profile = pane.cx.settings::<AgentProviders>().get().config.profiles[0].clone();
+
+    run_provider(
+        app,
+        AgentModelsEffect::SetVertexProvider {
+            provider: Some(id.clone()),
+            project: "other-project".into(),
+            location: Some("europe-west4".into()),
+            model: Some("gemini-2.5-pro".into()),
+        },
+    );
+    let profile = app.settings::<AgentProviders>().get().config.profiles[0].clone();
     assert_eq!(
         profile.endpoint,
         "https://europe-west4-aiplatform.googleapis.com/v1/projects/other-project/locations/europe-west4/endpoints/openapi"
@@ -475,22 +530,33 @@ fn shows_its_sign_in_and_forgets_only_its_grant(
         Some("other-project")
     );
 
-    pane.change_vertex(&VertexChange::Remove {
-        provider: id.clone(),
+    run_provider(
+        app,
+        ProviderEffect::RemoveProvider {
+            provider: id.clone(),
+        },
+    );
+    assert!(
+        app.settings::<AgentProviders>()
+            .get()
+            .config
+            .profiles
+            .is_empty()
+    );
+    with_provider_model(app, |pane| {
+        assert_eq!(
+            pane.custodian
+                .oauth_grant_state(&agent_vertex::grant_id(&id))
+                .unwrap(),
+            GrantState::Missing
+        );
+        assert_eq!(
+            pane.custodian.oauth_grant_state(mail).unwrap(),
+            GrantState::Usable,
+            "Mail's grant of the same person is untouched"
+        );
     })
     .unwrap();
-    assert!(pane.providers.get().config.profiles.is_empty());
-    assert_eq!(
-        pane.custodian
-            .oauth_grant_state(&agent_vertex::grant_id(&id))
-            .unwrap(),
-        GrantState::Missing
-    );
-    assert_eq!(
-        pane.custodian.oauth_grant_state(mail).unwrap(),
-        GrantState::Usable,
-        "Mail's grant of the same person is untouched"
-    );
 }
 
 /// Cancelling the setup of a provider being added leaves no grant.
@@ -524,6 +590,106 @@ pub(super) fn model_over(control: Arc<MockControl>) -> AgentModelsModel {
     let mut model = AgentModelsModel::new(cx, control);
     model.follow_local_profile = false;
     model
+}
+
+/// A mounted Settings window whose provider record is the real one its
+/// effects write, for tests that must prove the durable path rather than a
+/// detached pane's private copy.
+pub(super) fn provider_app() -> ui::framework::testing::TestApp<crate::SettingsShell> {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::SettingsShell>::for_person("provider-author")
+            .unwrap();
+    app.effect(&SettingsEffect::from(
+        crate::effects::NavigationEffect::OpenPane {
+            pane: "agent_models".into(),
+        },
+    ))
+    .unwrap();
+    app.settle();
+    app
+}
+
+/// The published row a provider effect is offered on: its provider's row,
+/// or the window's own when it names none.
+fn provider_row_of<E: ui::tilo_resource::Effect>(effect: &E) -> String {
+    #[derive(serde::Deserialize)]
+    struct OnProvider {
+        provider: Option<String>,
+    }
+    serde_json::from_value::<OnProvider>(serde_json::Value::Object(effect.arguments()))
+        .ok()
+        .and_then(|on| on.provider)
+        .map_or_else(
+            || "settings.root".into(),
+            |id| format!("settings.agent-provider:{id}"),
+        )
+}
+
+fn provider_arguments<E: ui::tilo_resource::Effect>(effect: &E, row: &str) -> serde_json::Value {
+    let mut arguments = effect.arguments();
+    if row != "settings.root" {
+        arguments.remove("provider");
+        arguments.remove("on");
+        if arguments.get("key").is_some_and(serde_json::Value::is_null) {
+            arguments.remove("key");
+        }
+    }
+    serde_json::Value::Object(arguments)
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "a test names the effect it invokes as the panel does"
+)]
+fn run_provider<E: ui::tilo_resource::Effect>(
+    app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
+    effect: E,
+) {
+    let row = provider_row_of(&effect);
+    if effect.id() == "remove-provider" {
+        // The host asks before a provider and its key are removed.
+        app.call_confirmed_on(&row, effect.id(), serde_json::json!({}))
+            .unwrap();
+    } else {
+        app.call_by(
+            ui::tilo_actions::ActionInvoker::actor("provider-author"),
+            &row,
+            effect.id(),
+            provider_arguments(&effect, &row),
+        )
+        .unwrap();
+    }
+    app.settle();
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "a test names the effect it invokes as the panel does"
+)]
+fn try_provider<E: ui::tilo_resource::Effect>(
+    app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
+    effect: E,
+) -> Result<(), ui::tilo_actions::DoorError> {
+    let row = provider_row_of(&effect);
+    app.call_by(
+        ui::tilo_actions::ActionInvoker::actor("provider-author"),
+        &row,
+        effect.id(),
+        provider_arguments(&effect, &row),
+    )
+    .map(|_| ())
+}
+
+pub(super) fn with_provider_model<T>(
+    app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
+    visit: impl FnOnce(&mut AgentModelsModel) -> T,
+) -> Option<T> {
+    app.with_widget::<SettingsApp, _>(|settings| {
+        let area = crate::panes::agent_models::area(settings)?;
+        let mut model = area.model().borrow_mut();
+        Some(visit(&mut model))
+    })
+    .flatten()
 }
 
 pub(super) fn mock(snapshot: LocalModelSnapshot) -> Arc<MockControl> {
@@ -689,8 +855,6 @@ fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
 #[test]
 fn model_request_limits_use_the_published_settings_effects() {
     use ui::framework::testing::TestApp;
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("settings.json");
     let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
     profile.models = vec![
         ModelDescriptor::new("test-model"),
@@ -698,23 +862,16 @@ fn model_request_limits_use_the_published_settings_effects() {
     ];
     profile.models[0].context_window = Some(262_144);
     let profile_id = profile.id.clone();
-    ProviderConfig {
-        profiles: vec![profile],
-        default_profile: None,
-        ..Default::default()
-    }
-    .save_at(&path)
-    .unwrap();
     let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
-    app.surface_mut::<SettingsApp>()
-        .attach_host(PaneCx::in_file(path.clone()), None);
-    app.surface_mut::<SettingsApp>()
-        .areas()
-        .find::<crate::panes::agent_models::AgentModelsArea>()
-        .unwrap()
-        .model()
-        .borrow_mut()
-        .follow_local_profile = false;
+    app.settings::<AgentProviders>()
+        .set(&AgentProviders {
+            config: ProviderConfig {
+                profiles: vec![profile],
+                default_profile: None,
+                ..Default::default()
+            },
+        })
+        .unwrap();
     let open = crate::categories::Category::AgentModels;
     app.effect_on(
         &crate::effects::pane_row_id(open),
@@ -727,7 +884,7 @@ fn model_request_limits_use_the_published_settings_effects() {
         hex::encode(&profile_id),
         hex::encode("test-model")
     );
-    app.call_on(
+    app.call_on_finished(
         &resource,
         "set-model-request-limits",
         serde_json::json!({"max_output_tokens":512,"runtime_context_tokens":4096,"plan_timeout_ms":120_000}),
@@ -764,7 +921,7 @@ fn model_request_limits_use_the_published_settings_effects() {
         .unwrap();
     assert!(other_value["request_limits"].is_null());
     assert_eq!(other_value["plan_timeout_ceiling_ms"], 60_000);
-    let saved = fs::read(&path).unwrap();
+    let saved = app.settings::<AgentProviders>().get();
     for invalid in [
         serde_json::json!({"max_output_tokens":4096,"runtime_context_tokens":4096}),
         serde_json::json!({"max_output_tokens":512,"plan_timeout_ms":0}),
@@ -773,15 +930,15 @@ fn model_request_limits_use_the_published_settings_effects() {
         serde_json::json!({"model":"absent-model","max_output_tokens":512}),
     ] {
         assert!(
-            app.call_on(&resource, "set-model-request-limits", invalid)
+            app.call_on_finished(&resource, "set-model-request-limits", invalid)
                 .is_err()
         );
-        assert_eq!(fs::read(&path).unwrap(), saved);
+        assert_eq!(app.settings::<AgentProviders>().get(), saved);
     }
-    app.call_on(&resource, "set-model-request-limits", serde_json::json!({}))
+    app.call_on_finished(&resource, "set-model-request-limits", serde_json::json!({}))
         .unwrap();
     assert!(
-        ProviderConfig::load_at(&path).profiles[0].models[0]
+        app.settings::<AgentProviders>().get().config.profiles[0].models[0]
             .request_limits
             .is_none()
     );
@@ -792,33 +949,257 @@ fn model_request_limits_use_the_published_settings_effects() {
 /// and removed through effects, which refuse a provider that is gone.
 #[test]
 fn providers_are_the_persons_settings() {
-    let mut pane = model_over(mock(snapshot(None)));
-    pane.change_providers(ProviderEffect::AddProvider {
-        preset: "anthropic".into(),
-    })
-    .unwrap();
-    let id = pane.providers.get().config.profiles[0].id.clone();
-    pane.change_providers(ProviderEffect::SetProviderDetails {
-        provider: id.clone(),
-        label: "Work".into(),
-        endpoint: "https://api.example.test".into(),
-        model: Some("big-model".into()),
-    })
-    .unwrap();
-    pane.change_providers(ProviderEffect::SetDefaultProvider {
-        provider: id.clone(),
-    })
-    .unwrap();
-    let stored = pane.cx.settings::<AgentProviders>().get().config;
+    let mut app = provider_app();
+    run_provider(
+        &mut app,
+        ProviderEffect::AddProvider {
+            preset: "anthropic".into(),
+        },
+    );
+    let id = app.settings::<AgentProviders>().get().config.profiles[0]
+        .id
+        .clone();
+    run_provider(
+        &mut app,
+        ProviderEffect::SetProviderDetails {
+            provider: id.clone(),
+            label: "Work".into(),
+            endpoint: "https://api.example.test".into(),
+            model: Some("big-model".into()),
+        },
+    );
+    run_provider(
+        &mut app,
+        ProviderEffect::SetDefaultProvider {
+            provider: id.clone(),
+        },
+    );
+    let stored = app.settings::<AgentProviders>().get().config;
     assert_eq!(stored.default_profile.as_deref(), Some(id.as_str()));
     assert_eq!(stored.profiles[0].label, "Work");
     assert!(
-        pane.change_providers(ProviderEffect::SetProviderEnabled {
-            provider: "gone".into(),
-            on: true,
-        })
+        try_provider(
+            &mut app,
+            ProviderEffect::SetProviderEnabled {
+                provider: "gone".into(),
+                on: true,
+            },
+        )
         .is_err()
     );
+}
+
+/// Without a record to write, the provider effect refuses and writes
+/// nothing: there is no ambient whole-configuration fallback.
+#[test]
+fn a_provider_change_without_a_record_refuses_and_writes_nothing() {
+    use ui::framework::testing::TestApp;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("settings.json");
+    let mut app = TestApp::<crate::SettingsShell>::new().unwrap();
+    app.surface_mut::<SettingsApp>()
+        .attach_host(PaneCx::in_file(path.clone()), None);
+    // Build the area first, so its own opening read (if any) is not
+    // mistaken for the effect writing.
+    with_provider_model(&mut app, |_| ()).unwrap();
+    let before = fs::read(&path).ok();
+    let error = try_provider(
+        &mut app,
+        ProviderEffect::AddProvider {
+            preset: "anthropic".into(),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        fs::read(&path).ok(),
+        before,
+        "a pane without a record writes nothing"
+    );
+    with_provider_model(&mut app, |pane| {
+        assert_eq!(pane.notice.as_deref(), Some(error.as_str()));
+        assert!(
+            pane.notice.as_deref() != Some(t("agent-provider-offline-saved").as_str()),
+            "a refused change is never reported saved"
+        );
+    })
+    .unwrap();
+}
+
+/// The effect answers once the record's door kept the typed change, not
+/// when it was queued; a change the door refuses fails the effect without
+/// claiming it was saved.
+#[test]
+fn a_provider_effect_answers_after_the_record_kept_it_or_refused_it() {
+    use ui::tilo_actions::InvocationUpdate;
+    let mut app = provider_app();
+    let invocation = app
+        .start_effect(&SettingsEffect::from(ProviderEffect::AddProvider {
+            preset: "anthropic".into(),
+        }))
+        .unwrap();
+    assert!(
+        app.settings::<AgentProviders>()
+            .get()
+            .config
+            .profiles
+            .is_empty(),
+        "queued is not saved"
+    );
+    app.settle();
+    assert_eq!(
+        app.settings::<AgentProviders>().get().config.profiles.len(),
+        1
+    );
+    assert!(
+        app.effect_progress()
+            .iter()
+            .any(|update| matches!(update, InvocationUpdate::Succeeded { invocation: id, .. } if *id == invocation)),
+        "the effect answered with the record's receipt"
+    );
+
+    with_provider_model(&mut app, |pane| pane.notice = None).unwrap();
+    assert!(
+        try_provider(
+            &mut app,
+            ProviderEffect::SetProviderEnabled {
+                provider: "gone".into(),
+                on: false,
+            },
+        )
+        .is_err()
+    );
+    with_provider_model(&mut app, |pane| {
+        assert!(
+            pane.notice.as_deref() != Some(t("agent-provider-offline-saved").as_str()),
+            "a refused change is never reported saved"
+        );
+    })
+    .unwrap();
+    assert_eq!(
+        app.settings::<AgentProviders>().get().config.profiles.len(),
+        1
+    );
+}
+
+/// An agent acting for the person writes the provider record as that agent,
+/// through the same door the person's controls use.
+#[test]
+fn an_agent_acting_for_the_person_authors_the_provider_change() {
+    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    let mut app = provider_app();
+    let invoker = ActionInvoker::actor("agent:writer")
+        .with_kind(ActorKind::Agent)
+        .acting_for("provider-author");
+    app.call_by(
+        invoker,
+        "settings.root",
+        "add-provider",
+        serde_json::json!({"preset": "anthropic"}),
+    )
+    .unwrap();
+    app.settle();
+    assert_eq!(
+        app.settings::<AgentProviders>().get().config.profiles.len(),
+        1
+    );
+}
+
+/// An agent acting for someone else cannot write this person's provider
+/// record through the same effect, and nothing is kept or called saved.
+#[test]
+fn another_persons_agent_cannot_write_the_provider_record() {
+    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    let mut app = provider_app();
+    let invoker = ActionInvoker::actor("agent:other")
+        .with_kind(ActorKind::Agent)
+        .acting_for("someone-else");
+    assert!(
+        app.call_by(
+            invoker,
+            "settings.root",
+            "add-provider",
+            serde_json::json!({"preset": "anthropic"}),
+        )
+        .is_err()
+    );
+    app.settle();
+    assert!(
+        app.settings::<AgentProviders>()
+            .get()
+            .config
+            .profiles
+            .is_empty()
+    );
+    with_provider_model(&mut app, |pane| {
+        assert!(
+            pane.notice.as_deref() != Some(t("agent-provider-offline-saved").as_str()),
+            "a refused change is never reported saved"
+        );
+    })
+    .unwrap();
+}
+
+/// A manager refresh recomputes the service's fields against the document
+/// as it is now, so a profile name and a model request limit edited
+/// meanwhile survive.
+#[test]
+fn manager_refresh_keeps_a_profile_name_and_limits_edited_meanwhile() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("settings.json");
+    let package = package();
+    let model_id = package.id.clone();
+    let mut profile = ProviderProfile::local_vllm();
+    profile.models = vec![ModelDescriptor::new(model_id.clone())];
+    ProviderConfig {
+        profiles: vec![profile],
+        ..Default::default()
+    }
+    .save_at(&path)
+    .unwrap();
+    let cx = PaneCx::in_file(path.clone());
+    let mut model = AgentModelsModel::new(cx, mock(snapshot(None)));
+
+    // Another window edits the person's name and request limit while this
+    // model still holds the configuration it read when it opened.
+    let mut edited = ProviderConfig::load_at(&path);
+    edited.profiles[0].label = "Mine".into();
+    edited.profiles[0].models[0].request_limits = Some(ModelRequestLimits {
+        max_output_tokens: 512,
+        runtime_context_tokens: Some(4096),
+        plan_timeout_ms: Some(120_000),
+    });
+    edited.profiles[0].models[0].context_window = Some(262_144);
+    edited.save_at(&path).unwrap();
+
+    let endpoint = "http://127.0.0.1:43127/v1".to_owned();
+    model.snapshot.models = vec![InstalledLocalModel {
+        package,
+        phase: LocalModelPhase::Ready {
+            running: true,
+            endpoint: Some(agent_provider_config::local::LocalEndpoint {
+                url: endpoint.clone(),
+                model_id,
+            }),
+        },
+    }];
+    model.sync_local_profile();
+    ui::storage::flush_settings_writes();
+
+    let stored = ProviderConfig::load_at(&path);
+    let profile = &stored.profiles[0];
+    assert_eq!(profile.label, "Mine", "the person's name is kept");
+    assert_eq!(profile.endpoint, endpoint, "the manager's endpoint is kept");
+    assert!(profile.enabled);
+    assert_eq!(
+        profile.models[0]
+            .request_limits
+            .as_ref()
+            .map(|limits| limits.max_output_tokens),
+        Some(512),
+        "the person's request limit is kept"
+    );
+    assert_eq!(profile.models[0].context_window, Some(262_144));
 }
 
 /// A model manager that takes requests at once but does not report

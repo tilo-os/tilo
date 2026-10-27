@@ -880,6 +880,18 @@ impl<R: Resource> Dispatcher<R> {
         &self.core
     }
 
+    /// This dispatcher of a record changing under the custody `door` holds:
+    /// an effect answering a remote or agent caller lends the lease it was
+    /// admitted with, so a typed change of the record is checked against
+    /// that caller, not retried as the person at the device.
+    #[must_use]
+    pub fn following_custody<P: Resource>(&self, door: &Dispatcher<P>) -> Self {
+        match &door.core.custody {
+            Some(custody) => self.for_custody((**custody).clone()),
+            None => self.clone(),
+        }
+    }
+
     pub(crate) fn for_custody(
         &self,
         custody: ui_core::invocation_scope::ResourceInvocationScope,
@@ -1319,6 +1331,44 @@ impl<R: Resource> Dispatcher<R> {
             return;
         }
         self.core.queue_invocation(address, arguments);
+    }
+
+    /// Submit one typed action value and keep what the door answered it,
+    /// for work outside an effect that must not claim a change before the
+    /// record kept it (a sign-in finishing on a later frame). The receipt is
+    /// the door's own ([`Landed`] or why it refused), not a second channel:
+    /// the submission is queued exactly as [`Self::apply`] queues it, and
+    /// the host resolves it with the same permissions and record door.
+    ///
+    /// # Errors
+    /// When the typed action cannot be encoded.
+    pub fn apply_with_receipt(
+        &self,
+        action: &R::Action,
+    ) -> Result<std::sync::mpsc::Receiver<Result<Landed, String>>, String> {
+        let invoke = Invoke::<R>::apply(action).map_err(|error| error.to_string())?;
+        if self.core.refusal(invoke.id, false) {
+            return Err(format!("`{}` is not accepted now", invoke.id));
+        }
+        if self.read_only() || !self.may_invoke(&invoke) {
+            return Err(format!("`{}` is not allowed here", invoke.id));
+        }
+        let invocation = tilo_actions::InvocationId::new();
+        self.core.waits.borrow_mut().submitted(invocation);
+        let receipt = self
+            .wait_landed(invocation)
+            .ok_or_else(|| "the door could not keep a receipt".to_owned())?;
+        self.core.queue.borrow_mut().push_back((
+            (
+                ControlInvocation {
+                    address: ActionAddress::new(self.core.resource_id.as_ref(), invoke.id),
+                    arguments: invoke.arguments,
+                },
+                Some(invocation),
+            ),
+            self.core.asking.get(),
+        ));
+        Ok(receipt)
     }
 
     /// Submit one typed action value — an edit with no named declaration,
