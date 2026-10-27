@@ -695,6 +695,8 @@ impl ChatApp {
                 self.share_card_height(m, f64::from(text_w), tr, theme)
             } else if !editing && m.reference.is_some() && m.source_provider.is_some() {
                 2.0 * (ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2))
+            } else if !editing && self.report_recordings.contains_key(&m.id) {
+                ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2)
             } else {
                 0.0
             },
@@ -815,11 +817,8 @@ impl ChatApp {
         if !rm.editing {
             parts.lines = self.body_lines(&m.id);
         }
-        if rm.resource_h > 0.0 && m.share.is_some() {
-            let place = (column.text_x, f64::from(column.text_width), column.area);
-            self.draw_share_card(PaintCtx::new(scene, tf, tr, theme), &m, place, y, hits);
-        } else if rm.resource_h > 0.0 {
-            self.draw_resource_navigation(PaintCtx::new(scene, tf, tr, theme), &m, column, y, hits);
+        if rm.resource_h > 0.0 {
+            self.draw_message_resource(PaintCtx::new(scene, tf, tr, theme), &m, column, y, hits);
         }
         self.draw_row_footer(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y, hits);
         *y += rm.pad;
@@ -866,6 +865,60 @@ impl ChatApp {
         if !parts.is_empty() {
             self.painted_messages.insert(id.to_owned(), parts);
         }
+    }
+
+    /// What a message shows under its body: the window it shares, the
+    /// recording its report carries, or the resource it is about.
+    fn draw_message_resource(
+        &self,
+        paint: PaintCtx<'_>,
+        m: &Message,
+        column: MessageColumn,
+        y: &mut f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        if m.share.is_some() {
+            let place = (column.text_x, f64::from(column.text_width), column.area);
+            self.draw_share_card(paint, m, place, y, hits);
+        } else if self.report_recordings.contains_key(&m.id) {
+            self.draw_recording_replay(paint, m, column, y, hits);
+        } else {
+            self.draw_resource_navigation(paint, m, column, y, hits);
+        }
+    }
+
+    /// The control under a report's message that replays the recording it
+    /// carries in the app it recorded.
+    fn draw_recording_replay(
+        &self,
+        paint: PaintCtx<'_>,
+        m: &Message,
+        column: MessageColumn,
+        y: &mut f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let height = ButtonFace::height(ControlSize::Regular, theme);
+        *y += f64::from(theme.tokens.spacing.s2);
+        let caption = self.resource_navigation.replay_label(&m.id, false);
+        let width = ButtonFace::new(Rect::ZERO, &caption)
+            .intrinsic_width(tr, theme)
+            .min(f64::from(column.text_width));
+        let rect = Rect::new(column.text_x, *y, column.text_x + width, *y + height);
+        Button::paint(
+            scene,
+            tf,
+            tr,
+            theme,
+            &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
+        );
+        ChatApp::push_hit(hits, rect, Hit::ReplayRecording(m.id.clone()));
+        *y += height;
     }
 
     fn draw_resource_navigation(

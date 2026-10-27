@@ -156,7 +156,10 @@ pub fn record(
     if !same_state(document, &before, doc.committed_document(), &heads)? {
         return Err(RecordingError::Diverged);
     }
-    let size = doc.save().len();
+    let size = doc
+        .save()
+        .len()
+        .saturating_add(tilo_content::RECORDING_MAGIC.len());
     if size > limits.bytes {
         return Err(RecordingError::TooLarge(size));
     }
@@ -241,7 +244,10 @@ impl Recording {
         if bytes.len() > limits.bytes {
             return Err(RecordingError::TooLarge(bytes.len()));
         }
-        let doc = Doc::load(bytes).map_err(|error| RecordingError::Invalid(error.to_string()))?;
+        let saved = bytes
+            .strip_prefix(tilo_content::RECORDING_MAGIC)
+            .ok_or_else(|| RecordingError::Invalid("it has no recording header".into()))?;
+        let doc = Doc::load(saved).map_err(|error| RecordingError::Invalid(error.to_string()))?;
         let versions = committed_versions(&doc);
         let (first, rest) = versions
             .split_first()
@@ -277,10 +283,14 @@ impl Recording {
         &self.doc
     }
 
-    /// The saved bytes: what a report carries.
+    /// The saved bytes, behind the recording header
+    /// ([`tilo_content::RECORDING_MAGIC`]) that says what they are: what a
+    /// report carries and what the recorded app opens.
     #[must_use]
     pub fn bytes(&self) -> Vec<u8> {
-        self.doc.clone().save()
+        let mut bytes = tilo_content::RECORDING_MAGIC.to_vec();
+        bytes.extend(self.doc.clone().save());
+        bytes
     }
 
     /// The start state and every step after it, oldest first, as History
