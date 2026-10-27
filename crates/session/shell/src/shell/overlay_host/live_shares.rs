@@ -97,6 +97,13 @@ fn tabs(
     })
 }
 
+impl NativeLiveShares {
+    /// Whether the window of `tab` carries the "Share to channel…" item.
+    pub(super) fn offers(&self, tab: TabId) -> bool {
+        self.offered.contains(&tab)
+    }
+}
+
 impl ShellOverlayHost {
     /// `app_id` connected on shell-ui `connection`: it hears that this shell
     /// draws embeds, and the sharing app the windows and any ask waiting for
@@ -236,7 +243,12 @@ impl ShellOverlayHost {
             &mut self.live_shares.offered,
         );
         self.live_shares.windows = windows;
-        let chosen = self.window_toolbars.take_host_actions();
+        let (workspace_shares, chosen): (Vec<_>, Vec<_>) = self
+            .window_toolbars
+            .take_host_actions()
+            .into_iter()
+            .partition(|(_, item)| super::window_share_controls::is_share_item(item));
+        self.share_from_bar_menus(workspace_shares);
         let asks = host::asks(chosen, &self.live_shares.windows, &shared);
         let mut changed = !asks.is_empty();
         for ask in asks {
