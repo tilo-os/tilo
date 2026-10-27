@@ -30,6 +30,9 @@ serde_json.workspace = true
 subtle = "2.6"
 # The operator protocol spoken with each room's `tilo-relay room` child.
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
+# The first-party catalogue, read from the apps' manifests: the apps a
+# public room offers its members by default.
+tilo-desktop-model = { path = "../../session/desktop-model" }
 # The HTTPS identity loader and server config the relay's listener uses too.
 tilo-moq = { path = "../tilo-moq", features = ["tls"] }
 # The TLS client to a room's host trusts only its pinned certificate; the
