@@ -18,8 +18,11 @@ pub struct ButtonProps {
     pub icon: Option<Icon>,
     /// Show only the icon, the label naming the button to assistive technology.
     pub icon_only: bool,
-    /// What kind of action it is: `secondary` unless said.
-    pub role: ButtonRole,
+    /// What kind of action it is: `secondary` unless said, `plain` for an icon-only one.
+    pub role: Option<ButtonRole>,
+    /// A toggle button, and whether it is on: on, it stands on a lift of its ground and is
+    /// announced as pressed.
+    pub toggled: Option<bool>,
     /// How prominent it is: `regular` unless said.
     pub size: ControlSize,
     /// Whether it can be pressed now. A button with nothing to do never can.
@@ -35,7 +38,8 @@ impl Default for ButtonProps {
             label: String::new(),
             icon: None,
             icon_only: false,
-            role: ButtonRole::default(),
+            role: None,
+            toggled: None,
             size: ControlSize::default(),
             enabled: true,
             press: Event::None,
@@ -52,17 +56,27 @@ impl Described for Button {
             icon,
             icon_only,
             role,
+            toggled,
             size,
             enabled,
             press,
         } = props;
         let enabled = enabled && !press.is_none();
-        let button = match icon {
+        let mut button = match icon {
             Some(icon) if icon_only => Self::icon_only(key, icon, &label),
             Some(icon) => Self::new(key, &label).with_icon(icon),
             None => Self::new(key, &label),
         };
-        let button = button.role(role).control_size(size).with_enabled(enabled);
+        if let Some(role) = role {
+            button = button.role(role);
+        }
+        if let Some(on) = toggled {
+            button = button.toggled(on);
+        }
+        if size != ControlSize::default() {
+            button = button.control_size(size);
+        }
+        let button = button.with_enabled(enabled);
         match press {
             Event::None => button,
             Event::Action(binding) => button.on_action(binding),
@@ -74,13 +88,27 @@ impl Described for Button {
     /// acts through its key, so the same event on the same key is the same press.
     fn set_props(&mut self, props: ButtonProps) -> bool {
         let size = props.size;
-        let same_face = props.label == self.label
+        let role = props.role.unwrap_or(if props.icon_only {
+            ButtonRole::Plain
+        } else {
+            ButtonRole::default()
+        });
+        let named = if props.icon_only {
+            self.label.is_empty() && self.accessible_name.as_deref() == Some(props.label.as_str())
+        } else {
+            props.label == self.label
+        };
+        let same_face = named
             && props.icon == self.icon
-            && props.role == self.role
+            && role == self.role
             && size == self.control_size
+            && props.toggled.is_some() == self.toggled.is_some()
             && props.press.is_none() == (self.action.is_none() && self.on_click.is_none());
         if !same_face || matches!(props.press, Event::Action(_)) {
             return false;
+        }
+        if let Some(on) = props.toggled {
+            self.set_toggled(on);
         }
         self.set_enabled(props.enabled && !props.press.is_none());
         true

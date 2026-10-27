@@ -2564,4 +2564,4 @@ mod mount_tests;
 
 #[path = "virtual_list_component.rs"]
 mod component;
-pub use component::{DescribedList, VirtualListProps};
+pub use component::{DescribedList, DescribedRows, ItemRow, ListItemProps, VirtualListProps};

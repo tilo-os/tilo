@@ -25,7 +25,7 @@ pub struct NavListProps {
 }
 
 /// One place in a navigation list.
-#[derive(Clone, Component, Debug, Default, PartialEq)]
+#[derive(Clone, Component, Debug, Default)]
 #[component(name = "NavItem", role = "TreeItem", label = "label")]
 pub struct NavItemProps {
     /// What names the place across changes: what selection reports.
@@ -38,6 +38,9 @@ pub struct NavItemProps {
     pub icon: Option<Icon>,
     /// How many things it holds.
     pub count: Option<i64>,
+    /// The place was chosen: what choosing it does, beside the list's own `select`.
+    #[component(event)]
+    pub select: Event,
 }
 
 impl From<NavItemProps> for NavItem {
@@ -64,6 +67,12 @@ impl Described for NavList {
             items,
             select,
         } = props;
+        // What choosing each place does, by its key.
+        let chosen: std::collections::HashMap<String, Event> = items
+            .iter()
+            .filter(|item| !item.select.is_none())
+            .map(|item| (item.key.clone(), item.select.clone()))
+            .collect();
         let items: Vec<NavItem> = items.into_iter().map(NavItem::from).collect();
         let section = match title {
             Some(title) => NavSection::new(key, title, items),
@@ -76,11 +85,19 @@ impl Described for NavList {
         if rail {
             list = list.rail();
         }
-        if select.is_none() {
-            list
-        } else {
-            list.on_select(move |id| select.fire(Some(Value::Text(id))))
+        if select.is_none() && chosen.is_empty() {
+            return list;
         }
+        let mut runs: std::collections::HashMap<String, Box<dyn FnMut()>> = chosen
+            .into_iter()
+            .filter_map(|(key, event)| Some((key, event.handler()?)))
+            .collect();
+        list.on_select(move |id| {
+            if let Some(run) = runs.get_mut(&id) {
+                run();
+            }
+            select.fire(Some(Value::Text(id)));
+        })
     }
 }
 
