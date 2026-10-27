@@ -70,7 +70,10 @@ done
 # dependencies compile once.
 (
   cd "$stage/src"
-  export CARGO_TARGET_DIR="$stage/target" CARGO_PROFILE_RELEASE_DEBUG=0
+  # The build directory is a fresh temporary one, whose name the paths of generated sources
+  # carry into the binary: written as one fixed name, the same source builds the same binary.
+  export CARGO_TARGET_DIR="$stage/target" CARGO_PROFILE_RELEASE_DEBUG=0 \
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=$stage=/xwayland-satellite"
   cargo test --locked --release --features "$features" --lib
   CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --locked --release --features "$features"
 )
