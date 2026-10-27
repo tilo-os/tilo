@@ -719,6 +719,7 @@ def _open_several(ctx, apps: tuple[str, ...] = FOUR_APPS, name: str = "R"):
             groups[app] = group["id"]
         except core.CheckFailed as e:
             failed[app] = str(e)[:300]
+    # A fixed window: an app that closes on its own within it is not measured as running.
     time.sleep(8)
     # Terminal's shell runs once its guest is built, which on an account's first session
     # imports the environment's runtime first. Waiting for it keeps that
@@ -838,7 +839,7 @@ def _ush_idle(ctx, res, m: dict, budgets: dict) -> list[str]:
 @check("R01", AREA, "Idle with no apps: compositor asleep, no frames, little CPU")
 def idle_empty(ctx, res):
     ctx.reset()
-    time.sleep(5)
+    ctx.wait_still(5)
     m = measure(ctx, ctx.config["idle_seconds"], "R01")
     m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
     res.metrics.update(m, renderer=ctx.facts.get("renderer"))
@@ -1055,7 +1056,9 @@ def mem(ctx, res):
         raise core.Unobservable("; ".join(unobserved))
 
 
-AFTER_CLOSE_SETTLE_S = 5
+# The compositor trims at most every 10 s, and up to 5 s after the closes that asked
+# (crates/session/shell/src/shell/heap_trim.rs).
+AFTER_CLOSE_TRIM_S = 20
 
 # The slot user's per-user runtime builds and app store, in bytes: what downloaded
 # runtimes and apps hold on disk once collection after each change ran (#4114,
@@ -1101,10 +1104,11 @@ def record_disk(ctx) -> dict:
 
 
 def _footprint_after_close(ctx, apps: list[str]) -> dict:
-    """Close every window, wait for `apps`' processes to exit and the compositor to
-    settle (it trims its heap after a close), then read the footprint. Only the apps the
-    check opened: a session's own host agents (the geoclue agent) run in the launcher's
-    scope too and never close."""
+    """Close every window, wait for `apps`' processes to exit and for the compositor's heap
+    trim after the closes, then read the footprint. Only the apps the check opened: a
+    session's own host agents (the geoclue agent) run in the launcher's scope too and never
+    close."""
+    trims = _heap_trim(ctx.state())["trims"]
     ctx.reset()
     last: dict = {}
 
@@ -1116,8 +1120,22 @@ def _footprint_after_close(ctx, apps: list[str]) -> dict:
     if not wait_until(gone, 20, 1.0):
         raise core.Unobservable("app processes were still running 20 s after their windows closed: "
                                 + ", ".join(last.get("left", [])[:8]))
-    time.sleep(AFTER_CLOSE_SETTLE_S)
+
+    def trimmed():
+        now = _heap_trim(ctx.state())
+        return now["trims"] > trims and not now["pending"]
+
+    # Not every close frees enough to ask for a trim: without one the footprint is read as is.
+    ctx.facts["heap_trimmed_after_close"] = bool(wait_until(trimmed, AFTER_CLOSE_TRIM_S, 0.5))
     return footprint(ctx)
+
+
+def _heap_trim(st: dict) -> dict:
+    trim = (st.get("chrome") or {}).get("heap_trim")
+    if trim is None:
+        raise core.Unobservable("the state dump does not report the compositor's heap trim "
+                                "(chrome.heap_trim), so the footprint after a close cannot wait for it")
+    return trim
 
 
 @check("R04", AREA, "Frame CPU p50/p95/p99 during overview, focus and workspace interactions")
@@ -1125,8 +1143,9 @@ def frame_work(ctx, res):
     ctx.reset()
     for _ in range(2):
         ctx.new_terminal_window()
-    time.sleep(2)
+    ctx.wait_still(5)
     mark = core.trace_mark(ctx)
+    # The interactions below are paced as a person's; the pauses are the workload.
     evidence_mark, cpu_before = core.session_log_mark(ctx), core.cpu_ticks(ctx)
     for _ in range(3):
         ctx.vm.key("super+Tab")
