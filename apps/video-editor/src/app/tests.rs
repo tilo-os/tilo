@@ -1181,9 +1181,11 @@ fn shortcut_sheet_opens_lists_and_fits_every_shortcut() {
     {
         // A sheet that quietly omits a binding is worse than none: it reads as
         // the complete list.
-        let flat: Vec<&str> = SHORTCUTS
+        // The sheet spells its keys for the platform, so a row is compared
+        // with what this platform spells for the same chord.
+        let flat: Vec<String> = SHORTCUTS
             .iter()
-            .flat_map(|(_, rows)| rows.iter().map(|(k, _)| *k))
+            .flat_map(|(_, rows)| rows.iter().map(|(k, _)| ui::spell_shortcut(k)))
             .collect();
         for expected in [
             "Space",
@@ -1204,9 +1206,10 @@ fn shortcut_sheet_opens_lists_and_fits_every_shortcut() {
             "G",
             "?",
         ] {
+            let spelled = ui::spell_shortcut(expected);
             assert!(
-                flat.contains(&expected),
-                "the sheet must list {expected}; it lists {flat:?}"
+                flat.contains(&spelled),
+                "the sheet must list {spelled}; it lists {flat:?}"
             );
         }
     }
@@ -1215,20 +1218,23 @@ fn shortcut_sheet_opens_lists_and_fits_every_shortcut() {
         // The sheet is how a keyboard user learns the editor has shortcuts at
         // all, so a binding missing from it is a binding nobody finds. Redo
         // has always worked on two spellings and was written down on neither.
-        let rows: Vec<(&str, &str)> = SHORTCUTS
+        let rows: Vec<(String, &str)> = SHORTCUTS
             .iter()
-            .flat_map(|(_, rows)| rows.iter().copied())
+            .flat_map(|(_, rows)| rows.iter().map(|(k, what)| (ui::spell_shortcut(k), *what)))
             .collect();
         for key in ["Shift+I / O", "Shift+X", "Ctrl+Shift+Z", "Ctrl+Y"] {
+            let spelled = ui::spell_shortcut(key);
             assert!(
-                rows.iter().any(|(k, _)| *k == key),
-                "the sheet lists {key}: {rows:?}",
+                rows.iter().any(|(k, _)| *k == spelled),
+                "the sheet lists {spelled}: {rows:?}",
             );
         }
         for key in ["Ctrl+Shift+Z", "Ctrl+Y"] {
+            let spelled = ui::spell_shortcut(key);
             assert!(
-                rows.iter().any(|(k, what)| *k == key && *what == "Redo"),
-                "{key} is listed as redo: {rows:?}",
+                rows.iter()
+                    .any(|(k, what)| *k == spelled && *what == "Redo"),
+                "{spelled} is listed as redo: {rows:?}",
             );
         }
     }

@@ -1054,6 +1054,34 @@ fn the_windows_search_finds_in_the_source() {
     assert!(app.editor.find("", FindOptions::default()).is_empty());
 }
 
+/// The window's search is offered the source through the app itself, which is
+/// what makes Ctrl+F open the bar over the file instead of the platform
+/// search (`APP-typst-01`).
+#[test]
+fn the_window_offers_the_searchable_source_to_the_bar() {
+    let (mut app, _doc) = fresh();
+    app.layout_in(Rect::new(0.0, 0.0, 1280.0, 760.0));
+    render_once(&mut app);
+    assert_eq!(
+        ui::window_toolbar::SearchOffer::of(&mut app),
+        ui::window_toolbar::SearchOffer::Document,
+        "the bar finds in the source rather than handing off to the platform search"
+    );
+    // And the offer is the editor's: the app answers with its matches.
+    let found = ui::widget::Findable::find(&mut app, "motion", ui::widget::FindOptions::default());
+    assert!(!found.is_empty(), "the app's find reaches the source");
+    ui::widget::Findable::reveal(&mut app, 0);
+    assert_eq!(
+        app.editor.caret(),
+        found[0].end,
+        "the caret is on the match"
+    );
+    ui::widget::Findable::clear_find(&mut app);
+    assert!(
+        ui::widget::Findable::find(&mut app, "", ui::widget::FindOptions::default()).is_empty()
+    );
+}
+
 #[test]
 fn resize_reflows_between_split_and_compact() {
     // The responsive contract: layout is re-derived from the *current* width
