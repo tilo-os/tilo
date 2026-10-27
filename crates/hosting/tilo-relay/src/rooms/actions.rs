@@ -1471,6 +1471,7 @@ fn membership_command(
 }
 
 /// One governance invocation, as its room method takes it.
+#[derive(Clone, Copy)]
 struct GovernanceCall<'a> {
     room: &'a str,
     device: &'a DeviceCert,
