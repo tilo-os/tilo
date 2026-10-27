@@ -598,7 +598,7 @@ pub fn lexical_strength(
     };
     match match_tier(&needle, title) {
         Some(MatchTier::Exact) => 4.0,
-        Some(MatchTier::Prefix | MatchTier::PrefixWord) => 2.5,
+        Some(MatchTier::Prefix | MatchTier::PrefixWord) => TITLE_BEGUN_FIT,
         Some(MatchTier::WordPrefix | MatchTier::Word) => 1.5,
         Some(MatchTier::Contains) => 1.0,
         Some(MatchTier::Spanning | MatchTier::Typo) => 0.5,
@@ -640,11 +640,21 @@ pub fn merged_strength(
         } else {
             0.0
         };
-    lexical_strength(needle, kind, title, subtitle)
-        + score as f32 / top as f32
-        + application_intent
-        + proximity
+    let lexical = lexical_strength(needle, kind, title, subtitle);
+    // An action's provider gives its top score only to its title begun or
+    // to a word it is known by typed whole ([`action_ranks`]): "power off"
+    // names Shut down as well as "shut" does, though its title says neither.
+    let lexical =
+        if score >= top && !needle.trim().is_empty() && matches!(kind, ResourceKind::Action) {
+            lexical.max(TITLE_BEGUN_FIT)
+        } else {
+            lexical
+        };
+    lexical + score as f32 / top as f32 + application_intent + proximity
 }
+
+/// [`lexical_strength`] of a title the query begins.
+const TITLE_BEGUN_FIT: f32 = 2.5;
 
 /// Order merged hits: groups by how well their best member matched, then
 /// the fixed kind order, then strength within a group. Enter activates the
