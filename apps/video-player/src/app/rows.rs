@@ -1,6 +1,9 @@
 //! The rows the window's chrome reads: what is playing, what the library holds and what each row says, the tab it shows, and the rect of its own control.
 
-use super::*;
+use super::{
+    DECODER_FAILURE, LibraryTab, LocalMediaEntry, PlayerApp, Rect, VideoPlayer,
+    shared_accessibility_targets,
+};
 
 impl PlayerApp {
     /// What the player shows that the document does not hold, for its live
@@ -74,8 +77,8 @@ impl PlayerApp {
     /// What this device keeps between launches, as the next launch reads it:
     /// `None` for a capture or a past version, which keep nothing.
     #[cfg(test)]
-    pub(crate) fn stored_settings(&self) -> Option<PlayerSettings> {
-        self.setting.as_ref().map(Setting::get)
+    pub(crate) fn stored_settings(&self) -> Option<super::PlayerSettings> {
+        self.setting.as_ref().map(super::Setting::get)
     }
 
     /// Whether a decoded picture is currently on the surface. The `--shots`

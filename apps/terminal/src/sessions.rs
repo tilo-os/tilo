@@ -32,6 +32,22 @@ pub enum OpenState {
     NoRuntime(String),
 }
 
+/// Whether the environments the picker and the environments panel name
+/// came from the session's shell runtime.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Directory {
+    /// Not asked yet.
+    #[default]
+    Unasked,
+    /// The runtime answered: the list is its, and environments can be made.
+    Reached,
+    /// The runtime was asked and did not answer; why is in the log.
+    Unreachable,
+    /// Nothing here manages environments: this terminal has no connection
+    /// to a shell runtime.
+    NotHere,
+}
+
 pub(crate) type OpenAnswer = (
     Requester,
     Option<String>,
@@ -81,6 +97,8 @@ pub struct Sessions {
     recent: RecentTarget,
     /// Environments the picker offers, as last listed.
     pub environments: Vec<EnvironmentSummary>,
+    /// Whether that list came from the shell runtime.
+    pub directory: Directory,
     /// The person's relays an environment can run on, as last listed.
     pub relays: Vec<crate::target::RelaySummary>,
     /// Legacy VMs the legacy VM service reports. Empty until that service
@@ -95,10 +113,10 @@ pub struct Sessions {
     listing: Option<std::sync::mpsc::Receiver<Listing>>,
 }
 
-/// What the supervisor listed: the environments, the person's relays and
-/// the legacy VMs. `None` where it could not say.
+/// What the supervisor listed: the environments (or why it could not), the
+/// person's relays (`None` where it could not say) and the legacy VMs.
 struct Listing {
-    environments: Option<Vec<EnvironmentSummary>>,
+    environments: Result<Vec<EnvironmentSummary>, String>,
     relays: Option<Vec<crate::target::RelaySummary>>,
     legacy_vms: Vec<String>,
 }
@@ -128,6 +146,7 @@ impl Sessions {
             target: None,
             recent,
             environments: Vec::new(),
+            directory: Directory::Unasked,
             legacy_vms: Vec::new(),
             relays: Vec::new(),
             allow: None,
@@ -332,10 +351,20 @@ impl Sessions {
         }
         if !self.environments_available() {
             self.environments.clear();
+            self.directory = Directory::NotHere;
             return;
         }
-        if let Ok(list) = self.directory_request(&serde_json::json!({"op": "list-environments"})) {
-            self.environments = list;
+        match self.source {
+            Source::Hosted { .. } => {
+                let listed =
+                    self.directory_request(&serde_json::json!({"op": "list-environments"}));
+                self.take_listing(listed);
+            }
+            // Only a shell-hosted tab reaches the runtime's directory.
+            Source::Standalone => self.directory = Directory::NotHere,
+            Source::None => {}
+            #[cfg(test)]
+            Source::Scripted(_) => {}
         }
         if matches!(self.source, Source::Hosted { .. })
             && let Ok(reply) =
@@ -366,8 +395,7 @@ impl Sessions {
                 let environments = crate::HostedProcessServices::ask(
                     &serde_json::json!({"op": "list-environments"}),
                 )
-                .and_then(|reply| parse_directory_reply(&reply))
-                .ok();
+                .and_then(|reply| parse_directory_reply(&reply));
                 let relays =
                     crate::HostedProcessServices::ask(&serde_json::json!({"op": "list-relays"}))
                         .ok()
@@ -400,13 +428,29 @@ impl Sessions {
         };
         self.listing = None;
         self.legacy_vms = listing.legacy_vms;
-        if let Some(environments) = listing.environments {
-            self.environments = environments;
-        }
+        self.take_listing(listing.environments);
         if let Some(relays) = listing.relays {
             self.relays = relays;
         }
         true
+    }
+
+    /// What a listing answered: the list, or why there is none, which the
+    /// log keeps; the last list stays, for the picker always offers the
+    /// default environment.
+    fn take_listing(&mut self, listed: Result<Vec<EnvironmentSummary>, String>) {
+        match listed {
+            Ok(list) => {
+                self.environments = list;
+                self.directory = Directory::Reached;
+            }
+            Err(reason) => {
+                if self.directory != Directory::Unreachable {
+                    tracing::warn!(%reason, "terminal: the shell runtime did not list the environments");
+                }
+                self.directory = Directory::Unreachable;
+            }
+        }
     }
 
     /// Create an environment named `name`; returns its record key.
@@ -420,6 +464,7 @@ impl Sessions {
             "op": "create-environment",
             "name": name,
         }))?;
+        self.directory = Directory::Reached;
         self.environments
             .iter()
             .find(|env| !before.contains(&env.key))

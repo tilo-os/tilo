@@ -12,6 +12,9 @@ use ui::widget::Widget as _;
 use vello::kurbo::Rect;
 use vte::Perform;
 
+#[path = "chrome_tests.rs"]
+mod chrome;
+
 fn shell_command(unix_script: &str, windows_script: &str) -> portable_pty::CommandBuilder {
     #[cfg(unix)]
     {
@@ -964,45 +967,6 @@ fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
     // Case `disconnected_badge_keeps_a_complete_concise_state_at_large_text_scale`.
     {
         assert_eq!(TerminalWidget::disconnected_badge_label(), "Session ended");
-    }
-}
-
-#[test]
-fn ended_session_banner_reserves_its_own_band_above_the_grid() {
-    use ui::widget::Widget;
-    use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
-    use vello::{Scene, kurbo::Affine};
-
-    let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
-        .expect("spawn short-lived pty command");
-    let doc = AutoCommit::new();
-    let deadline = ui::time::now() + hang_bound();
-    while ui::time::now() < deadline && !widget.is_disconnected() {
-        widget.sync(&doc, &ROOT);
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert!(widget.is_disconnected());
-
-    let viewport = Rect::new(0.0, 0.0, 390.0, 844.0);
-    let mut text = TextRenderer::new();
-    for scale in [1.0, 2.0] {
-        widget.force_geometry(viewport, 10.0, 20.0);
-        let theme = Theme::dark().with_text_scale(scale);
-        let mut scene = Scene::new();
-        widget.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-        let banner = widget.banner_test_rect();
-        assert!(banner.width() > 0.0, "an ended session shows its banner");
-        assert!(banner.x0 >= viewport.x0 && banner.x1 <= viewport.x1);
-        assert!(
-            banner.y1 <= widget.grid_rect().y0,
-            "the grid starts under the banner at text scale {scale}"
-        );
     }
 }
 
@@ -2605,7 +2569,7 @@ fn mouse_tracking_padding_and_grid_hit_testing() {
     // Case `place_at_insets_grid_by_padding_and_gutters`.
     {
         // The production reflow path must seat the cell grid inside the body
-        // padding on every side + the scrollbar gutter on the right — not fill
+        // padding on every side (the history bar lies over it) — not fill
         // the whole widget rect the way the old void did. No header strip: the
         // top inset is the body padding, not an app-drawn tab bar.
         let (mut w, _) = build_test_widget();
@@ -2613,10 +2577,7 @@ fn mouse_tracking_padding_and_grid_hit_testing() {
         let gr = w.grid_rect();
         assert!(gr.y0 > 0.0, "grid top inset by body padding: {gr:?}");
         assert!(gr.x0 > 0.0, "grid left inset by body padding: {gr:?}");
-        assert!(
-            gr.x1 < 1000.0,
-            "grid right inset by padding + scrollbar gutter: {gr:?}"
-        );
+        assert!(gr.x1 < 1000.0, "grid right inset by padding: {gr:?}");
         assert!(gr.y1 < 640.0, "grid bottom inset by body padding: {gr:?}");
         let (cols, rows) = w.grid_size();
         assert!(cols > 0 && rows > 0, "reflow produced a usable grid");
@@ -4045,7 +4006,7 @@ fn osc_52_writes_clipboard_from_base64() {
 }
 
 // ---------------------------------------------------------------
-// Grid geometry — a uniform body padding + scrollbar gutter inset the grid
+// Grid geometry — a uniform body padding insets the grid
 // (there is NO app-drawn header/tab bar; the compositor owns window
 // decoration), and pointer hit-testing follows the same inset grid rect
 // (production `place_at`/`set_geometry` path).
@@ -4501,7 +4462,7 @@ fn confinement_routes_are_mandatory_for_hosted_terminals() {
 // ---------------------------------------------------------------
 
 #[cfg(unix)]
-fn private_ush_listener(runtime: &std::path::Path) -> std::os::unix::net::UnixListener {
+pub(crate) fn private_ush_listener(runtime: &std::path::Path) -> std::os::unix::net::UnixListener {
     use std::os::unix::fs::PermissionsExt;
 
     let tilo = runtime.join("tilo");
@@ -4826,6 +4787,10 @@ fn fingers_scroll_the_scrollback_by_the_pixel_and_copy_its_rows() {
 /// A program's bell is visible: the pane flashes, and the flash asks for the
 /// frames that fade it. With the bell off it changes nothing — which is what
 /// a bell used to do even when it was on.
+#[allow(
+    clippy::float_cmp,
+    reason = "a bell that is off leaves the flash at exactly 0.0, untouched"
+)]
 #[test]
 fn the_bell_flashes_the_pane_when_it_is_turned_on() {
     use crate::preferences::{Bell, Preferences};

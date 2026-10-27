@@ -201,7 +201,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         tilo_test_env::within("a message on b_again", b_again.recv()).await,
         Some(Envelope::Delta { ref delta, .. }) if delta == b"offline-change"
             ));
-        wait_for_ready_with_pending(&b_again).await;
+        wait_for_ready_with_pending(&b_again, &relay.handle().metrics).await;
 
         let members: Vec<String> = serde_json::from_slice(
             &std::fs::read(state.path().join("workspaces/9/membership.json")).unwrap(),
@@ -343,7 +343,10 @@ async fn publish_until_queued(
 
 /// Drain replayed `Delta`s until the `Ready` marker reports at least one
 /// pending delta was queued for this reconnect.
-async fn wait_for_ready_with_pending(b_again: &RelayClient) {
+async fn wait_for_ready_with_pending(
+    b_again: &RelayClient,
+    metrics: &std::sync::Arc<tilo_relay::metrics::Metrics>,
+) {
     loop {
         match tokio::time::timeout(tilo_test_env::hang_bound(), b_again.recv()).await {
             Ok(Some(Envelope::Ready {
@@ -354,6 +357,13 @@ async fn wait_for_ready_with_pending(b_again: &RelayClient) {
                 break;
             }
             Ok(Some(Envelope::Delta { .. })) => {}
+            Ok(None) => {
+                let snapshot = metrics.snapshot();
+                panic!(
+                    "the relay closed the reconnected session before Ready: {} sessions ended with an error, {} of them for backpressure",
+                    snapshot.subscriber_dropped, snapshot.subscriber_dropped_backpressure
+                );
+            }
             other => panic!("expected queued delta or Ready, got {other:?}"),
         }
     }

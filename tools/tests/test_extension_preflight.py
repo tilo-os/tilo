@@ -20,7 +20,7 @@ class ExtensionPreflight(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "tools/ci/publish").mkdir(parents=True)
-            for name in ("extension-manifests.sh", "lib.sh"):
+            for name in ("extension-manifests.sh", "lib.sh", "build-lib.sh"):
                 shutil.copy(REPO / "tools/ci/publish" / name, root / "tools/ci/publish" / name)
             (root / "keys").mkdir()
             (root / "keys/extensions.pub").write_text(PINNED)

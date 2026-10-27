@@ -19,9 +19,7 @@ use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
 use serde_json::{Value, json};
-use tilo_automation::{
-    ActionCatalog, AiTransform, Binding, Condition, Shortcut, Step, StepKind, values_at,
-};
+use tilo_automation::{ActionCatalog, Binding, Condition, Shortcut, Step, StepKind, values_at};
 use ui::framework::{Actions, Live};
 use ui::icons::Icon;
 use ui::prelude::*;
@@ -174,14 +172,14 @@ fn shape_of(steps: &[Step], out: &mut String) {
             StepKind::Ask { param } => {
                 let _ = write!(out, "ask {:?}", param.ty);
             }
-            StepKind::Ai { transform, input } => {
-                let transform = match transform {
-                    AiTransform::Summarise => "summarise",
-                    AiTransform::Extract { .. } => "extract",
-                    AiTransform::Classify { .. } => "classify",
-                    AiTransform::Freeform { .. } => "freeform",
-                };
-                let _ = write!(out, "ai {transform} {}", shape_of_binding(input));
+            StepKind::Ai { input, output, .. } => {
+                let _ = write!(out, "ai {output:?}");
+                if let Some(input) = input {
+                    let _ = write!(out, " {}", shape_of_binding(input));
+                }
+            }
+            StepKind::Task { allow, output, .. } => {
+                let _ = write!(out, "task {} {output:?}", allow.len());
             }
         }
         out.push(')');
@@ -464,7 +462,8 @@ fn step_count(steps: &[Step]) -> usize {
                 StepKind::Invoke { .. }
                 | StepKind::SetVar { .. }
                 | StepKind::Ask { .. }
-                | StepKind::Ai { .. } => 0,
+                | StepKind::Ai { .. }
+                | StepKind::Task { .. } => 0,
             }
         })
         .sum()
@@ -1556,9 +1555,16 @@ fn block_offers() -> Vec<BlockOffer> {
         },
         BlockOffer {
             id: "ai",
-            label: "Summarise with the agent",
-            detail: "Have the agent write a short summary of some text",
-            step: json!({"step": "ai", "transform": "summarise", "input": {"literal": ""}}),
+            label: "Ask the agent once",
+            detail: "Give the agent one instruction and wait for its answer",
+            step: json!({"step": "ai", "prompt": "Summarise this",
+                         "input": {"literal": ""}}),
+        },
+        BlockOffer {
+            id: "task",
+            label: "Start a task",
+            detail: "Let the agent work on an instruction with the apps this shortcut may use",
+            step: json!({"step": "task", "instruction": "Tidy the inbox"}),
         },
     ]
 }
@@ -2215,25 +2221,47 @@ fn step_fields(at: &StepEditor<'_>, step: &Step) -> (Column, Vec<Element>) {
             ));
         }
         StepKind::Ai {
-            transform,
+            prompt,
             input: source,
+            output,
         } => {
-            body = body.push(value_row(
+            body = body.push(step_text(at, "ai-prompt", "shortcuts-ai-prompt", prompt, {
+                let source = source.clone();
+                let output = output.clone();
+                move |text| json!({"step": "ai", "prompt": text, "input": source, "output": output})
+            }));
+            if let Some(input) = source {
+                body = body.push(value_row(
+                    at,
+                    "ai-input",
+                    "shortcuts-ai-input",
+                    Some(input),
+                    {
+                        let prompt = prompt.clone();
+                        let output = output.clone();
+                        move |binding| json!({"step": "ai", "prompt": prompt, "input": binding, "output": output})
+                    },
+                ));
+            }
+        }
+        StepKind::Task {
+            instruction,
+            allow,
+            output,
+        } => {
+            body = body.push(step_text(
                 at,
-                "ai-input",
-                "shortcuts-ai-input",
-                Some(source),
+                "task-instruction",
+                "shortcuts-task-instruction",
+                instruction,
                 {
-                    let transform = transform.clone();
-                    move |binding| json!({"step": "ai", "transform": transform, "input": binding})
+                    let allow = allow.clone();
+                    let output = output.clone();
+                    move |text| {
+                        json!({"step": "task", "instruction": text, "allow": allow, "output": output})
+                    }
                 },
             ));
-            if let AiTransform::Freeform { prompt } = transform {
-                body = body.push(step_text(at, "ai-prompt", "shortcuts-ai-prompt", prompt, {
-                    let source = source.clone();
-                    move |text| json!({"step": "ai", "transform": {"freeform": {"prompt": text}}, "input": source})
-                }));
-            }
         }
     }
     (body, nested)

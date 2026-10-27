@@ -1302,7 +1302,7 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
         let accounts = if let Some(sample) = cx.fixture::<SampleAccounts>() {
             Some(sample.0.clone())
         } else if cx.mode().is_live() {
-            Some(crate::AccountStore::load_from_settings().unwrap_or_default())
+            Some(self.bind_profile(cx.storage().config_root()))
         } else {
             None
         };

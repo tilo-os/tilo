@@ -1,6 +1,9 @@
 //! Where the map and its floating chrome stand: the margin, the controls column, the panel, the overflow menu, the rects a press is hit-tested against, and the screen or desktop bounds the map may not spill past.
 
-use super::*;
+use super::{
+    ColumnMetrics, GeoBounds, Hit, LatLon, MapsApp, NAVIGATION_FLOAT_ID, Point, Projection, Rect,
+    SegmentedTouchGroup, SegmentedTouchResult, TransitTimeMode, TravelMode,
+};
 
 impl MapsApp {
     /// The window margin every floating element keeps — the theme's `s4`.

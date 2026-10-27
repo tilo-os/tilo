@@ -1,0 +1,4 @@
+#pragma once
+namespace tilo {
+inline constexpr char kTextComposition[] = R"TILO_COMPOSITION(@TILO_TEXT_COMPOSITION@)TILO_COMPOSITION";
+}

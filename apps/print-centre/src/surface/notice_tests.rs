@@ -29,7 +29,7 @@ fn opened() -> (Window, stand_in::Shared) {
     FOREIGN.with(|foreign| {
         *foreign.borrow_mut() = ui::attention::items()
             .iter()
-            .map(|item| item.id())
+            .map(ui::attention::Item::id)
             .collect();
     });
     (app, devices)

@@ -702,5 +702,7 @@ fn reconcile(
     Ok(changed)
 }
 
+pub mod device;
+
 #[cfg(test)]
 mod tests;

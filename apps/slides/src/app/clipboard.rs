@@ -84,9 +84,12 @@ mod tests {
         assert_eq!(pasted.len(), 1);
         let paste = &pasted[0];
         assert_eq!(paste.id, "fresh-id", "a copy is an element of its own");
-        assert_eq!(paste.x, copied.x + PASTE_OFFSET);
-        assert_eq!(paste.y, copied.y + PASTE_OFFSET);
-        assert_eq!(paste.w, copied.w, "the box travels whole");
+        assert!((paste.x - (copied.x + PASTE_OFFSET)).abs() < f64::EPSILON);
+        assert!((paste.y - (copied.y + PASTE_OFFSET)).abs() < f64::EPSILON);
+        assert!(
+            (paste.w - copied.w).abs() < f64::EPSILON,
+            "the box travels whole"
+        );
         assert_eq!(
             paste.kind, copied.kind,
             "a text box stays a text box, with its words"

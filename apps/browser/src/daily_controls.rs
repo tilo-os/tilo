@@ -425,6 +425,16 @@ impl DailyControls {
     }
 }
 
+/// The toolkit's step a menu step stands for: in (`1`), out (`-1`), or back to
+/// the page's own size (`0`).
+pub(crate) fn zoom_step(step: i32) -> ui::content_zoom::ZoomStep {
+    match step.signum() {
+        1 => ui::content_zoom::ZoomStep::In,
+        -1 => ui::content_zoom::ZoomStep::Out,
+        _ => ui::content_zoom::ZoomStep::Reset,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,15 +513,5 @@ mod tests {
                 Some(&WebViewCommand::SetZoomLevel(0.0))
             );
         }
-    }
-}
-
-/// The toolkit's step a menu step stands for: in (`1`), out (`-1`), or back to
-/// the page's own size (`0`).
-pub(crate) fn zoom_step(step: i32) -> ui::content_zoom::ZoomStep {
-    match step.signum() {
-        1 => ui::content_zoom::ZoomStep::In,
-        -1 => ui::content_zoom::ZoomStep::Out,
-        _ => ui::content_zoom::ZoomStep::Reset,
     }
 }

@@ -1,6 +1,9 @@
 //! What the window asks the player for, one request per verb: status, focus, the library's rows, shared playlists and bookmarks, and the playhead presence publishes.
 
-use super::*;
+use super::{
+    ActionDecl, Id, LibraryTab, PlayerApp, PlayerResource, Rect, VideoEffect, Widget,
+    shared_accessibility_targets, verbs,
+};
 
 impl PlayerApp {
     /// Invoke `effect` through the framework's door, as the palette and

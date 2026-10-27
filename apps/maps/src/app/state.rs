@@ -1,6 +1,11 @@
 //! The map's life: what it is built from, the tile cache it reads, the menus and panels it opens, and the durable resource it attaches to and adopts.
 
-use super::*;
+use super::{
+    Basemap, ContextMenu, EndpointEditor, MapControlAction, MapControls, MapInfoSheet, MapMenu,
+    MapModel, MapsApp, MenuItem, Metrics, NetSender, OfflinePanel, Place, PlaceSearch, Point, Rect,
+    SegmentedTouch, Spacing, Theme, TileFault, TileLayer, TrafficData, TravelMode, Workspace,
+    navigation_card_size, sample,
+};
 
 impl MapsApp {
     /// Live app: spawns the background tile worker (network + decode off the

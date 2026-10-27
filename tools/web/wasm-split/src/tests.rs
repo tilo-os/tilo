@@ -179,6 +179,34 @@ fn checksum(bytes: &[u8]) -> u32 {
         .fold(0u32, |sum, byte| sum.rotate_left(5) ^ u32::from(*byte))
 }
 
+/// The same linked input splits into the same bytes every time, so web
+/// bundles are reproducible and their caches stay valid.
+#[test]
+fn splitting_twice_emits_identical_modules() -> Result<()> {
+    let fixture = build_fixture("deterministic")?;
+    let linked = &fixture.linked;
+    let emit = || -> Result<Vec<(String, Vec<u8>)>> {
+        let outputs = Splitter::new(linked, linked)?.emit()?;
+        let mut modules = vec![("main".to_string(), outputs.main.bytes)];
+        for module in outputs.modules {
+            modules.push((module.module_name, module.bytes));
+        }
+        Ok(modules)
+    };
+    let first = emit()?;
+    for _ in 0..4 {
+        let again = emit()?;
+        assert_eq!(
+            first.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            again.iter().map(|(name, _)| name).collect::<Vec<_>>()
+        );
+        for ((name, want), (_, got)) in first.iter().zip(&again) {
+            assert!(want == got, "split module {name} differs between runs");
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn static_data_moves_with_the_only_module_that_reaches_it() -> Result<()> {
     let fixture = build_fixture("placement")?;
@@ -329,8 +357,10 @@ fn split_modules_initialise_their_data_before_their_code_runs() -> Result<()> {
     for i in samples {
         let k = (i % 6) as usize;
         let slice = &blobs["table"][TABLE_BOUNDS[k]..TABLE_BOUNDS[k + 1]];
-        let want =
-            u32::from(slice[offset(i) % slice.len()]) | u32::from(blobs["shared"][offset(i)]) << 8;
+        let op = i.wrapping_add((i % 8 + 1) * 0x11);
+        let want = u32::from(slice[offset(i) % slice.len()])
+            | u32::from(blobs["shared"][offset(i)]) << 8
+            | (op & 0xff) << 16;
         assert_eq!(call(&mut store, "call_tabler", i)?, want, "tabler({i})");
     }
     // Loading `tabler` left `reader`'s state alone.
