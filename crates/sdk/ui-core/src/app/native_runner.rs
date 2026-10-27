@@ -3760,6 +3760,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 }
                 window.request_redraw();
             }
+            #[cfg(target_os = "android")]
+            UserEvent::SafeAreaChanged => sync_safe_area(&mut self.app, &window),
             UserEvent::Wake(_)
             | UserEvent::NativeScenarioInput(_)
             | UserEvent::RenderReady(_)
@@ -5073,7 +5075,13 @@ impl App {
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
         #[cfg(target_os = "android")]
-        super::android_text_input::bridge::install(proxy.clone());
+        {
+            super::android_text_input::bridge::install(proxy.clone());
+            let insets = proxy.clone();
+            crate::launch::android::on_safe_area_changed(Box::new(move || {
+                let _ = insets.send_event(UserEvent::SafeAreaChanged);
+            }));
+        }
         #[allow(
             clippy::panic,
             reason = "invalid explicitly requested benchmark input must stop startup rather than silently run an unmeasured scenario"

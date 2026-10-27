@@ -4528,6 +4528,10 @@ impl App {
                 palette.set_query(query);
                 palette.select_query();
             }
+            if let Some(anchor) = request.anchored() {
+                palette.set_query(&anchor.query);
+                palette.select_resource(&anchor.resource);
+            }
         }
     }
 

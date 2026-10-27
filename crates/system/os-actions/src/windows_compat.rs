@@ -21,9 +21,8 @@
 
 use std::path::Path;
 
-use crate::extension::{
-    self, ExtensionAction, ExtensionId, ExtensionState, ExtensionStatus, Progress,
-};
+use crate::extension::{self, ExtensionAction, ExtensionId, ExtensionState};
+pub use crate::extension::{ExtensionStatus, Progress};
 
 /// The catalogue id of the Windows compatibility extension.
 pub const ID: &str = "windows-compat";
@@ -41,6 +40,10 @@ pub const PAYLOAD_MARKERS: [&str; 2] = [
 pub fn id() -> ExtensionId {
     ExtensionId::known(ID)
 }
+
+/// What a control offers for Windows support once the figure has been shown;
+/// the same three verbs every downloaded extension has.
+pub use crate::extension::ExtensionAction as WindowsSupportAction;
 
 /// Whether the payload is merged under `root` (`/` on a device).
 #[must_use]
@@ -200,6 +203,59 @@ impl Readiness {
     }
 }
 
+impl Readiness {
+    /// The actions a control offers in this state, primary first. Empty while
+    /// the helper works and on a system that cannot install it at all.
+    #[must_use]
+    pub fn offered_actions(&self) -> Vec<WindowsSupportAction> {
+        match self {
+            Self::Installing(_) | Self::NotOffered => Vec::new(),
+            // Installed, or opted in on a network and waiting for it:
+            // withdrawing it is the only thing left to offer.
+            Self::WaitingForNetwork | Self::Ready => vec![WindowsSupportAction::Remove],
+            Self::Failed(..) => vec![WindowsSupportAction::Install, WindowsSupportAction::Remove],
+            Self::NeedsInstall(_) => vec![WindowsSupportAction::Install],
+        }
+    }
+
+    /// How far an install has got, for a progress bar. An install that was
+    /// asked for but not yet picked up by the helper fills an empty bar.
+    #[must_use]
+    pub fn progress_fraction(&self) -> Option<f32> {
+        match self {
+            Self::Installing(progress) => Some(progress.as_ref().map_or(0.0, Progress::fraction)),
+            _ => None,
+        }
+    }
+
+    /// What a person is told while the helper works, with the step it is on.
+    #[must_use]
+    pub fn progress_label(&self) -> Option<(String, u32, u32)> {
+        match self {
+            Self::Installing(Some(progress)) if !progress.label.is_empty() => {
+                Some((progress.label.clone(), progress.step, progress.steps))
+            }
+            _ => None,
+        }
+    }
+
+    /// The bytes downloaded so far and in total, while the helper reports
+    /// them.
+    #[must_use]
+    pub fn progress_megabytes(&self) -> Option<(u64, u64)> {
+        match self {
+            Self::Installing(Some(progress)) => progress.megabytes(),
+            _ => None,
+        }
+    }
+}
+
+/// Whether this system can install Windows support at all.
+#[must_use]
+pub fn available() -> bool {
+    extension::available(&id())
+}
+
 /// Download, verify and merge the Windows support extension.
 ///
 /// # Errors
@@ -215,6 +271,14 @@ pub fn install(_consent: &Consent) -> Result<(), String> {
 /// As [`extension::run`].
 pub fn remove() -> Result<(), String> {
     extension::run(ExtensionAction::Remove, &id())
+}
+
+/// Do what `action` says to the Windows support extension.
+///
+/// # Errors
+/// As [`extension::run`].
+pub fn run(action: WindowsSupportAction) -> Result<(), String> {
+    extension::run(action, &id())
 }
 
 /// Call `on_change` whenever the helper rewrites the extension's status.
@@ -315,6 +379,57 @@ mod tests {
             Readiness::from_facts(false, None, &status(r#"{"state":"not-installed"}"#)),
             Readiness::NotOffered
         );
+        assert!(!Readiness::NotOffered.can_install());
+    }
+
+    #[test]
+    fn every_readiness_state_offers_only_the_actions_that_help() {
+        let offered = Some(disclosure());
+        let status = |json: &str| ExtensionStatus::parse(json);
+        let needs = Readiness::from_facts(false, offered, &status(r#"{"state":"not-installed"}"#));
+        assert_eq!(needs.offered_actions(), vec![WindowsSupportAction::Install]);
+        let failed = Readiness::from_facts(
+            false,
+            offered,
+            &status(r#"{"state":"failed","last_error":"offline"}"#),
+        );
+        assert_eq!(
+            failed.offered_actions(),
+            vec![WindowsSupportAction::Install, WindowsSupportAction::Remove]
+        );
+        assert_eq!(
+            Readiness::from_facts(
+                false,
+                offered,
+                &status(r#"{"state":"waiting-for-network"}"#)
+            )
+            .offered_actions(),
+            vec![WindowsSupportAction::Remove]
+        );
+        assert_eq!(
+            Readiness::Ready.offered_actions(),
+            vec![WindowsSupportAction::Remove]
+        );
+        let working = Readiness::from_facts(
+            false,
+            offered,
+            &status(
+                r#"{"state":"installing","desired":true,"progress":{"step":2,"steps":5,"label":"Downloading","bytes":20000000,"total":40000000}}"#,
+            ),
+        );
+        assert!(
+            working.offered_actions().is_empty(),
+            "nothing to press mid-install"
+        );
+        // Step 2 of 5, half of its download done: one step done plus half.
+        assert_eq!(working.progress_fraction(), Some(0.3));
+        assert_eq!(
+            working.progress_label(),
+            Some(("Downloading".to_string(), 2, 5))
+        );
+        assert_eq!(working.progress_megabytes(), Some((20, 40)));
+        assert!(needs.progress_fraction().is_none());
+        assert!(Readiness::NotOffered.offered_actions().is_empty());
         assert!(!Readiness::NotOffered.can_install());
     }
 

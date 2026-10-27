@@ -53,6 +53,11 @@ impl FrameHarness {
         if let Some(address) = request.asked() {
             palette.activate_address(&address.resource, &address.action);
         }
+        // On one of the app's resources: its row is under the cursor.
+        if let Some(anchor) = request.anchored() {
+            palette.set_query(&anchor.query);
+            palette.select_resource(&anchor.resource);
+        }
         self.discard_layout_tree();
         self.focused = None;
         self.action_palette = Some(palette);

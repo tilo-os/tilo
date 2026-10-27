@@ -10612,6 +10612,9 @@ pub fn run() {
     let mut last_lock_clock_refresh = Instant::now();
     let mut lock_player: Option<crate::shell::now_playing::PlayerSnapshot> = None;
     let mut lock_pointer: Option<vello::kurbo::Point> = None;
+    // The now-playing transport Tab or the arrows reached on the lock screen;
+    // `None` is its password field.
+    let mut lock_media_focus: Option<crate::shell::quick_settings::now_playing::Transport> = None;
     // The keyboard the lock screen draws for unlocking by touch: shown from
     // the first touch, gone at the next physical key. No input method runs
     // while locked; the passcode never leaves the lock screen.
@@ -11433,15 +11436,77 @@ pub fn run() {
                             }
                             _ => {}
                         }
-                        match key {
-                            Some(key) => {
-                                lock.handle_key(key);
+                        // The now-playing card's transport is reachable
+                        // from the keyboard as it is from a reader and the
+                        // pointer: Tab reaches its buttons, the arrows move
+                        // between them, Enter and Space act, Escape goes
+                        // back to the field.
+                        let media_available = lock_player.as_ref().is_some_and(|player| {
+                            crate::shell::quick_settings::now_playing::Transport::ALL
+                                .into_iter()
+                                .any(|transport| transport.enabled(player))
+                        });
+                        let media_handled = if let WindowEvent::KeyboardInput { event, .. } = wev
+                            && event.state == ElementState::Pressed
+                            && !event.repeat
+                            && !lock.is_verifying()
+                            && media_available
+                        {
+                            use winit::keyboard::NamedKey as K;
+                            match &event.logical_key {
+                                Key::Named(K::Tab) => {
+                                    lock_media_focus = lock_screen::media_focus_step(
+                                        lock_media_focus,
+                                        lock_player.as_ref(),
+                                        !test_control_ctx.modifiers.state().shift_key(),
+                                    );
+                                    true
+                                }
+                                Key::Named(K::ArrowLeft | K::ArrowRight)
+                                    if lock_media_focus.is_some() =>
+                                {
+                                    lock_media_focus = lock_screen::media_focus_step(
+                                        lock_media_focus,
+                                        lock_player.as_ref(),
+                                        matches!(&event.logical_key, Key::Named(K::ArrowRight)),
+                                    );
+                                    true
+                                }
+                                Key::Named(K::Enter | K::Space) if lock_media_focus.is_some() => {
+                                    if let Some(transport) = lock_screen::media_focused_transport(
+                                        lock_media_focus,
+                                        lock_player.as_ref(),
+                                    ) {
+                                        send_lock_transport(lock_player.as_ref(), transport);
+                                    }
+                                    true
+                                }
+                                Key::Named(K::Escape) if lock_media_focus.is_some() => {
+                                    lock_media_focus = None;
+                                    true
+                                }
+                                _ => {
+                                    // Typing belongs to the password field:
+                                    // taking a key there returns focus to it.
+                                    lock_media_focus = None;
+                                    false
+                                }
                             }
-                            None => {
-                                lock.handle_event(wev, &test_control_ctx.modifiers);
+                        } else {
+                            false
+                        };
+                        if !media_handled {
+                            match key {
+                                Some(key) => {
+                                    lock.handle_key(key);
+                                }
+                                None => {
+                                    lock.handle_event(wev, &test_control_ctx.modifiers);
+                                }
                             }
                         }
-                        // Any keystroke changes the masked field / error, so force a repaint this tick.
+                        // Any keystroke changes the masked field, the media
+                        // focus or an error, so force a repaint this tick.
                         session_changed = true;
                     } else if route == PriorityRoute::PowerKey {
                         // The hardware power key always does something visible, locked or
@@ -12321,6 +12386,7 @@ pub fn run() {
             if followed == Some(crate::shell::owner_session::Follow::Unlock) {
                 // As after the person's own unlock: the next lock starts bare.
                 lock_keyboard = lock_screen::LockTouchKeyboard::default();
+                lock_media_focus = None;
                 frame_builder.set_lock_keyboard_keys(Vec::new());
                 frame_builder.set_lock_surfaces(Vec::new());
             }
@@ -12521,6 +12587,7 @@ pub fn run() {
             if outcome == UnlockOutcome::Unlocked {
                 // The next lock starts without the keyboard and its layer.
                 lock_keyboard = lock_screen::LockTouchKeyboard::default();
+                lock_media_focus = None;
                 frame_builder.set_lock_keyboard_keys(Vec::new());
                 frame_builder.set_lock_surfaces(Vec::new());
                 apply_session_transitions!(session.request_unlock(Instant::now()));
@@ -12544,6 +12611,7 @@ pub fn run() {
             backend.cancel_touch();
             frame_builder.host_mut().cancel_direct_touch_gestures();
             lock.reset();
+            lock_media_focus = None;
         }
         if session.is_locked() != prev_locked {
             retained_lock.clear();
@@ -13987,6 +14055,7 @@ pub fn run() {
         } else {
             lock_player = None;
             lock_pointer = None;
+            lock_media_focus = None;
         }
         deliver_held_key_releases!();
         let pump_done = Instant::now();
@@ -14276,6 +14345,7 @@ pub fn run() {
                     &lock,
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
+                    lock_media_focus,
                     lock_keyboard.shown(),
                     alert.as_deref(),
                 );
@@ -14334,6 +14404,7 @@ pub fn run() {
                     // Count-only summary on the lock screen — no bodies leak.
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
+                    lock_media_focus,
                     lock_keyboard.shown(),
                     alert.as_deref(),
                 );
@@ -14785,6 +14856,7 @@ pub fn run() {
                         &lock,
                         frame_builder.chrome().notification_count(),
                         lock_player.as_ref(),
+                        lock_media_focus,
                         lock_keyboard.shown(),
                         alert.as_deref(),
                     )

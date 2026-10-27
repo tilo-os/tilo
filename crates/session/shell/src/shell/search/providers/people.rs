@@ -98,6 +98,7 @@ fn result(row: RosterRow, kind: ResourceKind) -> SearchResult {
         }),
         on_invoke: None,
         on_begin_invoke: None,
+        resource: None,
     }
 }
 

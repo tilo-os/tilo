@@ -135,6 +135,7 @@ impl crate::shell::search::SearchProvider for DirectoryPaletteFixtureProvider {
             on_open: Rc::new(|_, _, _, _| Ok(())),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }]
     }
 }
