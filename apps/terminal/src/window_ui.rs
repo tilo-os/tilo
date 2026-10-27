@@ -58,11 +58,15 @@ pub(crate) enum SessionEnd {
     Lost(String),
     /// Another terminal took the remote session over; it runs on there.
     Superseded,
+    /// The environment could not be set up and no shell started. The reason
+    /// is for the log; the tab says so plainly and offers to try again.
+    Failed(String),
 }
 
 impl SessionEnd {
-    /// The end a relay session's supervisor reported on its lease
-    /// (`{"ended":"exited"}`, `{"ended":"lost","reason":…}`,
+    /// The end the supervisor reported on a session's lease
+    /// (`{"ended":"exited"}`, `{"ended":"failed","reason":…}`, and for a
+    /// relay session `{"ended":"lost","reason":…}`,
     /// `{"ended":"superseded"}`). A report the tab does not understand is
     /// the lease closing, which is the shell exiting.
     pub(crate) fn from_report(line: &[u8]) -> Self {
@@ -75,10 +79,15 @@ impl SessionEnd {
                 reason: String,
             },
             Superseded,
+            Failed {
+                #[serde(default)]
+                reason: String,
+            },
         }
         match serde_json::from_slice::<Report>(line) {
             Ok(Report::Lost { reason }) => Self::Lost(reason),
             Ok(Report::Superseded) => Self::Superseded,
+            Ok(Report::Failed { reason }) => Self::Failed(reason),
             Ok(Report::Exited) | Err(_) => Self::Exited,
         }
     }
@@ -362,7 +371,7 @@ impl TerminalWidget {
         let (reason, superseded) = match self.session_end() {
             Some(SessionEnd::Lost(reason)) => (reason, false),
             Some(SessionEnd::Superseded) => (t("terminal-reconnect-superseded"), true),
-            Some(SessionEnd::Exited) | None => return,
+            Some(SessionEnd::Exited | SessionEnd::Failed(_)) | None => return,
         };
         // Seen once: the end belongs to the session the tab now replaces.
         if let Ok(mut end) = self.life.session_end.lock() {
@@ -375,6 +384,24 @@ impl TerminalWidget {
             session: self.recorded_relay_session.clone(),
             superseded,
         });
+        request_terminal_wake(&self.waker);
+    }
+
+    /// The environment could not be set up: the tab says so, with Try
+    /// again, in place of the shell; the supervisor's reason goes to the
+    /// log, never into the terminal.
+    pub(crate) fn show_setup_failure(&mut self) {
+        let Some(SessionEnd::Failed(reason)) = self.session_end() else {
+            return;
+        };
+        // Seen once: a retry opens a new session.
+        if let Ok(mut end) = self.life.session_end.lock() {
+            *end = None;
+        }
+        tracing::warn!(%reason, "terminal: the environment could not be set up");
+        let message = t("terminal-setup-failed");
+        self.show_status(&message);
+        self.sessions.state = crate::sessions::OpenState::Failed(message);
         request_terminal_wake(&self.waker);
     }
 
