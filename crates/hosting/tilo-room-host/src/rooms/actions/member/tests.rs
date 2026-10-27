@@ -665,3 +665,171 @@ async fn only_the_device_a_window_runs_on_shares_it() {
     assert!(shared_now().await.is_empty(), "the share ended");
     relay.shutdown().await;
 }
+
+/// What a Tilo app's shared window shows is shared beside the window, under
+/// its share id, by the device the window runs on alone; ending the
+/// window's share ends it too.
+#[tokio::test]
+async fn what_a_shared_window_shows_is_shared_by_its_device_and_ends_with_it() {
+    use tilo_desktop_model::window_share::{
+        WindowShows, shows_node, window_node, window_share_id, window_shares, window_shows_share_id,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
+    let (room, workspace, host) = governed(rooms).await;
+    let ada = admit(rooms, &room, &owner, 1).await;
+    let bo = admit(rooms, &room, &owner, 2).await;
+    let salt: u16 = 0x0A51;
+    invoke(
+        &host,
+        workspace,
+        &ada,
+        member_request(&room, CLAIM_TOPOLOGY_NAMESPACE, json!({ "salt": salt })),
+    )
+    .await
+    .unwrap();
+    let notes = (u64::from(salt) << 48) | 4;
+    let note = WindowShows {
+        record: String::new(),
+        item: Some("notes.page/pages/7".into()),
+    };
+    let request = |id: String, node: tilo_action_policy::TreePath| {
+        member_request(
+            &room,
+            SHARE_RESOURCE,
+            json!({ "share": id, "node": node.to_string(), "access": "view" }),
+        )
+    };
+    let shows = || {
+        request(
+            window_shows_share_id(notes),
+            shows_node(&room, "so.tilo.notes", notes, "notes.notebook", &note),
+        )
+    };
+    let refused = |answer: Result<Value, ActionHostError>| {
+        matches!(answer, Err(ActionHostError::Refused { .. }))
+    };
+    assert!(
+        refused(invoke(&host, workspace, &bo, shows()).await),
+        "Bo can't say what a window of Ada's device shows"
+    );
+    assert!(
+        refused(
+            invoke(
+                &host,
+                workspace,
+                &ada,
+                request(
+                    window_share_id(notes),
+                    shows_node(&room, "so.tilo.notes", notes, "notes.notebook", &note),
+                ),
+            )
+            .await
+        ),
+        "the window's own share id is the window's node alone"
+    );
+    invoke(&host, workspace, &ada, shows()).await.unwrap();
+    invoke(
+        &host,
+        workspace,
+        &ada,
+        request(
+            window_share_id(notes),
+            window_node(&room, "so.tilo.notes", notes),
+        ),
+    )
+    .await
+    .unwrap();
+    let held_room = room.as_str();
+    let shared_now = || async move {
+        let state = rooms.room(held_room).await.unwrap();
+        let held = state.lock().await;
+        let doc = held.peer().admitted_room().unwrap();
+        window_shares(
+            &tilo_desktop_model::projection::room_policy_of(doc, held_room),
+            &tilo_desktop_model::projection::contents_owners_of(doc),
+            tilo_clock::unix_now_ms(),
+        )
+    };
+    assert_eq!(
+        shared_now()
+            .await
+            .get(&notes)
+            .and_then(|share| share.shows.clone()),
+        Some(note),
+        "the room's record says which note Ada's Notes window is at"
+    );
+
+    // Ada's window moves to another note: sharing what it shows again, under
+    // the same share id, is the room's record of where it is now, in place
+    // of where it was.
+    let moved = WindowShows {
+        record: String::new(),
+        item: Some("notes.page/pages/8".into()),
+    };
+    let grants_of_shows = || async move {
+        let state = rooms.room(held_room).await.unwrap();
+        let held = state.lock().await;
+        let doc = held.peer().admitted_room().unwrap();
+        tilo_desktop_model::projection::room_policy_of(doc, held_room)
+            .grants
+            .iter()
+            .filter(|grant| {
+                tilo_action_policy::share::is_of_share(grant, &window_shows_share_id(notes))
+            })
+            .count()
+    };
+    let before = grants_of_shows().await;
+    invoke(
+        &host,
+        workspace,
+        &ada,
+        request(
+            window_shows_share_id(notes),
+            shows_node(&room, "so.tilo.notes", notes, "notes.notebook", &moved),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        shared_now()
+            .await
+            .get(&notes)
+            .and_then(|share| share.shows.clone()),
+        Some(moved),
+        "the room's record follows Ada's window to the other note"
+    );
+    assert_eq!(
+        grants_of_shows().await,
+        before,
+        "the same share, written over: never two notes at once"
+    );
+
+    invoke(
+        &host,
+        workspace,
+        &ada,
+        member_request(
+            &room,
+            UNSHARE_RESOURCE,
+            json!({ "share": window_share_id(notes) }),
+        ),
+    )
+    .await
+    .unwrap();
+    let state = rooms.room(held_room).await.unwrap();
+    let held = state.lock().await;
+    let doc = held.peer().admitted_room().unwrap();
+    assert!(
+        !tilo_desktop_model::projection::room_policy_of(doc, held_room)
+            .grants
+            .iter()
+            .any(|grant| tilo_action_policy::share::is_of_share(grant, &window_share_id(notes))),
+        "ending the window's share ended what it shows"
+    );
+    drop(held);
+    relay.shutdown().await;
+}

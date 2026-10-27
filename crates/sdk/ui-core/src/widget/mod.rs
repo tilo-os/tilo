@@ -3198,7 +3198,7 @@ pub use hover_intent::EdgeAim;
 pub mod top_edge_reveal;
 pub use top_edge_reveal::{EdgeGeometry, TopEdgeReveal};
 pub mod tabs;
-pub use tabs::{SharedWith, TabBar, TabDescriptor, TabHolder, TabMark, draw_app_mark};
+pub use tabs::{SharedBy, SharedWith, TabBar, TabDescriptor, TabHolder, TabMark, draw_app_mark};
 pub mod scrollbar;
 pub use scrollbar::{
     PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,

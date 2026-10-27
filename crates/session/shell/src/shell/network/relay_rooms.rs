@@ -672,9 +672,12 @@ impl ShellNetwork {
     /// or stop sharing it, at the host governing the room: the room's
     /// resource share of the window's node, which the host takes only from
     /// the device the tab's topology namespace is registered to
-    /// ([`tilo_desktop_model::window_share`]). A namespace this device has
-    /// not claimed in the room yet is claimed first. Waits for the host's
-    /// answer: runs on the peer-sync worker.
+    /// ([`tilo_desktop_model::window_share`]). A Tilo app's window is shared
+    /// with what it shows (`shows`, a node), asked first, so no member ever
+    /// sees the window as an outside one; a window share the host then
+    /// refuses takes that back. Stopping the window's share ends both. A
+    /// namespace this device has not claimed in the room yet is claimed
+    /// first. Waits for the host's answer: runs on the peer-sync worker.
     ///
     /// # Errors
     /// No host governs the room, or the host refused or did not answer.
@@ -684,8 +687,11 @@ impl ShellNetwork {
         tab: crate::shell::state::TabId,
         app_id: &str,
         share: bool,
+        shows: Option<&str>,
     ) -> Result<(), String> {
-        use tilo_desktop_model::window_share::{window_node, window_share_id};
+        use tilo_desktop_model::window_share::{
+            window_node, window_share_id, window_shows_share_id,
+        };
         use tilo_relay_session::rooms::{SHARE_RESOURCE, UNSHARE_RESOURCE};
         let host = self
             .host_governor(room)?
@@ -697,10 +703,17 @@ impl ShellNetwork {
                 .and_then(std::convert::identity)
                 .and_then(receipt_value)
         };
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("share".into(), window_share_id(tab).into());
+        let share_of = |id: String, node: String| {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("share".into(), id.into());
+            arguments.insert("node".into(), node.into());
+            arguments.insert("access".into(), "view".into());
+            arguments
+        };
+        let mut stop = serde_json::Map::new();
+        stop.insert("share".into(), window_share_id(tab).into());
         if !share {
-            return ask(UNSHARE_RESOURCE, arguments).map(drop);
+            return ask(UNSHARE_RESOURCE, stop).map(drop);
         }
         let salt = tilo_desktop_model::peer_salt_of(tab);
         let claimed = self.tree.read().room_docs.get(&room).is_some_and(|doc| {
@@ -711,14 +724,22 @@ impl ShellNetwork {
             claim.insert("salt".into(), salt.into());
             ask(CLAIM_TOPOLOGY_NAMESPACE, claim)?;
         }
-        arguments.insert(
-            "node".into(),
-            window_node(&room.to_string(), app_id, tab)
-                .to_string()
-                .into(),
-        );
-        arguments.insert("access".into(), "view".into());
-        ask(SHARE_RESOURCE, arguments).map(drop)
+        if let Some(shows) = shows {
+            ask(
+                SHARE_RESOURCE,
+                share_of(window_shows_share_id(tab), shows.to_owned()),
+            )?;
+        }
+        let window = window_node(&room.to_string(), app_id, tab).to_string();
+        ask(SHARE_RESOURCE, share_of(window_share_id(tab), window))
+            .map(drop)
+            .inspect_err(|_| {
+                if shows.is_some()
+                    && let Err(error) = ask(UNSHARE_RESOURCE, stop.clone())
+                {
+                    tracing::warn!(%room, tab, %error, "what a window shows stayed shared without it");
+                }
+            })
     }
 
     /// Send a person's own bounded terminal audit to the exact signed governor.

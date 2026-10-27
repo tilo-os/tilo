@@ -1266,6 +1266,9 @@ pub struct State {
     /// Pings sent on input to tell an app that stopped answering
     /// ([`crate::compositor::app_liveness`]).
     pub(crate) app_watches: crate::compositor::app_liveness::Watches,
+    /// Toplevels the person gave input to since the chrome last took them
+    /// ([`Self::take_used_surfaces`]).
+    used_surfaces: Vec<u64>,
     pub(crate) popup_manager: PopupManager,
     /// Input-method candidate surfaces are similarly transient.  They stay
     /// outside the app tree so a candidate list can never become a tab.
@@ -2229,6 +2232,7 @@ impl State {
             system_modals: Vec::new(),
             shell_pongs: crate::compositor::client_settle::Pongs::default(),
             app_watches: crate::compositor::app_liveness::Watches::default(),
+            used_surfaces: Vec::new(),
             popup_manager: PopupManager::default(),
             input_method_popups: Vec::new(),
             seat_input_method,
@@ -4934,6 +4938,13 @@ impl State {
         std::mem::take(&mut self.remote_closes)
     }
 
+    /// The toplevels the person gave input to since the last call: a
+    /// window someone shared that was used here stays when the share ends
+    /// ([`crate::shell::state::WorkspaceTree::note_window_used`]).
+    pub fn take_used_surfaces(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.used_surfaces)
+    }
+
     fn refresh_foreign_subsurface_tree(&self, root: &WlSurface) {
         use smithay::wayland::compositor::{TraversalAction, with_surface_tree_upward};
 
@@ -7630,6 +7641,9 @@ impl State {
     /// Input reached the app of toplevel `surface_id`: ask it to answer, so
     /// an app that stopped answering is told apart from a quiet one.
     pub fn note_app_input(&mut self, surface_id: u64) {
+        if !self.used_surfaces.contains(&surface_id) {
+            self.used_surfaces.push(surface_id);
+        }
         let Some((client, id)) = self.shell_client_of(surface_id) else {
             return;
         };
