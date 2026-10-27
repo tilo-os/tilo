@@ -656,15 +656,15 @@ impl<R: FileRow> FileTable<R> {
         ) else {
             return false;
         };
-        if taffy
-            .compute_layout(
-                root,
-                taffy::Size {
-                    width: taffy::AvailableSpace::MaxContent,
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-            )
-            .is_err()
+        if super::solve_layout(
+            &mut taffy,
+            root,
+            taffy::Size {
+                width: taffy::AvailableSpace::MaxContent,
+                height: taffy::AvailableSpace::MaxContent,
+            },
+        )
+        .is_err()
         {
             return false;
         }

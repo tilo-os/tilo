@@ -77,6 +77,12 @@ lazy-hyphenation = []
 # then images are left out. The browser desktop uses this to keep them out of
 # its start module.
 lazy-image-decode = []
+# The emoji catalogue (names and keywords in every language, about half a
+# megabyte) is not linked into the toolkit's own code paths: the program
+# fetches it the first time a picker, reaction or `:name:` asks and hands it
+# over (`emoji_catalogue::CATALOGUE`, `emoji_catalogue::builtin_catalogue`).
+# The browser desktop uses this to keep it out of its start module.
+lazy-emoji = []
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests

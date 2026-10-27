@@ -226,7 +226,9 @@ pub fn solve_layout(
     root: NodeId,
     available: taffy::Size<taffy::AvailableSpace>,
 ) -> Result<(), taffy::TaffyError> {
-    taffy.compute_layout(root, available)
+    // The tree's own method measures every leaf as empty, through a solver
+    // compiled for its own closure; the toolkit's one solver does the same.
+    layout::solve_layout(taffy, root, available, &mut |_, _, _| taffy::Size::ZERO)
 }
 
 /// Implements [`Widget::apply_layout`] and [`Widget::get_rect`] for a widget
