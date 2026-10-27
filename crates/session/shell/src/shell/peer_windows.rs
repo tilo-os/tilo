@@ -650,7 +650,9 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
     };
     let room = ws.room();
     let record = if let Some(record) = tree.room_tab_record(room, item.tab) {
-        let Some(record) = ui::record::RecordId::parse(&record) else {
+        // A route: a window shared with a personal room may show its app's
+        // own record of the room, which travels under the empty one.
+        let Some(record) = ui::record::RecordId::from_route(&record) else {
             return Ok(false);
         };
         record

@@ -48,6 +48,10 @@ pub enum PeerSyncRequest {
     /// Leave a site's workspace: it goes from this computer, and is not
     /// joined again unasked.
     LeaveSite(crate::shell::state::RoomId),
+    /// Delete a workspace: this device's windows shared with its room stop
+    /// being shared at its host, then the room and the workspace go
+    /// together ([`crate::shell::network::ShellNetwork::release_room`]).
+    DeleteWorkspace(crate::shell::state::RoomId),
     /// Try again to join a workspace whose join failed, or that needs
     /// joining again: from the workspace itself, which is the room.
     RetryJoin(crate::shell::state::RoomId),
@@ -94,12 +98,16 @@ pub enum PeerSyncRequest {
     },
     /// Share this device's window `tab` of `app_id` with the workspace in
     /// `room` (`share`), or stop sharing it: the room's record of the share,
-    /// written by its host ([`tilo_desktop_model::window_share`]).
+    /// written by its host ([`tilo_desktop_model::window_share`]). A Tilo
+    /// app's window is shared with what it shows (`shows`, the node of its
+    /// record or of the item it is at), which the others open; an outside
+    /// window has none, and is streamed.
     ShareWindow {
         room: crate::shell::state::RoomId,
         tab: crate::shell::state::TabId,
         app_id: String,
         share: bool,
+        shows: Option<String>,
     },
 }
 
@@ -633,6 +641,7 @@ impl PeerSyncOverlay {
                 | PeerSyncRequest::CancelEnrollment(_)
                 | PeerSyncRequest::PrepareInvitation
                 | PeerSyncRequest::LeaveSite(_)
+                | PeerSyncRequest::DeleteWorkspace(_)
                 | PeerSyncRequest::RetryJoin(_)
                 | PeerSyncRequest::InviteDevice
                 | PeerSyncRequest::DevicesAsking

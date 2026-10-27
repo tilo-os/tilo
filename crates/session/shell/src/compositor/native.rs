@@ -12763,6 +12763,13 @@ pub fn run() {
                         let _ = crate::shell::window_actions::close_tab(chrome, tab);
                     }
                 }
+                // A shared window used here is kept when its share ends, an
+                // unused one closes.
+                let used = state.take_used_surfaces();
+                if chrome.tree().shared_window_work(&used) {
+                    let ended = chrome.tree_mut().note_used_and_take_ended(&used);
+                    ended.into_iter().for_each(|surface| chrome.request_surface_close(surface));
+                }
                 close_requests = chrome.take_surface_close_requests();
             });
             for surface_id in close_requests {
