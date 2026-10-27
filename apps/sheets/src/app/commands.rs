@@ -164,7 +164,7 @@ impl SheetsApp {
         let token = arg.trim().split([':', ' ']).next().unwrap_or("").trim();
         if let Some(addr) = a1_to_addr(token) {
             self.grid.select_only(addr);
-            self.status = format!("Jumped to {}", token.to_uppercase());
+            self.status = format!("Jumped to {}", crate::model::addr_to_a1(addr.0, addr.1));
         } else {
             self.status = format!("'{}' is not a valid cell reference", arg.trim());
         }

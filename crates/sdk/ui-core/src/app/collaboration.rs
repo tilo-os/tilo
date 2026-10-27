@@ -761,7 +761,13 @@ impl App {
         else {
             return;
         };
-        let own = ContentLane::of(&route.app_id, route.record.as_deref().unwrap_or(""));
+        // The window's own lane, the one its record content travels on:
+        // what another window of this app in this process asked for is not
+        // this window's to send.
+        let own = {
+            let _entry = self.enter_wake_scope();
+            ContentLane::of_window()
+        };
         let lanes = std::iter::once((None, own)).chain(
             ContentLane::routed(&route.app_id)
                 .into_iter()

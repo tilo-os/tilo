@@ -116,16 +116,7 @@ pub fn record(
 ) -> Result<Recording, RecordingError> {
     let document = source.committed_document();
     let ordered = ancestry(document, upto)?;
-    let times: Vec<i64> = ordered
-        .iter()
-        .map(|change| change.time_s.saturating_mul(1000))
-        .collect();
-    let mut start = times.iter().take_while(|time| **time < from_ms).count();
-    let mut from_ms = from_ms;
-    if ordered.len().saturating_sub(start) > limits.steps {
-        start = ordered.len().saturating_sub(limits.steps);
-        from_ms = times.get(start).copied().unwrap_or(from_ms);
-    }
+    let Window { start, from_ms, .. } = window(&ordered, from_ms, limits);
     let mut writer = Writer {
         source: document,
         target: Doc::new(),
@@ -165,20 +156,80 @@ pub fn record(
     if !same_state(document, &before, doc.committed_document(), &heads)? {
         return Err(RecordingError::Diverged);
     }
-    let size = doc.save().len();
+    let size = doc
+        .save()
+        .len()
+        .saturating_add(tilo_content::RECORDING_MAGIC.len());
     if size > limits.bytes {
         return Err(RecordingError::TooLarge(size));
     }
-    let to_ms = ordered
-        .last()
-        .filter(|_| ordered.len() > start)
-        .map_or(from_ms, |change| change.time_s.saturating_mul(1000));
+    let to_ms = window(&ordered, from_ms, limits).to_ms;
     Ok(Recording {
         doc,
         from_ms,
-        to_ms: to_ms.max(from_ms),
+        to_ms,
         steps,
     })
+}
+
+/// What [`record`] would record of `source` with the same arguments, read
+/// from the changes' metadata alone: nothing is written.
+///
+/// # Errors
+///
+/// [`RecordingError::UnknownEnd`] when `source` lacks a change of `upto`.
+pub fn plan(
+    source: &Doc,
+    from_ms: i64,
+    upto: &[ChangeHash],
+    limits: &Limits,
+) -> Result<Planned, RecordingError> {
+    let ordered = ancestry(source.committed_document(), upto)?;
+    let window = window(&ordered, from_ms, limits);
+    Ok(Planned {
+        from_ms: window.from_ms,
+        to_ms: window.to_ms,
+        steps: ordered.len().saturating_sub(window.start),
+    })
+}
+
+/// What a recording would hold, before it is made ([`plan`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Planned {
+    pub from_ms: i64,
+    pub to_ms: i64,
+    pub steps: usize,
+}
+
+/// Where a recording of `ordered` from `from_ms` starts within `limits`.
+struct Window {
+    /// The first change recorded as a step.
+    start: usize,
+    from_ms: i64,
+    to_ms: i64,
+}
+
+fn window(ordered: &[Change], from_ms: i64, limits: &Limits) -> Window {
+    let times: Vec<i64> = ordered
+        .iter()
+        .map(|change| change.time_s.saturating_mul(1000))
+        .collect();
+    let mut start = times.iter().take_while(|time| **time < from_ms).count();
+    let mut from_ms = from_ms;
+    if ordered.len().saturating_sub(start) > limits.steps {
+        start = ordered.len().saturating_sub(limits.steps);
+        from_ms = times.get(start).copied().unwrap_or(from_ms);
+    }
+    let to_ms = times
+        .last()
+        .copied()
+        .filter(|_| ordered.len() > start)
+        .unwrap_or(from_ms);
+    Window {
+        start,
+        from_ms,
+        to_ms: to_ms.max(from_ms),
+    }
 }
 
 impl Recording {
@@ -193,7 +244,10 @@ impl Recording {
         if bytes.len() > limits.bytes {
             return Err(RecordingError::TooLarge(bytes.len()));
         }
-        let doc = Doc::load(bytes).map_err(|error| RecordingError::Invalid(error.to_string()))?;
+        let saved = bytes
+            .strip_prefix(tilo_content::RECORDING_MAGIC)
+            .ok_or_else(|| RecordingError::Invalid("it has no recording header".into()))?;
+        let doc = Doc::load(saved).map_err(|error| RecordingError::Invalid(error.to_string()))?;
         let versions = committed_versions(&doc);
         let (first, rest) = versions
             .split_first()
@@ -229,10 +283,14 @@ impl Recording {
         &self.doc
     }
 
-    /// The saved bytes: what a report carries.
+    /// The saved bytes, behind the recording header
+    /// ([`tilo_content::RECORDING_MAGIC`]) that says what they are: what a
+    /// report carries and what the recorded app opens.
     #[must_use]
     pub fn bytes(&self) -> Vec<u8> {
-        self.doc.clone().save()
+        let mut bytes = tilo_content::RECORDING_MAGIC.to_vec();
+        bytes.extend(self.doc.clone().save());
+        bytes
     }
 
     /// The start state and every step after it, oldest first, as History

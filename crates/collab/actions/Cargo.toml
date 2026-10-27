@@ -6,7 +6,7 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "The Tilo action model: resources, the actions on them, and their registry."
+description = "The Tilo action model: resources, the actions on them, their registry, and adapters for legacy apps."
 
 [lib]
 name = "tilo_actions"

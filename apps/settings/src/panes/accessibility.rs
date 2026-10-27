@@ -15,12 +15,12 @@
 
 use settings_store::dictation::DictationLanguage;
 use settings_store::magnifier;
-use tilo_accessibility_settings::ScreenReaderVoice;
+use tilo_accessibility_settings::{ColorFilter, ScreenReaderVoice};
 
 use crate::accessibility_settings::AccessibilitySettings;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus};
 use ui::tilo_resource::{self, ActionRef};
-use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
+use ui::widget::{AppModel, Dropdown, ModelPath, Picture, Widget};
 
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
@@ -29,7 +29,9 @@ use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::row::SettingRow;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{Item, SettingsSection, error_row, note, rows, section, value_row};
+use crate::widgets::{
+    Item, SettingsSection, error_row, note, rows, section, section_with, value_row,
+};
 
 crate::effects::effect_family!(AccessibilityEffect => answer);
 
@@ -291,7 +293,8 @@ impl AccessibilityPane {
             self.build_vision_card(),
             self.build_pointer_card(),
             self.build_typing_card(),
-            self.build_advanced_card(),
+            self.build_reader_card(),
+            self.build_hearing_card(),
             Self::build_explainer_card(),
         ])
     }
@@ -338,16 +341,7 @@ impl AccessibilityPane {
             large_cursor(&self.cx, &self.access),
         ];
         if self.access().large_cursor {
-            content.push(
-                self.cx
-                    .row(t("a11y-cursor-size"))
-                    .id("a11y.cursor_size")
-                    .nested()
-                    .of(&self.access, access.cursor_size)
-                    .among(values(AccessibilitySettings::CURSOR_SIZES), |size: &u32| {
-                        AccessibilitySettings::cursor_size_label(*size).to_owned()
-                    }),
-            );
+            content.push(cursor_size(&self.cx, &self.access));
         }
         content.extend([
             self.assist(
@@ -399,6 +393,10 @@ impl AccessibilityPane {
             on_screen_keyboard(&self.cx, &self.access),
             switch_control(&self.cx, &self.access),
         ]);
+        let focus_highlight = value_row(
+            &t("a11y-focus-highlight"),
+            &t("a11y-focus-highlight-status"),
+        );
         if on.switch_control {
             content.extend([
                 self.cx
@@ -417,24 +415,35 @@ impl AccessibilityPane {
                     }),
             ]);
         }
+        content.push(focus_highlight);
         section(&t("a11y-typing-title"), rows(content))
     }
 
-    // Working cross-application assists stay writable here. Capabilities
-    // without an apply path remain status rows below so Settings never
-    // promises an inert preference.
-    fn build_advanced_card(&self) -> SettingsSection {
+    // --- Screen reader: its switch heads the group; how it speaks under
+    // it. Without a speech engine the group says why it cannot read.
+    fn build_reader_card(&self) -> SettingsSection {
         let access = AccessibilitySettings::paths();
-        let reader_rows: Vec<Item> = if let Some(backend) = self.speech {
-            vec![
-                self.cx
-                    .row(t("a11y-screen-reader"))
-                    .described(t("a11y-screen-reader-desc"))
-                    .id("a11y.screen_reader")
-                    .toggle_effect(
-                        &self.access.shown(&access.screen_reader, bool::clone),
-                        effect(AccessibilityEffect::SET_SCREEN_READER),
-                    ),
+        let Some(backend) = self.speech else {
+            let row = match super::installed_programs_unreadable() {
+                Some(error) => error_row(
+                    &t("a11y-screen-reader"),
+                    &t_args("settings-programs-error", &[("error", error.into())]),
+                ),
+                None => value_row(&t("a11y-screen-reader"), &t("a11y-screen-reader-missing")),
+            };
+            return section(&t("a11y-screen-reader"), rows(vec![row]));
+        };
+        let switch = self.cx.bind(
+            ui::widget::Toggle::from_state(&self.access.shown(&access.screen_reader, bool::clone))
+                .with_id("a11y.screen_reader")
+                .with_accessible_name(&t("a11y-screen-reader")),
+            effect(AccessibilityEffect::SET_SCREEN_READER),
+        );
+        section_with(
+            &t("a11y-screen-reader"),
+            Box::new(switch),
+            rows(vec![
+                note(&t("a11y-screen-reader-desc")),
                 value_row(&t("a11y-speech-engine"), backend),
                 self.cx
                     .row(t("a11y-speech-rate"))
@@ -458,41 +467,28 @@ impl AccessibilityPane {
                             }),
                         effect(AccessibilityEffect::SET_SPEECH_VOICE),
                     ),
-            ]
-        } else if let Some(error) = super::installed_programs_unreadable() {
-            vec![error_row(
-                &t("a11y-screen-reader"),
-                &t_args("settings-programs-error", &[("error", error.into())]),
-            )]
-        } else {
-            vec![value_row(
-                &t("a11y-screen-reader"),
-                &t("a11y-screen-reader-missing"),
-            )]
-        };
+            ]),
+        )
+    }
+
+    // --- Hearing and dictation: what replaces sound, and how speech
+    // becomes text.
+    fn build_hearing_card(&self) -> SettingsSection {
+        let access = AccessibilitySettings::paths();
         section(
-            &t("a11y-advanced-title"),
-            rows(
-                reader_rows
-                    .into_iter()
-                    .chain([
-                        self.dictation_language_row(),
-                        note(&t("a11y-dictation-language-desc")),
-                        self.assist(
-                            "a11y-dictation-literal",
-                            "a11y.dictation_literal",
-                            access.dictation_literal,
-                        )
-                        .toggle(),
-                        visual_alerts(&self.cx, &self.access),
-                        value_row(
-                            &t("a11y-focus-highlight"),
-                            &t("a11y-focus-highlight-status"),
-                        ),
-                        value_row(&t("a11y-live-captions"), &t("a11y-live-captions-status")),
-                    ])
-                    .collect(),
-            ),
+            &t("a11y-hearing-title"),
+            rows(vec![
+                visual_alerts(&self.cx, &self.access),
+                value_row(&t("a11y-live-captions"), &t("a11y-live-captions-status")),
+                self.dictation_language_row(),
+                self.assist(
+                    "a11y-dictation-literal",
+                    "a11y.dictation_literal",
+                    access.dictation_literal,
+                )
+                .toggle(),
+                note(&t("a11y-dictation-language-desc")),
+            ]),
         )
     }
 
@@ -611,16 +607,31 @@ pub(crate) fn text_size(cx: &PaneCx, appearance: &Followed<AppearancePrefs>) -> 
     cx.row(t("a11y-text-size"))
         .id("a11y.text_size")
         .of(appearance, AppearancePrefs::paths().text_scale)
-        .among(TEXT_SIZES.iter().map(|(_, scale)| *scale), |scale: &f64| {
-            text_size_label(*scale)
-        })
+        .pictures(
+            TEXT_SIZES.iter().map(|(_, scale)| *scale),
+            |scale: &f64| text_size_label(*scale),
+            |scale: &f64| Picture::TextSize(*scale as f32),
+        )
 }
 
 pub(crate) fn colour_filter(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
     cx.row(t("a11y-colour-filter"))
         .id("a11y.color_filter")
         .of(access, AccessibilitySettings::paths().color_filter)
-        .choose()
+        .pictures(
+            <ColorFilter as settings_store::Labelled>::CHOICES
+                .iter()
+                .copied(),
+            |filter: &ColorFilter| settings_store::Labelled::label(*filter).to_owned(),
+            |filter: &ColorFilter| {
+                Picture::ColourFilter(match filter {
+                    ColorFilter::None => ui::widget::ColourFilter::None,
+                    ColorFilter::Grayscale => ui::widget::ColourFilter::Grayscale,
+                    ColorFilter::Inverted => ui::widget::ColourFilter::Inverted,
+                    ColorFilter::GrayscaleInverted => ui::widget::ColourFilter::GrayscaleInverted,
+                })
+            },
+        )
 }
 
 pub(crate) fn magnifier_zoom(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
@@ -646,9 +657,11 @@ pub(crate) fn cursor_size(cx: &PaneCx, access: &Followed<AccessibilitySettings>)
     cx.row(t("a11y-cursor-size"))
         .id("a11y.cursor_size")
         .of(access, AccessibilitySettings::paths().cursor_size)
-        .among(values(AccessibilitySettings::CURSOR_SIZES), |size: &u32| {
-            AccessibilitySettings::cursor_size_label(*size).to_owned()
-        })
+        .pictures(
+            values(AccessibilitySettings::CURSOR_SIZES),
+            |size: &u32| AccessibilitySettings::cursor_size_label(*size).to_owned(),
+            |size: &u32| Picture::Pointer(*size as f32),
+        )
 }
 
 pub(crate) fn sticky_keys(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
@@ -1021,15 +1034,15 @@ mod tests {
         click_and_check(TestApp::<SettingsShell>::for_person(&"ad".repeat(32)).unwrap());
     }
 
-    /// Where text size segment `index` is drawn, as its accessibility node says.
+    /// Where text size picture `index` is drawn, as its accessibility node says.
     fn segment_rect(app: &mut TestApp<SettingsShell>, index: usize) -> vello::kurbo::Rect {
-        let target = format!("a11y.text_size:segment:{index}");
+        let target = format!("a11y.text_size.{index}");
         access_nodes(app)
             .into_iter()
             .find(|node| node.action_target.as_deref() == Some(target.as_str()))
-            .unwrap_or_else(|| panic!("the text size strip publishes {target}"))
+            .unwrap_or_else(|| panic!("the text size choice publishes {target}"))
             .bounds
-            .expect("the segment publishes its bounds")
+            .expect("the picture publishes its bounds")
             .to_rect()
     }
 
@@ -1046,15 +1059,18 @@ mod tests {
             1.15,
             "a click on Large writes"
         );
-        // The click focused the strip: the next segment by key writes too.
-        app.harness().send(&ui::synthetic_input::named_key(
+        // The click focused the choice: the next picture by key writes too.
+        for key in [
             ui::winit::keyboard::NamedKey::ArrowRight,
-        ));
+            ui::winit::keyboard::NamedKey::Enter,
+        ] {
+            app.harness().send(&ui::synthetic_input::named_key(key));
+        }
         settle(&mut app);
         assert_eq!(
             app.settings::<AppearancePrefs>().get().text_scale,
             1.30,
-            "ArrowRight to Larger writes"
+            "ArrowRight and Enter on Larger writes"
         );
         let toggle = ui::widget::find_test_id(app.harness().root_widget(), "a11y.high_contrast")
             .expect("toggle")

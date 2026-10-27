@@ -986,6 +986,18 @@ impl FrameHarness {
         }
     }
 
+    /// The lane the mounted component's record content travels on: the lane
+    /// its window keeps, read as the window reads it, so a test asking what
+    /// the window asked for looks here and not at the process's lane for the
+    /// record.
+    pub fn component_record_content_lane(
+        &self,
+    ) -> Option<std::sync::Arc<crate::collaboration::record_content::ContentLane>> {
+        let binding = &self.component_wake.as_ref()?.binding;
+        let _entry = binding.lifetime.enter_if_open().ok()?;
+        Some(crate::collaboration::record_content::ContentLane::of_window())
+    }
+
     /// The record the mounted component shows.
     pub fn component_record(&self) -> Option<&crate::record::RecordCheckout> {
         self.component_wake
@@ -2114,6 +2126,12 @@ impl FrameHarness {
     #[must_use]
     pub fn root_widget(&self) -> &dyn Widget {
         self.root.as_ref()
+    }
+
+    /// The root widget, mutably, for a test that pokes what it mounted
+    /// between the events it sends.
+    pub fn root_widget_mut(&mut self) -> &mut dyn Widget {
+        self.root.as_mut()
     }
 
     /// Deliver an authenticated transport answer through the native widget tree.

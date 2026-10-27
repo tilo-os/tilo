@@ -950,17 +950,26 @@ fn split_profile(profile: &str) -> String {
 
 /// `wasm-release` when the workspace defines it (small, for shipping),
 /// `wasm-assert` for a bundle that keeps assertions, otherwise `release`;
-/// `dev` for iteration.
+/// for iteration `wasm-dev` when the workspace defines it, otherwise `dev`.
+///
+/// `wasm-dev` is lightly optimised: unoptimised, the desktop module, every
+/// web-capable app in one, has more than the 1,000,000 functions wasm-bindgen
+/// and browsers accept in a module.
 fn web_profile(project: &Project, request: &TargetRequest) -> Result<String> {
-    if !request.release {
-        return Ok("dev".into());
-    }
     let root = read_toml(&project.workspace_root.join("Cargo.toml"))?;
     let defined = |name: &str| {
         root.get("profile")
             .and_then(|profiles| profiles.get(name))
             .is_some()
     };
+    if !request.release {
+        return Ok(if defined("wasm-dev") {
+            "wasm-dev"
+        } else {
+            "dev"
+        }
+        .into());
+    }
     if request.assertions {
         if !defined(assert_profile()) {
             bail!(
@@ -2110,6 +2119,17 @@ printf 'optimizer\n' >> "$(dirname "$output")/../calls"
         assert_eq!(split_profile(assert_profile()), "wasm-assert-split");
         assert_eq!(split_profile("wasm-release"), "wasm-split");
         assert_eq!(split_profile("dev"), "dev");
+    }
+
+    #[test]
+    fn a_development_build_takes_the_light_wasm_profile_where_defined() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = profiled_project(dir.path(), &["wasm-release", "wasm-dev"]);
+        assert_eq!(
+            web_profile(&project, &TargetRequest::new(Target::Web)).unwrap(),
+            "wasm-dev"
+        );
+        assert_eq!(split_profile("wasm-dev"), "wasm-dev");
     }
 
     #[test]

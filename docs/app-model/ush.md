@@ -477,6 +477,35 @@ Outside a guest the same verbs run in the host's own shell, where there is no
 environment record to check: the person's permissions are the only bound, and
 the history lives in `~/.local/share/ush/recoverable`.
 
+## `version` — a file's own history, in the words an agent already knows
+
+A file on a Tilo mount is versioned already: every write appends a version, and
+the mounted file answers that history over the same bounded attributes the file
+manager's History view reads. `version` is that history with git's verbs on it,
+and no store of its own:
+
+```
+$ version status notes.md
+9f14c0aa  notes.md (3 revisions), last edited
+$ version log notes.md          # every revision, with its agent and time
+$ version show notes.md HEAD    # one revision's bytes, for piping
+$ version diff notes.md abc123  # what changed since abc123
+$ version restore notes.md abc123
+notes.md is back to abc123 as a new revision
+```
+
+A revision is named by `HEAD`, a full id, or any unambiguous prefix of one; an
+ambiguous prefix is refused rather than guessed. `restore` goes through the same
+checked-restore path the History view uses, so a file that changed between the
+read and the write is refused instead of overwritten. Every verb takes `--json`
+and prints one object, and a refusal prints a stable `error` code, so a script or
+an agent reads a result instead of parsing prose.
+
+Writing the file *is* the version, so there is no `commit`: a commit a caller
+could forget would let the log disagree with what the person sees. `branch`,
+`merge` and `init` have no meaning here either — a mount is the repository, and
+two people editing one document at once is the CRDT's own collaboration.
+
 ## Commands
 
 ```

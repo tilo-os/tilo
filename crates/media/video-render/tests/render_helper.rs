@@ -33,7 +33,10 @@ mod generated_clip {
     ));
 }
 
-const HELPER: &str = env!("CARGO_BIN_EXE_tilo-video-render");
+/// The render helper, where the run put it.
+fn helper() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-video-render")
+}
 
 /// Whether this machine can encode an agent's video; a test without it says
 /// so and returns, unless `TILO_REQUIRE_MEDIA=1` demands the stack.
@@ -111,14 +114,8 @@ fn run(project: &Project, sources: &[(&str, &[u8])], request: &Request) -> Finis
         job.put_source(hash, &mut &bytes[..]).unwrap();
     }
     let deadline = Instant::now() + Duration::from_secs(120);
-    client::render(
-        std::path::Path::new(HELPER),
-        &job,
-        request,
-        deadline,
-        &mut |_, _| true,
-    )
-    .unwrap_or_else(|error| panic!("the helper rendered nothing: {error}"))
+    client::render(&helper(), &job, request, deadline, &mut |_, _| true)
+        .unwrap_or_else(|error| panic!("the helper rendered nothing: {error}"))
 }
 
 fn bytes(mut finished: Finished) -> (Reply, Vec<u8>) {
@@ -186,7 +183,7 @@ fn a_render_whose_source_is_missing_says_so() {
     job.put_snapshot(&video_editor::seed::document_of(&project).save())
         .unwrap();
     let outcome = client::render(
-        std::path::Path::new(HELPER),
+        &helper(),
         &job,
         &Request::Video { settings: SETTINGS },
         Instant::now() + Duration::from_secs(60),

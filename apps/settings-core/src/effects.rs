@@ -280,7 +280,6 @@ pub const PART: crate::area::Part = crate::area::Part {
     panes: &[],
     families: &[(10, NavigationEffect::FAMILY)],
     live_areas: &[],
-    sections: &[],
     settings: &[],
 };
 

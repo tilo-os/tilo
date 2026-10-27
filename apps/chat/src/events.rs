@@ -866,6 +866,7 @@ impl ChatApp {
             }
             Hit::CopyResourceLink(message) => self.begin_resource_navigation(&message),
             Hit::OpenResource(message) => self.open_shared_resource(&message),
+            Hit::ReplayRecording(message) => self.replay_recording(&message),
             Hit::OpenShare(message) => self.open_share(&message),
             Hit::StopShare(message) => self.stop_share(doc, &message),
             Hit::SwitchShare(message, access) => self.switch_share(doc, &message, access),

@@ -209,6 +209,8 @@ def leave_running(ctx, chk: Check, res: Result) -> None:
 
 
 LEFT_STUCK = "left a window that does not close"
+# The facts key under which a check names the window groups it hands on to later checks.
+KEPT_WINDOWS = "kept_windows"
 # How long the windows of an app the harness ended are given to go.
 STUCK_GONE_S = 15
 
@@ -246,10 +248,13 @@ def leave_no_stuck_windows(ctx, chk: Check, res: Result) -> None:
     the app of one that survives its close has its processes ended, and the slot session
     is restarted if its window still stays. The check that left it fails, however it ended."""
     try:
-        if not all_groups(ctx.state()):
-            return
+        left = {g.get("id") for g in all_groups(ctx.state())}
     except (VmError, KeyError, TypeError):
         return  # no state to read: leave_running owns that
+    # Windows a check hands on to the checks after it (W01's two for W02-W07) are not
+    # this check's leftovers: closing them broke every check that needs them.
+    if not left - set(ctx.facts.get(KEPT_WINDOWS, ())):
+        return
     try:
         ctx.close_all_windows()
         return

@@ -8454,9 +8454,25 @@ fn attach_peer_presence(
         "collab: subscribed to {} room(s) for peer presence",
         rooms.len()
     );
+    bind_window_routes(frame_builder, broker);
     frame_builder.set_peer_presence(crate::shell::peer_presence::PeerPresence::attach(
         broker, net, rooms,
     ));
+}
+
+/// Tell the in-process apps which records the session's windows hold, as
+/// its broker knows them: what a report about a window records.
+fn bind_window_routes(
+    frame_builder: &mut FrameBuilder,
+    broker: &crate::shell::collab_broker::BrokerHandle,
+) {
+    let fanout = Arc::clone(&broker.fanout);
+    frame_builder.with_chrome(|chrome| {
+        if let Some(apps) = chrome.hosted_inputs.in_process() {
+            apps.borrow_mut()
+                .bind_window_routes(Arc::new(move || fanout.window_records()));
+        }
+    });
 }
 
 fn spawn_session_identity_broker(
@@ -9482,6 +9498,9 @@ pub fn run() {
     //
     // The shell lays out the logical desktop spanning every output; each
     // output then draws its part into its own sub-rect of the scene.
+    // `HEAP-MILESTONE` lines through startup: which step the idle compositor's heap
+    // came from (`crate::shell::heap_trim::log_milestone`).
+    crate::shell::heap_trim::log_milestone("backend-ready");
     let initial_size = match logical_geometry(backend.outputs()) {
         (0, 0) => (1600, 900),
         size => size,
@@ -9610,6 +9629,7 @@ pub fn run() {
         peer_sync_possible: enable_peer_sync,
         notice: state_notice,
     } = load_session_tree(enable_peer_sync);
+    crate::shell::heap_trim::log_milestone("session-tree-loaded");
     let mut state = State::new_with_workspace_tree(
         event_loop.handle(),
         display_handle.clone(),
@@ -9680,6 +9700,7 @@ pub fn run() {
             tracing::warn!(%error, "could not create the history description wake source; descriptions are sent on the next wake");
         }
     }
+    crate::shell::heap_trim::log_milestone("desktop-built");
     let clipboard_store = state.selection_store();
     frame_builder
         .host_mut()
@@ -10847,6 +10868,7 @@ pub fn run() {
     // still asked to wait here is reported to the main-thread audit.
     super::liveness::audit_storage_waits();
     let no_storage_waits = durable_store::waiting::forbid_on_this_thread();
+    crate::shell::heap_trim::log_milestone("services-started");
     while !close_requested {
         dictation_vocabulary.refresh(&mut state);
         if termination.requested() {
@@ -12904,7 +12926,7 @@ pub fn run() {
                 fields_withheld: receipts_only && !speech_field_needed,
             },
             frame_builder.focused_ime_field(test_control_ctx.focus),
-            test_control_ctx.focus.map(u64::from),
+            frame_builder.native_field_identity(test_control_ctx.focus),
         );
         let shell_field = owner.as_ref().map(|(field, _)| *field);
         let owner_id = owner.map(|(_, id)| id);

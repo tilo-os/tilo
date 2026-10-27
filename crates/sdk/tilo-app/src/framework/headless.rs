@@ -555,6 +555,26 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
+    /// The app replaying the recording `file` holds, as the session opens a
+    /// recording a report carries: in a private window of its own.
+    ///
+    /// # Errors
+    /// Returns any launch or construction failure, and the refusal of bytes
+    /// that are no recording.
+    pub fn replaying(file: OpenFile) -> Result<Self, LaunchError> {
+        let profile = Rc::new(profile_directory().map_err(operation)?);
+        Self::open(
+            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+            Role::Owner,
+            AUTHOR,
+            &[],
+            Some(file),
+            None,
+            None,
+            HostContext::provide_private,
+        )
+    }
+
     /// The app on the profile `--data-dir directory` opens, as its owner.
     /// Only one writer may hold a profile: this fails while the app (or
     /// another `HeadlessApp`) has it open.

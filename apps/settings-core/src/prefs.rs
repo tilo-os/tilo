@@ -1,8 +1,11 @@
 //! The system preferences Settings' panes edit: the section models are
-//! [`settings_sections::prefs`]'s, which the session keeps as records too;
-//! what is here words them for the panes.
+//! [`settings_sections`]', which the session keeps as records too; what is
+//! here words them for the panes.
 
+pub use settings_sections::desktop::*;
+pub use settings_sections::osk::{KEYBOARD_APP_ID, OskSourceSettings};
 pub use settings_sections::prefs::*;
+pub use settings_sections::providers::AgentProviders;
 
 /// The catalogue key naming the mute duration `english`.
 fn mute_ftl(english: &str) -> &'static str {

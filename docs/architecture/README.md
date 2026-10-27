@@ -104,6 +104,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `workspace.md` | one workspace: layout, people and state in one room, one engine for every host |
 | `rooms.md` | workspaces, hosts, membership |
 | `hosting.md` | the target for hosting: one governor and many record hosts, many workspaces per host, devices and identity, the shared browser |
+| `hosting-capacity.md` | one zone's declared capacity and service level, the control-plane limits its hosts share, and the bounds on what a released room keeps |
 | `web-routing.md` | links: one URL grammar over resource refs, desktop and full-tab modes, history, admission, `share-link` |
 | `storage.md` | unified storage, sync, records, history and caching (design for review) |
 | `security.md` | sandbox and capability grants for app code |

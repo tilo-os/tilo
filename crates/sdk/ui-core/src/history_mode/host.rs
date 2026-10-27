@@ -447,6 +447,9 @@ impl HistoryHost {
             painted: None,
         };
         host.rebuild_toolbar();
+        if let Some(entry) = host.registration.opening_at.take() {
+            host.request_open_at(entry);
+        }
         Ok(host)
     }
 

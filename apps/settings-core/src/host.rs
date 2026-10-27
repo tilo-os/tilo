@@ -54,11 +54,7 @@ impl<T> Section for T where
 }
 
 /// The published actions of section `T`, held for the panes.
-#[allow(
-    clippy::implicit_hasher,
-    reason = "the panes' sections are held in the window's one map, by its own hasher"
-)]
-pub fn held<T: Section>(
+fn held<T: Section>(
     cx: &ui::framework::SurfaceCx<Settings>,
     sections: &mut HashMap<TypeId, Box<dyn Any>>,
 ) {
@@ -84,9 +80,14 @@ fn sections(cx: &ui::framework::SurfaceCx<Settings>) -> HashMap<TypeId, Box<dyn 
     held::<crate::prefs::DisplayPrefs>(cx, &mut sections);
     held::<tilo_locale::Locale>(cx, &mut sections);
     held::<crate::continuity::ContinuityPrivacy>(cx, &mut sections);
-    for section in &crate::area::registry().sections {
-        (section.held)(cx, &mut sections);
-    }
+    held::<crate::shortcut_settings::ShortcutPrefs>(cx, &mut sections);
+    held::<crate::prefs::DesktopControls>(cx, &mut sections);
+    held::<crate::prefs::DefaultApps>(cx, &mut sections);
+    held::<crate::prefs::ClockPrefs>(cx, &mut sections);
+    held::<crate::prefs::SharedDisplayPrefs>(cx, &mut sections);
+    held::<crate::prefs::AutomaticDisplayPrefs>(cx, &mut sections);
+    held::<crate::prefs::AgentProviders>(cx, &mut sections);
+    held::<crate::prefs::OskSourceSettings>(cx, &mut sections);
     sections
 }
 

@@ -122,6 +122,7 @@ macro_rules! read_through_json_value {
 }
 
 pub mod action;
+pub mod adapter;
 pub mod appearance;
 pub mod compact;
 pub mod content;
@@ -152,6 +153,10 @@ pub mod task_step;
 pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind, asks_first,
     undo_takes_back,
+};
+pub use adapter::{
+    ADAPTER_OPERATION_TYPE, ActionAdapter, AdapterAction, AdapterInvocation, Check, Implementation,
+    Layer, Observation, Skipped, Step, Undo,
 };
 pub use appearance::{Appearance, AppearanceError, Persona};
 pub use content::{

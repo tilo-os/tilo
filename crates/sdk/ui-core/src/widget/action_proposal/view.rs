@@ -29,7 +29,7 @@ impl<R: tilo_resource::Resource> ActionProposalView<R> {
     /// writes at `target`.
     #[must_use]
     pub fn new(proposal: ActionProposal, target: ProposalTarget<R>) -> Self {
-        let mut sheet = Column::new().with_gap(8.0);
+        let mut sheet = Column::new().with_rhythm(crate::tokens::Rhythm::Related);
         let mut index = 0;
         let push = |sheet: Column, widget: Text, index: &mut usize| {
             let id = format!("proposal-{index}");
