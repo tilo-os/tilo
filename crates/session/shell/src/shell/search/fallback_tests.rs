@@ -17,6 +17,7 @@ use crate::shell::search::providers::{AskAgentProvider, WebProvider};
 use crate::shell::search::{
     QueryArgs, ResourceKind, SearchContext, SearchProvider, SearchRegistry, SearchResult,
 };
+use crate::shell::state::FreshId as _;
 use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
 
 const NOTES: &str = "notes";

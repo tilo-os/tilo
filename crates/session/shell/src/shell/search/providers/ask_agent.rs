@@ -24,7 +24,7 @@ use crate::shell::chrome_state::{Chrome, ChromeState, WsTab};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
-use crate::shell::state::RoomId;
+use crate::shell::state::{RoomId, WorkspaceAuthority as _};
 
 pub const PROVIDER_ID: &str = "ask-agent";
 
