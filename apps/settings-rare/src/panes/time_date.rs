@@ -267,12 +267,31 @@ pub trait Clock: Send + Sync {
     ///
     /// The underlying `timedatectl set-timezone` failure text.
     fn set_timezone(&self, timezone: &str) -> Result<(), String>;
+    /// Follow timedated: `changed` is called, on another thread, each time
+    /// it reports a change (the zone, automatic time), for as long as the
+    /// answer is held. `None` when nothing can be followed.
+    fn follow(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
 }
 
 /// The device's clock through timedated.
 pub struct SystemClock;
 
 impl Clock for SystemClock {
+    fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        match os_actions::bus_follow::follow_system_services(
+            &["org.freedesktop.timedate1"],
+            changed,
+        ) {
+            Ok(follow) => Some(Box::new(follow)),
+            Err(error) => {
+                tracing::warn!(target: "tilo::settings", %error, "the clock's changes are not followed");
+                None
+            }
+        }
+    }
+
     fn status(&self) -> Result<os_actions::TimeSyncStatus, String> {
         crate::device_read::off_ui_thread();
         let mut status = os_actions::get_time_sync_status()?;
@@ -486,9 +505,19 @@ pub struct TimeDateArea {
     reading: Reading<ClockReading>,
     /// Why the last change failed, for the pane to show.
     notice: LocalState<Option<String>>,
+    /// What tells the area the clock changed while a pane shows it.
+    following: std::cell::RefCell<std::rc::Weak<crate::watch::Counted>>,
 }
 
 impl TimeDateArea {
+    /// Follow the clock while a pane shows it; panes share one follow.
+    fn follow(&self) -> Rc<crate::watch::Counted> {
+        let clock = Arc::clone(&self.clock);
+        crate::watch::shared(&mut self.following.borrow_mut(), move || {
+            crate::watch::Counted::start(|changed| clock.follow(changed))
+        })
+    }
+
     /// Read the clock in the background unless it has been, so the page
     /// opens on what it last reported.
     pub(crate) fn warm(&self) {
@@ -514,6 +543,7 @@ impl TimeDateArea {
             clock,
             reading: Reading::new(move || ClockReading::read(read.as_ref())),
             notice: LocalState::new(None),
+            following: std::cell::RefCell::default(),
         }
     }
 }
@@ -606,6 +636,12 @@ pub struct TimeDatePane {
     /// `update` saw, so a frame that reported nothing syncs nothing, and a
     /// later landing is taken up by the frame its wake asks for.
     reading_reported: u64,
+    /// What tells the pane timedated changed something: each change reads
+    /// the clock again.
+    following: Rc<crate::watch::Counted>,
+    /// The change count last read for, and the one the last `update` saw.
+    changes_seen: Option<u64>,
+    changes_reported: Option<u64>,
     /// The minute the last `update` read the clock at, which `sync` builds
     /// for when it is past the one shown: the clock moves on between the two
     /// as well.
@@ -641,7 +677,11 @@ impl TimeDatePane {
         let locale = cx.follow::<Locale>();
         let prefs = cx.follow::<ClockPrefs>();
         area.reading.refresh();
+        let following = area.follow();
         let mut pane = Self {
+            changes_seen: following.changes(),
+            changes_reported: following.changes(),
+            following,
             cx,
             clock: Arc::clone(&area.clock),
             locale,
@@ -874,7 +914,9 @@ impl Widget for TimeDatePane {
     fn update(&mut self, state: &AppModel, root: &ModelPath) -> bool {
         self.reading_reported = self.reading.revision();
         self.minute_reported = self.minute_now();
+        self.changes_reported = self.following.changes();
         let own = self.reading_reported != self.reading_seen
+            || self.changes_reported != self.changes_seen
             || self.notice.get() != self.notice_shown
             || self.minute_reported > self.minute.get()
             || self.locale.moved()
@@ -887,6 +929,10 @@ impl Widget for TimeDatePane {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        if self.changes_reported != self.changes_seen {
+            self.changes_seen = self.changes_reported;
+            self.reading.refresh();
+        }
         let revision = self.reading_reported;
         if revision != self.reading_seen {
             self.reading_seen = revision;
@@ -1090,6 +1136,76 @@ mod tests {
         for child in widget.children() {
             ids_of(child, ids);
         }
+    }
+
+    /// A clock whose timedated's changes are followed by hand.
+    #[derive(Default)]
+    struct FollowedClock {
+        sample: SampleClock,
+        reads: std::sync::atomic::AtomicUsize,
+        follower: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    }
+
+    impl Clock for FollowedClock {
+        fn status(&self) -> Result<os_actions::TimeSyncStatus, String> {
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.sample.status()
+        }
+        fn ntp(&self) -> Result<bool, String> {
+            self.sample.ntp()
+        }
+        fn zones(&self) -> Result<Vec<String>, String> {
+            self.sample.zones()
+        }
+        fn now(&self, formats: &ui::format::Formats) -> (String, String) {
+            self.sample.now(formats)
+        }
+        fn set_ntp(&self, enabled: bool) -> Result<(), String> {
+            self.sample.set_ntp(enabled)
+        }
+        fn set_timezone(&self, timezone: &str) -> Result<(), String> {
+            self.sample.set_timezone(timezone)
+        }
+        fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+            *self.follower.lock_recover() = Some(Arc::from(changed));
+            Some(Box::new(()))
+        }
+    }
+
+    /// The open page reads the clock again when timedated reports a change,
+    /// and only then: a zone set elsewhere shows.
+    #[test]
+    fn the_shown_page_reads_the_clock_again_when_timedated_reports_a_change() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let clock = Arc::new(FollowedClock::default());
+        let area = TimeDateArea::over(Arc::clone(&clock) as Arc<dyn Clock>);
+        let mut pane = TimeDatePane::new(cx, &area);
+        let reads = || clock.reads.load(std::sync::atomic::Ordering::Relaxed);
+        let doc = ui::automerge::AutoCommit::new();
+        let frame = |pane: &mut TimeDatePane| {
+            pane.update(&doc, &ui::automerge::ROOT);
+            pane.sync(&doc, &ui::automerge::ROOT);
+        };
+        tilo_test_env::wait_for("the clock is read", || area.reading.get());
+        frame(&mut pane);
+        assert_eq!(reads(), 1);
+        let changed = clock
+            .follower
+            .lock_recover()
+            .clone()
+            .expect("timedated is followed while the page shows");
+
+        clock.sample.status.lock_recover().timezone = Some("Asia/Tokyo".to_owned());
+        changed();
+        tilo_test_env::wait_for("the clock is read again", || {
+            frame(&mut pane);
+            (pane.timezone == "Asia/Tokyo").then_some(())
+        });
+        assert_eq!(reads(), 2, "one change, one read");
+        frame(&mut pane);
+        assert_eq!(reads(), 2, "nothing reads while nothing changes");
     }
 
     #[test]

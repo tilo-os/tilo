@@ -3667,20 +3667,20 @@ impl PaneModel for NetworkModel {
     }
 
     fn next_wake(&self) -> Option<ui::time::Instant> {
-        let scan = self
-            .scans_networks()
+        self.scans_networks()
             .then(|| self.scanned_at?.checked_add(SCAN_EVERY))
-            .flatten();
-        let mobile = self
-            .mobile
-            .as_ref()
-            .and_then(|mobile| mobile.try_borrow().ok()?.next_wake());
-        scan.into_iter().chain(mobile).min()
+            .flatten()
     }
 
     fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
         let device = self.follow_device();
-        Some(Rc::new((device, self.follow_device_vpn())))
+        // The modem's card and page are this pane's: it follows the modems
+        // too.
+        let mobile = self
+            .mobile
+            .as_ref()
+            .and_then(|mobile| mobile.try_borrow_mut().ok()?.follow());
+        Some(Rc::new((device, self.follow_device_vpn(), mobile)))
     }
 
     // The scan's networks replace "Scanning…" when it lands.
