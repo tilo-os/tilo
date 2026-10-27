@@ -40,6 +40,10 @@ mod one_place;
 mod window_bar_reactions;
 mod window_search;
 
+#[cfg(test)]
+#[path = "scenario/strip_pan_and_tab_drag.rs"]
+mod strip_pan_and_tab_drag;
+
 /// One tab of a window seeded for the window-bar shots.
 #[derive(Debug, Clone, Copy)]
 pub struct BarTab {
@@ -112,6 +116,14 @@ pub enum Action {
     /// Move an active whole-group drag beyond the named group's midpoint,
     /// resolving the after-slot without baking viewport geometry into a shot.
     MoveCursorGroupReorderTarget(usize),
+    /// Move onto a live group's tab bar, where releasing a carried tab drops
+    /// it into that group's tab list after pill `after_tab` (or first, when
+    /// `None`) — the landing spot a person drags a tab to, resolved from the
+    /// bar so it does not bake viewport geometry into a shot.
+    MoveCursorGroupTabBar {
+        group: usize,
+        after_tab: Option<usize>,
+    },
     /// Synthesise a `CursorMoved` without a press/release. Use with
     /// `MousePress`/`MouseRelease` to compose drags that need mid-
     /// gesture snapshots — useful for the new tab-bar `hover_drop_idx`
@@ -1064,6 +1076,11 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::MoveCursorGroupReorderTarget(index) => {
             if !driver.move_cursor_to_group_reorder_target(*index) {
                 eprintln!("scenario: could not resolve group {index}'s reorder target");
+            }
+        }
+        Action::MoveCursorGroupTabBar { group, after_tab } => {
+            if !driver.move_cursor_to_group_tab_bar(*group, *after_tab) {
+                eprintln!("scenario: could not resolve group {group}'s tab bar");
             }
         }
         Action::MousePress => driver.press(),
@@ -2254,6 +2271,10 @@ const HALF_WIDTH_PERMILLE: u32 = 500;
 /// demo takes when it wants several apps visible together, and it is the
 /// shape a group's tab strip has the least room in.
 const THIRD_WIDTH_PERMILLE: u32 = 333;
+
+/// How far a tab is carried before the strip is asked where it may land:
+/// past the distance a press needs to move before it is a drag.
+const FILES_DRAG_LIFT_PX: f64 = 40.0;
 
 /// Points along the pill's 180 ms reveal curve worth looking at. Dense
 /// at the start, where the ease-out does most of its travelling.
@@ -4918,6 +4939,113 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(PAN_SETTLE_FRAMES),
                 Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
                 Action::Snapshot("08-panned-back"),
+            ],
+        },
+        Scenario {
+            name: "strip_pan_and_tab_drag",
+            description: "The scrolling strip as a showcase: Files, Terminal and Editor as \
+                      three working windows along the strip, two of them in the first window, \
+                      one of those tabs dragged into the Terminal window, and a pan across \
+                      them and back.",
+            actions: vec![
+                // Boot hands us one four-tab group. Cut it to a lone window so
+                // the next app lands in a column of its own rather than as
+                // another tab.
+                Action::LoneWindow(0),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(4),
+                Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+                Action::Wait(2),
+                Action::OpenHostedWindow {
+                    app: "Files",
+                    title: "Files",
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+                Action::SelectGroup(Some(1)),
+                Action::Wait(4),
+                Action::OpenHostedWindow {
+                    app: "Terminal",
+                    title: "Terminal",
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+                Action::SelectGroup(Some(2)),
+                Action::Wait(4),
+                Action::OpenHostedWindow {
+                    app: "Editor",
+                    title: "Editor",
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+                // The first window carries a second tab: a launch only joins
+                // a bar that already holds more than one, so the tab the drag
+                // needs is added rather than opened beside it.
+                Action::SelectGroup(Some(0)),
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                Action::AddHostedTab {
+                    app: "Notes",
+                    title: "Notes",
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                // The window the tab is dragged out of, already holding two:
+                // the Files window, with the strip home before the pan.
+                Action::Snapshot("01-files-two-tabs"),
+                // The two windows it is dragged to, each at its own work.
+                Action::SelectGroup(Some(1)),
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                Action::Snapshot("02-terminal"),
+                Action::SelectGroup(Some(2)),
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                Action::Snapshot("03-editor"),
+                // The pill is carried by name: its centre is where the first
+                // window's bar draws it, whatever the viewport. The release
+                // lands on the Terminal window's bar, resolved from the live
+                // bar so it cannot fall into the gap between the windows and
+                // split off a window of its own.
+                Action::SelectGroup(Some(0)),
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                Action::MoveCursorNamed("tab:Notes"),
+                Action::MousePress,
+                Action::MoveCursorBy(FILES_DRAG_LIFT_PX),
+                Action::Snapshot("04-tab-lifted"),
+                Action::MoveCursorGroupTabBar {
+                    group: 1,
+                    after_tab: Some(0),
+                },
+                Action::Snapshot("05-over-the-next-window"),
+                Action::MouseRelease,
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                // The drop leaves the strip home, so this one frame is both
+                // the tab in its new window and the travel's starting point.
+                Action::Snapshot("06-tab-in-the-next-window"),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                // Held at the far end, then let go there: the released frame
+                // is the one that shows the strip resting past the last
+                // window, and the frame the travel back starts from.
+                Action::StripPan(10_000.0),
+                Action::Relayout,
+                Action::Snapshot("07-held-at-the-last-window"),
+                Action::EndStripPan,
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                Action::Snapshot("08-panned-to-the-last-window"),
+                Action::StripPan(-10_000.0),
+                Action::Relayout,
+                Action::Snapshot("09-panned-back"),
+                Action::EndStripPan,
+                Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
+                Action::Snapshot("10-settled-back-home"),
             ],
         },
         Scenario {
