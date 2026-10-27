@@ -219,7 +219,7 @@ fn opening_a_retained_profile_migrates_and_restores_live_player_actions() {
     assert_eq!(app.read_document(evolution::stored_version), 2);
     let rows = app.agent_surface();
     assert!(
-        rows.as_array().unwrap().iter().any(|row| {
+        rows["actions"].as_array().unwrap().iter().any(|row| {
             row["resource"] == "music.player:player" && row["action"] == "playback-status"
         }),
         "the migrated view must publish its real live player row"

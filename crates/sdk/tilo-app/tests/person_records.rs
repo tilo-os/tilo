@@ -193,7 +193,7 @@ fn the_palette_and_agents_take_back_the_persons_own_steps() {
     // The record is published beside the app's resource, with its verbs
     // and field edits and the person's undo and redo.
     let surface = app.agent_surface();
-    let actions: Vec<&str> = surface
+    let actions: Vec<&str> = surface["actions"]
         .as_array()
         .unwrap()
         .iter()

@@ -1923,7 +1923,7 @@ mod tests {
 
         // The palette: the conflict's row.
         let surface = app.agent_surface();
-        let conflict = surface
+        let conflict = surface["actions"]
             .as_array()
             .unwrap()
             .iter()

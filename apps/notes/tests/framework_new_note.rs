@@ -161,7 +161,7 @@ fn a_note_made_over_actions_publishes_its_edits_and_they_edit_it() {
     let note = notes::actions::page_resource_id(page);
     let surface = app.agent_surface();
     let published = |resource: &str, action: &str| {
-        surface.as_array().unwrap().iter().any(|row| {
+        surface["actions"].as_array().unwrap().iter().any(|row| {
             row["resource"] == resource && row["action"] == action && row["operation"] == "Document"
         })
     };
@@ -211,7 +211,7 @@ fn notes_made_one_after_another_over_actions_stay_in_order() {
     for page in &pages {
         let note = notes::actions::page_resource_id(page.id);
         assert!(
-            surface
+            surface["actions"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -248,7 +248,7 @@ fn assert_shows(app: &mut TestApp<NotesShell>, titles: &[&str]) {
     for page in &pages {
         let note = notes::actions::page_resource_id(page.id);
         assert!(
-            surface
+            surface["actions"]
                 .as_array()
                 .unwrap()
                 .iter()

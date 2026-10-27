@@ -216,7 +216,7 @@ mod tests {
         // The person's record of what was learned offers changing it and
         // taking a change back, never a way to read what it holds.
         let surface = app.agent_surface();
-        let learned: Vec<&serde_json::Value> = surface
+        let learned: Vec<&serde_json::Value> = surface["actions"]
             .as_array()
             .into_iter()
             .flatten()

@@ -610,7 +610,7 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     let surface = app.agent_surface();
     let on = |resource: &str| {
-        surface
+        surface["actions"]
             .as_array()
             .unwrap()
             .iter()

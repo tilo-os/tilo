@@ -478,7 +478,7 @@ mod tests {
         let mut wide = TestApp::<WindowsShell>::capture(Some("wide")).unwrap();
         assert_eq!(wide.harness().inspection().viewport, [1280, 800]);
         let surface = wide.agent_surface();
-        let rows = surface.as_array().unwrap();
+        let rows = surface["actions"].as_array().unwrap();
         assert!(rows.iter().any(|row| {
             row["resource"] == "windows.app:adobe-reader" && row["action"] == "launch"
         }));

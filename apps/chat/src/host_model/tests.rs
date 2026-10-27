@@ -692,7 +692,7 @@ fn model_capabilities_are_mount_local() {
         (chain.as_str(), "stream-output"),
     ] {
         assert!(
-            surface
+            surface["actions"]
                 .as_array()
                 .unwrap()
                 .iter()

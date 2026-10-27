@@ -812,7 +812,7 @@ fn refreshing_and_opml_are_effects_of_the_reader() {
     let mut app = TestApp::<FeedsShell>::new().unwrap();
     let surface = app.agent_surface();
     let action = |id: &str| {
-        surface
+        surface["actions"]
             .as_array()
             .unwrap()
             .iter()

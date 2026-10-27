@@ -712,7 +712,7 @@ mod tests {
         app.settle();
         let address = "settings.shared-display:offline-peer:edid:panel-1";
         let surface = app.agent_surface();
-        let row = surface
+        let row = surface["actions"]
             .as_array()
             .unwrap()
             .iter()
@@ -785,7 +785,7 @@ mod tests {
         let address = "settings.shared-display:offline-peer:edid:panel-1";
         let offered = |app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
                        action: &str| {
-            app.agent_surface()
+            app.agent_surface()["actions"]
                 .as_array()
                 .unwrap()
                 .iter()

@@ -94,7 +94,7 @@ fn an_items_rich_text_is_published_beneath_the_item_as_rich_text() {
     let hello = letter(&app, "Hello");
     let body = format!("test.letters/letters/{hello}/body");
     let surface = app.agent_surface();
-    let rows: Vec<&serde_json::Value> = surface
+    let rows: Vec<&serde_json::Value> = surface["actions"]
         .as_array()
         .unwrap()
         .iter()
@@ -114,7 +114,7 @@ fn an_items_rich_text_is_published_beneath_the_item_as_rich_text() {
     }
     // The record does not repeat them with a letter to name.
     assert!(
-        !surface
+        !surface["actions"]
             .as_array()
             .unwrap()
             .iter()

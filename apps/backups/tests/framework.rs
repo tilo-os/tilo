@@ -10,7 +10,7 @@ use backups::{BackupLocation, BackupsShell};
 use ui::framework::testing::TestApp;
 
 fn row<'a>(surface: &'a serde_json::Value, resource: &str, action: &str) -> &'a serde_json::Value {
-    surface
+    surface["actions"]
         .as_array()
         .unwrap()
         .iter()
@@ -128,7 +128,7 @@ fn backups_run_as_jobs_against_this_devices_repository_and_follow_the_policy() {
     app.settle();
     let surface = app.agent_surface();
     assert!(
-        !surface
+        !surface["actions"]
             .as_array()
             .unwrap()
             .iter()

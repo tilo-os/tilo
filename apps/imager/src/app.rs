@@ -5248,7 +5248,8 @@ mod tests {
         assert!(!targets.contains_key("imager.write"));
         let door = host.agent_surface();
         assert!(
-            door.as_array()
+            door["actions"]
+                .as_array()
                 .unwrap()
                 .iter()
                 .any(|row| row["action"] == ImagerEffect::PREPARE_OFFLINE_MIGRATION.id)

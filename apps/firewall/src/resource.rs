@@ -467,7 +467,7 @@ mod tests {
     use ui::prelude::TestApp;
 
     fn action<'a>(surface: &'a serde_json::Value, id: &str) -> Option<&'a serde_json::Value> {
-        surface
+        surface["actions"]
             .as_array()?
             .iter()
             .find(|row| row["resource"] == "firewall.config" && row["action"] == id)

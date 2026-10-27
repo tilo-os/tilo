@@ -89,7 +89,7 @@ fn agents_edit_the_bytes_through_the_published_actions() {
     let mut app = launched(&path);
 
     let surface = app.agent_surface();
-    let published: Vec<(String, String)> = surface
+    let published: Vec<(String, String)> = surface["actions"]
         .as_array()
         .unwrap()
         .iter()

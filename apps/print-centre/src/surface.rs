@@ -2148,7 +2148,7 @@ mod tests {
     }
 
     fn row_id(surface: &ui::serde_json::Value, kind: &str) -> String {
-        surface
+        surface["actions"]
             .as_array()
             .and_then(|rows| rows.iter().find(|row| row["resource_kind"] == kind))
             .and_then(|row| row["resource"].as_str())
@@ -2185,7 +2185,7 @@ mod tests {
             let audit = app.harness().native_app_audit();
             assert!(audit.is_certified(), "{audit:?}");
             let surface = app.agent_surface();
-            let actions = surface
+            let actions = surface["actions"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -2225,7 +2225,7 @@ mod tests {
             let frame = app.harness().inspection_json().unwrap();
             assert!(frame.contains("print-centre.scan.resolution"), "{frame}");
             assert!(
-                app.agent_surface()
+                app.agent_surface()["actions"]
                     .as_array()
                     .unwrap()
                     .iter()
