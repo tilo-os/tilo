@@ -18,11 +18,13 @@ use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 /// The window menu of a tabbed window, top to bottom.
-const TABBED_LABELS: [&str; 10] = [
+const TABBED_LABELS: [&str; 12] = [
     "Full screen",
     "Maximize",
     "Move to strip",
     "Move to workspace",
+    "Move to display",
+    "Width",
     "New tab",
     "Split right",
     "Move to new group",
@@ -31,11 +33,13 @@ const TABBED_LABELS: [&str; 10] = [
     "Tell an agent…",
 ];
 /// The window menu of a window of one tab.
-const SINGLE_LABELS: [&str; 7] = [
+const SINGLE_LABELS: [&str; 9] = [
     "Full screen",
     "Maximize",
     "Move to strip",
     "Move to workspace",
+    "Move to display",
+    "Width",
     "New tab",
     "Close window",
     "Tell an agent…",
