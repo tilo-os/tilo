@@ -5,7 +5,7 @@ use super::{AuthenticatedPeer, Envelope, PeerError, RoomOperation, SessionCtx};
 
 /// Handle `OpenRecord`: under the admission a replay has, mark the record
 /// held by the device, so its live changes reach it from now on, then send
-/// it everything retained of the record and [`Envelope::RecordOpened`].
+/// it everything retained of the record and, after it, [`Envelope::RecordOpened`].
 /// Marking first means no change committed meanwhile is missed; one that is
 /// both sent and retained arrives twice, which a record takes as once.
 pub(super) async fn handle_open_record(
@@ -45,16 +45,20 @@ pub(super) async fn handle_open_record(
         .await
         .map_err(|error| PeerError::Protocol(format!("record read: {error}")))??;
     let sent = u32::try_from(frames.len()).unwrap_or(u32::MAX);
-    for frame in frames {
-        session
-            .outbound
-            .send(frame)
-            .await
-            .map_err(|_| PeerError::Protocol("outbound writer closed".into()))?;
-    }
-    Ok(Some(Envelope::RecordOpened {
+    // On the queue the frames go out on, behind them: a reply is written by
+    // another task and could overtake them, so a device would hear the
+    // record was sent before it arrived.
+    let opened = Envelope::RecordOpened {
         workspace_id,
         channel,
         frames: sent,
-    }))
+    };
+    for envelope in frames.into_iter().chain(std::iter::once(opened)) {
+        session
+            .outbound
+            .send(envelope)
+            .await
+            .map_err(|_| PeerError::Protocol("outbound writer closed".into()))?;
+    }
+    Ok(None)
 }
