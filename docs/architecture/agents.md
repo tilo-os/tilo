@@ -277,6 +277,15 @@ can carry data out. An agent that reads private data and then searches can
 leak that data in its query, just as it could by opening a page in the
 browser.
 
+## Untrusted content
+
+What an agent reads — a mail message, a page, a shared document — is data, never
+instructions, and the operation that answered it says so. The declaration
+travels with the answer into every plan, so a step that changes, sends or
+deletes something for it is put to the person: the threat model, the defaults
+and the open gaps are in
+[prompt-injection.md](../security/prompt-injection.md).
+
 ## Remaining integration requirements
 
 1. **Identity and access truth** — preserve agent kind end to end; durable

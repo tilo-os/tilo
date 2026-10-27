@@ -17,6 +17,7 @@ specific areas.
 | [rollback.md](rollback.md) | Bounded rollback: the last few generations may unseal, older ones may not. Operator view plus the contract the boot chain must satisfy. | Changing update or unlock behaviour |
 | [composefs-decision.md](composefs-decision.md) | Why Tilo is on bootc's composefs backend rather than ostree, with the evidence. Records that formal stabilisation is unlikely soon and why waiting was the worse risk. | Questioning the backend choice |
 | [fuzzing.md](fuzzing.md) | Coverage-guided fuzz targets, CI cadence, and crash-handling policy for hostile package, collaboration, and identity inputs. | Adding an untrusted parser or triaging a fuzz finding |
+| [prompt-injection.md](prompt-injection.md) | How content a person did not write is kept from steering an agent, a skill or a shortcut's AI step: the untrusted-content declaration, the label that follows an answer into every plan, the defaults, the negative tests and the open gaps. | Adding an operation that answers outside content, or giving an agent more reach |
 | [tinkering.md](tinkering.md) | How a power user gets root-shaped freedom without ambient root: work layers and capability leases. | Working on privilege or the app sandbox |
 | [defects.md](defects.md) | The as-built ledger. Every known defect with file:line, severity, and the check that catches a regression. Deliberately separate from the design. | Before claiming something works |
 

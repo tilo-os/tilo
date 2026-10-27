@@ -130,7 +130,9 @@ off, unsigned/higher/gapped generation tag, mismatched provenance, split latest,
 restored LUKS header, wrong-generation TPM prediction, partial Landlock support,
 path traversal package, stolen recipient-bound invite, replayed invite,
 cross-room revocation, unauthorized role grant and ownership transfer by a
-delegated admin. “Could not observe” is failure, not skip.
+delegated admin, and content an agent read trying to act as its instructions
+([prompt-injection.md](prompt-injection.md)). “Could not observe” is failure,
+not skip.
 
 ## Known priority gaps
 
