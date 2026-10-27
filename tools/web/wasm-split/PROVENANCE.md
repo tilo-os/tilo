@@ -47,6 +47,9 @@ time:
   groups merged into one chunk), a chunk imports what it calls from the main
   module and other chunks, and the chunk functions called from outside get
   a table slot the main module leaves empty and the chunk fills.
+- A split module's table initializers are emitted in table-offset order.
+  Upstream emitted them in hash-map order, so the same input gave different
+  module bytes on every run.
 
 Memory: upstream parses the whole program once per split module, all at
 once, which took 140 GB for a 170 MB module split in 34. Here each split

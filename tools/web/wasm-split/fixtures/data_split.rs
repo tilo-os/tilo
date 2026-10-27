@@ -14,6 +14,9 @@
 //!   `START_TABLE` points into;
 //! - `START_BLOB`, the start module's alone.
 //!
+//! `tabler` also calls through `TABLER_OPS`, function table slots only it
+//! reaches, which its module fills when it loads.
+//!
 //! `reader` also hands a pointer into its own blob to `checksum`, a start
 //! module function.
 
@@ -80,6 +83,29 @@ fn triple(x: u32) -> u32 {
     x.wrapping_mul(3)
 }
 
+/// `tabler`'s own methods, called through the function table.
+macro_rules! adders {
+    ($($name:ident = $k:literal),*) => {
+        $(
+            #[inline(never)]
+            fn $name(x: u32) -> u32 {
+                x.wrapping_add($k * 0x11)
+            }
+        )*
+        static TABLER_OPS: [fn(u32) -> u32; 8] = [$($name),*];
+    };
+}
+adders!(
+    add1 = 1,
+    add2 = 2,
+    add3 = 3,
+    add4 = 4,
+    add5 = 5,
+    add6 = 6,
+    add7 = 7,
+    add8 = 8
+);
+
 /// An offset into a blob that only the run time knows.
 fn offset(i: u32) -> usize {
     (i.wrapping_mul(2_654_435_761) >> 7) as usize % LEN
@@ -123,12 +149,13 @@ pub extern "C" fn reader_export(i: u32) -> u32 {
 }
 
 /// `tabler`'s entry: a byte of `TABLE`'s slice `i % 6`, at a position
-/// computed from `i`, and a byte of the shared blob.
+/// computed from `i`, a byte of the shared blob, and `TABLER_OPS[i % 8]`.
 #[unsafe(export_name = "__wasm_split_00___tabler___00_export_00000000000000b2_pick")]
 pub extern "C" fn tabler_export(i: u32) -> u32 {
     let slice = TABLE[(i % 6) as usize];
     let at = offset(i) % slice.len();
-    u32::from(slice[at]) | u32::from(SHARED_BLOB[offset(i)]) << 8
+    let op = core::hint::black_box(TABLER_OPS[(i % 8) as usize]);
+    u32::from(slice[at]) | u32::from(SHARED_BLOB[offset(i)]) << 8 | (op(i) & 0xff) << 16
 }
 
 #[unsafe(no_mangle)]
