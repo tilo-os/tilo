@@ -271,13 +271,13 @@ pub fn desktop_run_own_ask(
     if !resource.ends_with(&format!("chat.person:{}", ask.to)) {
         return Err(error("that is not their conversation with this person"));
     }
-    super::invoke_as(
+    super::publication::invoke_as(
         id,
         resource,
         ask.action,
         &ask.arguments,
         window.as_deref(),
-        super::Invoker::Person,
+        super::publication::Invoker::Person,
     )
 }
 
