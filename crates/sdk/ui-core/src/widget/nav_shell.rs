@@ -2401,7 +2401,7 @@ impl NavShell {
 
     /// Plan the parts from the slots, headers and columns as they are now (which columns and
     /// titles there are, how many actions each holds), marking nothing.
-    fn refresh_slot_inputs(&mut self) {
+    fn refresh_slot_inputs(&self) {
         let shell_bar = self.shell_bar_wanted();
         {
             let mut inputs = self.inputs.borrow_mut();

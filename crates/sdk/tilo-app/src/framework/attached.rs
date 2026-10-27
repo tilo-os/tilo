@@ -557,7 +557,7 @@ impl AttachedView {
         // The record this view draws is the one its actions are published
         // under: one of another app's, kept here, is reached through the
         // provider that keeps it.
-        let app = self.definition.app_id;
+        let app = self.definition.app_id();
         let resource = self
             .resources()
             .into_iter()

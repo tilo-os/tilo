@@ -1004,7 +1004,7 @@ fn lay_out_window(
 /// checks broker connectivity.
 #[cfg(feature = "native")]
 fn owe_changed_action_surface(app: &mut App, rebuilt: bool) {
-    if rebuilt || !(app.publication_current() || !app.collaboration.manager.is_connected()) {
+    if rebuilt || (!app.publication_current() && app.collaboration.manager.is_connected()) {
         app.actions.action_surface_owed = true;
     }
 }
