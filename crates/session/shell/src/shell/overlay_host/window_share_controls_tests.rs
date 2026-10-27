@@ -470,3 +470,117 @@ fn a_tilo_apps_window_is_shared_with_what_it_shows() {
         [Some(window_node(&room, APP, tab).to_string())]
     );
 }
+
+/// A Tilo app's shared window that moves to another item shares what it
+/// shows again, once, under the same share id: the room's record of where
+/// it is, which the others' windows follow. A window whose share says where
+/// it is asks nothing.
+#[test]
+fn a_shared_tilo_apps_window_shares_again_what_it_moves_to() {
+    use tilo_desktop_model::window_share::{WindowShows, shows_node, window_shows_share_id};
+    use ui::floating_surface::FloatingSurfaceClientMessage as Message;
+    use ui::window_toolbar::{ToolbarLocation, WindowToolbar};
+    const KIND: &str = "notes.notebook";
+    let shows_asked = |f: &Fixture| -> Vec<Option<String>> {
+        f.asked
+            .borrow_mut()
+            .drain(..)
+            .filter_map(|request| match request {
+                PeerSyncRequest::ShareWindow {
+                    share: true, shows, ..
+                } => Some(shows),
+                _ => None,
+            })
+            .collect()
+    };
+    let at = |anchor: &str| WindowToolbar {
+        location: Some(ToolbarLocation {
+            label: "Agenda".into(),
+            anchor: Some(anchor.into()),
+            ..ToolbarLocation::default()
+        }),
+        ..WindowToolbar::default()
+    };
+    let note = |page: &str| WindowShows {
+        record: String::new(),
+        item: Some(page.into()),
+    };
+    let mut f = fixture();
+    f.make_personal();
+    let tab = f.window.tab;
+    let room = f.room.to_string();
+    {
+        let state = f.chrome.borrow();
+        let mut tree = state.tree_mut();
+        tree.remember_package_launch(tab, APP.into());
+        tree.remember_local_app_record(tab, 77);
+    }
+    assert_eq!(
+        f.host.receive_window_share_message(
+            9,
+            APP,
+            &Message::WindowRecord {
+                record: String::new(),
+                kind: KIND.into(),
+                instance: Some(77),
+            },
+        ),
+        Some(true),
+        "the app says what its window shows"
+    );
+    f.host
+        .declare_tab_toolbar_for_tests(tab, Some(at("page-1")));
+    // The room's host records the window's share, at the note it is at.
+    let records_at = |f: &mut Fixture, shows: &WindowShows| {
+        let mut policy = projection::room_policy_of(&f.room_doc, &room);
+        let id = window_shows_share_id(tab);
+        policy
+            .grants
+            .retain(|grant| !tilo_action_policy::share::is_of_share(grant, &id));
+        for (id, node) in [
+            (id, shows_node(&room, APP, tab, KIND, shows)),
+            (window_share_id(tab), window_node(&room, APP, tab)),
+        ] {
+            policy.grants.extend(
+                tilo_action_policy::share::share_grants(
+                    &room,
+                    "me",
+                    &id,
+                    &node,
+                    tilo_action_policy::share::ShareAccess::View,
+                )
+                .expect("one resource of the room"),
+            );
+        }
+        projection::project_room_policy(&mut f.room_doc, &policy).unwrap();
+        f.take_in_room();
+    };
+    records_at(&mut f, &note("page-1"));
+    f.frame();
+    assert_eq!(
+        shows_asked(&f),
+        Vec::<Option<String>>::new(),
+        "it is where its share says"
+    );
+
+    f.host
+        .declare_tab_toolbar_for_tests(tab, Some(at("page-2")));
+    f.frame();
+    assert_eq!(
+        shows_asked(&f),
+        [Some(
+            shows_node(&room, APP, tab, KIND, &note("page-2")).to_string()
+        )],
+        "it shares what it moved to"
+    );
+    f.frame();
+    assert_eq!(shows_asked(&f), Vec::<Option<String>>::new(), "asked once");
+
+    records_at(&mut f, &note("page-2"));
+    f.frame();
+    assert_eq!(
+        shows_asked(&f),
+        Vec::<Option<String>>::new(),
+        "the room's record follows"
+    );
+}

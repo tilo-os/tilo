@@ -1372,16 +1372,27 @@ pub(crate) fn shared_window_sharers(
     ws: &crate::shell::state::Workspace,
     now_ms: u64,
 ) -> Vec<(u64, String)> {
-    tree.shared_windows(ws.room(), now_ms)
-        .filter_map(|share| {
-            let session = crate::shell::state::host_handle(&share.host)?;
-            let sharer = ws
-                .collaborators
-                .iter()
-                .find(|c| c.session == Some(session) && !c.invited)?;
-            Some((share.tab, sharer.id.clone()))
-        })
+    shared_window_people(tree, ws, now_ms)
+        .map(|(tab, sharer)| (tab, sharer.id.clone()))
         .collect()
+}
+
+/// Each tab of `ws` showing a window shared with its room, with the member
+/// who shared it, while they are here: the member whose session is the
+/// device hosting the window.
+pub(crate) fn shared_window_people<'a>(
+    tree: &'a WorkspaceTree,
+    ws: &'a crate::shell::state::Workspace,
+    now_ms: u64,
+) -> impl Iterator<Item = (u64, &'a crate::shell::state::Collaborator)> + 'a {
+    tree.shared_windows(ws.room(), now_ms).filter_map(|share| {
+        let session = crate::shell::state::host_handle(&share.host)?;
+        let sharer = ws
+            .collaborators
+            .iter()
+            .find(|c| c.session == Some(session) && !c.invited)?;
+        Some((share.tab, sharer))
+    })
 }
 
 #[cfg(test)]

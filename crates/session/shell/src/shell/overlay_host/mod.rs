@@ -70,6 +70,7 @@ mod overview_grid;
 mod palette_flow;
 mod parked_workspaces;
 mod peer_sync_dispatch;
+mod shared_window_follow;
 mod sheet_accessibility;
 mod shortcut_steps;
 mod shortcut_triggers;
@@ -82,6 +83,8 @@ mod top_bar_reveal;
 mod transient_zone;
 mod widget;
 mod window_share_controls;
+#[cfg(test)]
+pub(crate) use window_share_controls::windows_shared_by_others;
 mod window_toolbars;
 mod workspace_slide;
 
@@ -1091,6 +1094,9 @@ pub struct ShellOverlayHost {
     /// marks, and the shares ending with their window
     /// ([`window_share_controls`]).
     window_share_controls: window_share_controls::WindowShareControls,
+    /// Shared Tilo app windows kept at their sharer's item
+    /// ([`shared_window_follow`]).
+    shared_window_follow: shared_window_follow::SharedWindowFollow,
     /// The tooltip naming the window bar's button under the pointer.
     bar_tooltip: ui::widget::tooltip::TooltipHost,
     /// The tiles shown and the pointer, kept current for a presence pump
