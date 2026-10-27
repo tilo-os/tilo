@@ -354,6 +354,11 @@ pub struct OskWidget {
     /// A session service fills its compositor-assigned panel; embedded
     /// keyboards keep their intrinsic height in ordinary document flow.
     fill_surface: bool,
+    /// Parked: the keys are put away and the keyboard keeps a toolbar strip,
+    /// so the panel it lives in shrinks to that strip and gives the rest of
+    /// the screen back to the app the person is typing into. The keyboard is
+    /// still on screen and still one tap from typing again.
+    parked: bool,
 }
 
 impl Default for OskWidget {
@@ -463,6 +468,7 @@ impl OskWidget {
             learned: std::rc::Rc::default(),
             visible: true,
             fill_surface: false,
+            parked: false,
         };
         // Seed the bar with cold-start (most-common-word) suggestions so it is
         // useful before the first keypress.
@@ -583,6 +589,11 @@ impl OskWidget {
     }
 
     fn restore_toolbar(&mut self) {
+        if self.parked {
+            // A parked keyboard keeps one strip: the way back to the keys.
+            self.toolbar = OskToolbarItem::park_set();
+            return;
+        }
         self.toolbar = self.custom_toolbar.clone().unwrap_or_else(|| {
             if self.purpose == InputPurpose::Terminal {
                 OskToolbarItem::terminal_set()
@@ -862,6 +873,30 @@ impl OskWidget {
     /// Whether the keyboard is currently on screen.
     pub fn is_visible(&self) -> bool {
         self.visible
+    }
+
+    /// Put the keys away, keeping the toolbar strip: the panel the keyboard
+    /// lives in shrinks to it, so the app behind gets the screen back, and one
+    /// tap on the strip brings the keys up again.
+    pub fn set_parked(&mut self, parked: bool) {
+        if self.parked != parked {
+            self.parked = parked;
+            self.structure_dirty = true;
+            self.cancel_contacts();
+            self.close_emoji_panel();
+            // The strip is the way back; the keys' own toolbar returns with
+            // them.
+            self.restore_toolbar();
+        }
+    }
+
+    pub fn is_parked(&self) -> bool {
+        self.parked
+    }
+
+    /// Whether the keys are up: on screen and not parked.
+    pub fn keys_up(&self) -> bool {
+        self.visible && !self.parked
     }
 
     /// The field intent the keyboard is currently serving.
@@ -1176,6 +1211,15 @@ impl OskWidget {
             OskToolbarAction::Dismiss => {
                 self.finish_editing_word();
                 self.set_visible(false);
+            }
+            OskToolbarAction::Park => {
+                self.finish_editing_word();
+                self.set_parked(true);
+                self.restore_toolbar();
+            }
+            OskToolbarAction::Unpark => {
+                self.set_parked(false);
+                self.restore_toolbar();
             }
             OskToolbarAction::Custom(_) => {}
         }
@@ -2283,12 +2327,17 @@ impl OskWidget {
         // A host may assign a whole phone viewport to this surface. Keep the
         // keyboard docked at its bottom at the themed row height; a keyboard
         // panel must not turn that spare space into enormous key wells.
-        let height = f64::from(
-            self.toolbar_height
-                + self.suggestion_height
-                + self.current_layout().row_count() as f32 * self.target_key_height,
-        )
-        .min(self.rect.height());
+        let height = if self.parked {
+            // Parked: the toolbar strip, and nothing under it.
+            f64::from(self.toolbar_height).min(self.rect.height())
+        } else {
+            f64::from(
+                self.toolbar_height
+                    + self.suggestion_height
+                    + self.current_layout().row_count() as f32 * self.target_key_height,
+            )
+            .min(self.rect.height())
+        };
         let keyboard_rect = Rect::new(
             self.rect.x0,
             self.rect.y1 - height,
@@ -2299,10 +2348,16 @@ impl OskWidget {
             keyboard_rect,
             self.current_layout(),
             &self.toolbar,
-            &self.suggestions,
+            // A parked keyboard shows neither suggestions nor keys: its
+            // strip is the way back to them.
+            if self.parked { &[] } else { &self.suggestions },
             self.shift,
             self.toolbar_height,
-            self.suggestion_height,
+            if self.parked {
+                0.0
+            } else {
+                self.suggestion_height
+            },
             keyboard_gutter(&self.spacing),
         );
         self.content_rect = geometry.content_rect;
@@ -2321,6 +2376,12 @@ impl OskWidget {
         let mode = self.emoji_panel.mode();
         if mode != PanelMode::Closed {
             self.suggestion_geom.clear();
+        }
+        if self.parked {
+            // Nothing under the strip is a key: the panel is not covering it.
+            self.suggestion_geom.clear();
+            self.key_geom.clear();
+            self.key_area = Rect::ZERO;
         }
         match mode {
             PanelMode::Closed => {}
@@ -2756,6 +2817,22 @@ impl Widget for OskWidget {
         self.poll_hold(Instant::now());
     }
 
+    /// The size this keyboard needs its surface to be.
+    ///
+    /// Parked, that is one toolbar strip: the desktop shapes the panel to it
+    /// (`Widget::preferred_window_size` reaches `xdg_toplevel` min/max), so
+    /// the part of the screen the keys were covering belongs to the app again
+    /// instead of being an empty rectangle that only the keyboard could hear
+    /// clicks in.
+    fn preferred_window_size(&self) -> Option<(f64, f64)> {
+        (self.visible && self.parked && self.rect.width() > 0.0).then(|| {
+            (
+                self.rect.width(),
+                f64::from(toolbar_row_height(&self.spacing) + self.spacing.s1),
+            )
+        })
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2779,7 +2856,10 @@ impl Widget for OskWidget {
         // compositor has hidden the keyboard it requests no height and paints
         // nothing — the real overlay surface is mapped/unmapped by the
         // compositor, so a hidden keyboard occupies no surface either way.
-        let total_h = if self.visible {
+        let total_h = if self.visible && self.parked {
+            // Parked: the toolbar strip alone.
+            self.toolbar_height + self.spacing.s1
+        } else if self.visible {
             self.toolbar_height + self.suggestion_height + rows as f32 * self.target_key_height
         } else {
             0.0
@@ -5484,6 +5564,67 @@ mod tests {
                 .filter(|c| core.contains(c.rect.center()))
                 .all(|c| c.key == r),
             "r's core zone stays r's"
+        );
+    }
+
+    /// Parking puts the keys away and keeps the strip that brings them back,
+    /// and telling the window to shrink is what gives the screen back: the
+    /// keys are not painted over a panel that is now the app's.
+    #[test]
+    fn a_parked_keyboard_is_one_strip_and_asks_for_a_strip_of_a_surface() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        assert!(osk.keys_up());
+        assert!(
+            osk.key_geometry()
+                .iter()
+                .any(|(_, rect)| rect.height() > 0.0)
+        );
+        assert_eq!(
+            osk.preferred_window_size(),
+            None,
+            "a keyboard with its keys up fills the panel it was given"
+        );
+
+        // The toolbar offers the way to park.
+        let park = osk
+            .toolbar_items()
+            .iter()
+            .position(|item| item.action == OskToolbarAction::Park)
+            .expect("the toolbar can put the keys away");
+        osk.activate_tool(park);
+        assert!(osk.is_parked());
+        assert!(!osk.keys_up());
+        lay_out(&mut osk, 720.0, 96.0);
+        assert!(
+            osk.key_geometry()
+                .iter()
+                .all(|(_, rect)| rect.height() <= 0.0),
+            "no key is left to tap"
+        );
+        let (width, height) = osk
+            .preferred_window_size()
+            .expect("a parked keyboard says how small its surface may be");
+        assert_eq!(width, 720.0);
+        assert!(
+            height < 96.0,
+            "the strip is one toolbar row: {height} of a 96-pixel panel"
+        );
+
+        // The strip's own item brings them back.
+        let unpark = osk
+            .toolbar_items()
+            .iter()
+            .position(|item| item.action == OskToolbarAction::Unpark)
+            .expect("the strip says how to come back");
+        osk.activate_tool(unpark);
+        assert!(!osk.is_parked());
+        lay_out(&mut osk, 720.0, 360.0);
+        assert_eq!(osk.preferred_window_size(), None);
+        assert!(
+            osk.key_geometry()
+                .iter()
+                .any(|(_, rect)| rect.height() > 0.0)
         );
     }
 }

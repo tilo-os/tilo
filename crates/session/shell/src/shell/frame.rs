@@ -2070,10 +2070,20 @@ impl FrameBuilder {
         let Some(output) = output else { return };
 
         let margin = 20.0_f64.min(output.width / 20.0);
-        let width = (output.width - margin * 2.0).clamp(1.0, 960.0);
-        let height = (output.height * 0.40)
+        let widest = (output.width - margin * 2.0).clamp(1.0, 960.0);
+        let tallest = (output.height * 0.40)
             .clamp(220.0, 380.0)
             .min((output.height - margin * 2.0).max(1.0));
+        // The keyboard may state how big it needs to be: parked, it is a strip
+        // for its toolbar, and the surface shrinks with it so the rest of the
+        // screen is the app's again rather than an empty rectangle only the
+        // keyboard could hear clicks in.
+        let declared = self.osk_overlay.as_ref().and_then(|keyboard| {
+            crate::shell::foreign::store().declared_max_extent(keyboard.surface_id())
+        });
+        let (width, height) = declared.map_or((widest, tallest), |(wanted_w, wanted_h)| {
+            (widest.min(wanted_w), tallest.min(wanted_h))
+        });
         let x0 = output.x + (output.width - width) / 2.0;
         // From the output's own top: a display beside a taller one, or
         // below another, does not start at the desktop's top edge.
@@ -5460,10 +5470,12 @@ impl FrameBuilder {
     }
 
     /// Hit-test the mapped keyboard. An unmapped/hidden surface never steals
-    /// clicks from the application beneath it.
+    /// clicks from the application beneath it, and neither does the part of
+    /// its tile the keyboard is not drawn in.
     pub fn osk_surface_hit(&self, point: (f64, f64)) -> Option<(u64, Rect)> {
         let keyboard = self.osk_overlay.as_ref()?;
-        let rect = keyboard.get_rect();
+        let rect =
+            crate::shell::foreign::store().drawn_rect(keyboard.surface_id(), keyboard.get_rect());
         (self.osk_active && keyboard.is_mapped() && rect.contains(Point::new(point.0, point.1)))
             .then_some((keyboard.surface_id(), rect))
     }
@@ -7499,11 +7511,43 @@ mod tests {
             crate::shell::foreign::store().forget(SURFACE);
         }
 
+        /// A parked keyboard states how small its surface may be; the tile
+        /// shrinks to it and a click above the strip is the app's again.
+        fn a_parked_keyboard_gives_the_rest_of_its_surface_back() {
+            const SURFACE: u64 = 9_900_702;
+            let store = crate::shell::foreign::store();
+            store.publish_rgba(SURFACE, &[0, 0, 0, 255], 1, 1);
+            let mut fb = FrameBuilder::new((1600, 900));
+            fb.set_osk_surface(Some(SURFACE), None, None, true);
+            let (_, full) = fb
+                .osk_surface_hit((800.0, 700.0))
+                .expect("the whole keyboard is the keyboard");
+
+            // The keyboard says it is a 56-pixel strip: min and max size, as
+            // a Wayland client states them.
+            store.note_size_limits(SURFACE, (960, 56), (960, 56));
+            assert_eq!(store.declared_max_extent(SURFACE), Some((960.0, 56.0)));
+            fb.set_osk_surface(Some(SURFACE), None, None, true);
+            let (_, parked) = fb
+                .osk_surface_hit((800.0, 860.0))
+                .expect("the parked strip is still the keyboard");
+            assert_eq!(parked.height(), 56.0, "the tile is the strip");
+            assert_eq!(parked.y1, full.y1, "and it stays at the bottom");
+            assert!(
+                fb.osk_surface_hit((800.0, 700.0)).is_none(),
+                "the screen the keyboard gave back is the app's"
+            );
+
+            store.note_size_limits(SURFACE, (0, 0), (0, 0));
+            store.forget(SURFACE);
+        }
+
         let _env_lock = tilo_test_env::lock();
         native_damage_covers_clip_tiles_and_clamps_the_viewport();
         transfer_proxy_covers_both_ownership_edges_until_destination_pixels_exist();
         night_light_is_neutral_at_daylight_and_warmer_at_lower_kelvin();
         osk_overlay_is_bottom_anchored_and_active_only();
+        a_parked_keyboard_gives_the_rest_of_its_surface_back();
     }
 
     #[test]

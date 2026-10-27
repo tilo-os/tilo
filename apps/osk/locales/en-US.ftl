@@ -40,6 +40,8 @@ osk-toolbar-paste = Paste
 osk-toolbar-left = Move caret left
 osk-toolbar-right = Move caret right
 osk-toolbar-hide = Hide keyboard
+osk-toolbar-park = Put the keys away
+osk-toolbar-unpark = Bring the keys back
 
 osk-key-esc = Esc
 osk-key-tab = Tab
