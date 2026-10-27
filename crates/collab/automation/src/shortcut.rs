@@ -332,7 +332,8 @@ pub enum Binding {
     /// A JSON array of bound values, `null` where a binding has no value.
     List(Vec<Binding>),
     /// The value of an expression: arithmetic, a comparison, a text, list or
-    /// dictionary operation ([`Expr`]).
+    /// dictionary operation ([`Expr`]). Boxed because an expression may hold
+    /// bindings of its own.
     #[serde(rename = "expr")]
     Expression(Box<Expr>),
 }
