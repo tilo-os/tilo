@@ -760,20 +760,14 @@ impl BackupsApp {
     /// (the second it was taken) answers instead.
     fn snapshot_when(&self, id: &str) -> String {
         if let Some(snapshot) = self.catalog.snapshots.iter().find(|s| s.id == id) {
-            return snapshot.taken.format("%-d %B %H:%M").to_string();
+            return crate::actions::taken_label(snapshot);
         }
         id.split('-')
             .next()
             .and_then(|seconds| seconds.parse::<i64>().ok())
-            .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
-            .map_or_else(
-                || id.to_owned(),
-                |at| {
-                    at.with_timezone(&chrono::Local)
-                        .format("%-d %B %H:%M")
-                        .to_string()
-                },
-            )
+            .map(|seconds| ui::format::timestamp(&ui::format::UnixSecs(seconds)))
+            .filter(|when| !when.is_empty())
+            .unwrap_or_else(|| id.to_owned())
     }
 
     fn start_verify(&mut self, id: String, cx: &mut EffectCx<Backups, Self>) -> Effected {
