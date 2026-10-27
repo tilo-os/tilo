@@ -2002,7 +2002,7 @@ fn an_agent_chooses_a_destination_through_the_published_view_action() {
     assert_eq!(choices, ["inbox", "sent", "work", "design", "travel"]);
 
     let destination =
-        |id: &str| serde_json::Map::from_iter([("destination".into(), serde_json::json!(id))]);
+        |id: &str| serde_json::Map::from_iter([("entry".into(), serde_json::json!(id))]);
     h.invoke_published("tilo.control:mail.places", "select", &destination("travel"))
         .expect("an agent chooses a destination");
     assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("travel"));

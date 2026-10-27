@@ -1061,65 +1061,11 @@ impl TreeModel for NavModel {
 
 type Callback<A> = Option<Box<dyn FnMut(A)>>;
 
-/// The operation type of a navigation list's published selection
-/// ([`NavList::on_view`]): its payload names the list and the destination.
-const NAV_SELECT: &str = "tilo.ui.nav.select";
-
-/// A navigation list's selection, published as the view action `select` of
-/// control `tilo.control:<id>` ([`NavList::on_view`]).
+/// A navigation list's selection, published as its view action `select`
+/// ([`NavList::on_view`]).
 struct NavView {
-    id: String,
-    action: crate::widget::ActionEmitter<String>,
+    choice: crate::widget::view_choice::ViewChoice,
     handler: Box<dyn FnMut(String)>,
-}
-
-#[derive(serde::Deserialize)]
-struct NavSelectPayload {
-    control: String,
-    destination: String,
-}
-
-/// The `select` action of list `id`, offering `destinations` (id, label)
-/// when given.
-#[expect(
-    clippy::expect_used,
-    reason = "the generated payload of two strings always serializes"
-)]
-fn nav_select_spec(
-    id: &str,
-    destinations: Option<Vec<(String, String)>>,
-) -> tilo_actions::ActionSpec {
-    use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
-    let mut destination =
-        ActionParam::required("destination", ParamType::Text, "The destination to show");
-    if let Some(destinations) = destinations {
-        destination = destination.with_labelled_choices(destinations);
-    }
-    let control = id.to_owned();
-    ActionSpec::typed_operation(
-        "select",
-        "Go to",
-        "Choose a destination",
-        OperationKind::View,
-        NAV_SELECT,
-        vec![destination],
-        move |args| {
-            EncodedAction::encode_operation(
-                NAV_SELECT,
-                &serde_json::json!({
-                    "control": control,
-                    "destination": args.text("destination").unwrap_or_default(),
-                }),
-            )
-            .expect("generated navigation payload is serializable")
-        },
-    )
-    .for_audience(tilo_actions::Audience::Agents)
-}
-
-fn nav_resource(id: &str, spec: tilo_actions::ActionSpec) -> tilo_actions::Resource {
-    tilo_actions::Resource::new(format!("tilo.control:{id}"), "tilo.control.navigation", id)
-        .with_action(spec)
 }
 
 /// Every destination of `sections`, nested ones included: (id, label).
@@ -1477,24 +1423,15 @@ impl NavList {
 
     /// Called with the item id when a destination is chosen: the list, as
     /// control `id`, publishes choosing a destination as its view action
-    /// `select`, so a person's click, a screen reader, a script and an agent
-    /// choose through the same action. Showing a destination is the
-    /// window's own state, never an edit: the action is absent from history.
+    /// `select` ([`view_choice`](crate::widget::view_choice)), so a person's
+    /// click, a screen reader, a script and an agent choose through the same
+    /// action. Showing a destination is the window's own state, never an
+    /// edit: the action is absent from history.
     #[must_use]
-    #[expect(
-        clippy::expect_used,
-        reason = "the generated text parameter binds the destination it is handed"
-    )]
     pub fn on_view(self, id: impl Into<String>, f: impl FnMut(String) + 'static) -> Self {
         let id = id.into();
-        let resource = nav_resource(&id, nav_select_spec(&id, None));
-        let action = tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |key| {
-            serde_json::Map::from_iter([("destination".into(), serde_json::Value::String(key))])
-        })
-        .expect("the select action is the resource's own");
         self.shared.borrow_mut().view = Some(NavView {
-            id: id.clone(),
-            action: crate::widget::ActionEmitter::new(action),
+            choice: crate::widget::view_choice::ViewChoice::new(id.clone(), "Go to"),
             handler: Box::new(f),
         });
         self.with_id(id)
@@ -1505,10 +1442,7 @@ impl NavList {
     fn view_resource(&self) -> Option<tilo_actions::Resource> {
         let shared = self.shared.borrow();
         let view = shared.view.as_ref()?;
-        Some(nav_resource(
-            &view.id,
-            nav_select_spec(&view.id, Some(destinations(&self.sections))),
-        ))
+        Some(view.choice.resource(destinations(&self.sections)))
     }
 
     /// Answer a `select` addressed to this list: show the destination and
@@ -1517,25 +1451,13 @@ impl NavList {
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
+        let chosen = match self.shared.borrow().view.as_ref() {
+            Some(view) => view.choice.start(op)?,
+            None => None,
+        };
+        let Some(destination) = chosen else {
             return Ok(None);
         };
-        if request.kind != tilo_actions::OperationKind::View || request.type_id != NAV_SELECT {
-            return Ok(None);
-        }
-        let payload: NavSelectPayload =
-            serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
-        if self
-            .shared
-            .borrow()
-            .view
-            .as_ref()
-            .map(|view| view.id.as_str())
-            != Some(payload.control.as_str())
-        {
-            return Ok(None);
-        }
-        let destination = payload.destination;
         if !destinations(&self.sections)
             .iter()
             .any(|(id, _)| *id == destination)
@@ -1553,9 +1475,7 @@ impl NavList {
         if let Some(view) = shared.view.as_mut() {
             (view.handler)(destination);
         }
-        Ok(Some(crate::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(crate::widget::view_choice::chosen()))
     }
 
     /// Bind each destination to its published typed action. Bound rows route
@@ -2397,7 +2317,7 @@ impl crate::widget::controls::ActionControls for NavList {
             let _ = action.install_custody(domain, attachment);
         }
         if let Some(view) = shared.view.as_mut() {
-            let _ = view.action.install_custody(domain, attachment);
+            view.choice.install_custody(domain, attachment);
         }
         drop(shared);
         crate::widget::controls::install_control_custody(&mut self.tree, domain, attachment);
@@ -2410,7 +2330,7 @@ impl crate::widget::controls::ActionControls for NavList {
                 .selection_actions
                 .values_mut()
                 .find_map(crate::widget::ActionEmitter::take);
-            selection.or_else(|| shared.view.as_mut().and_then(|view| view.action.take()))
+            selection.or_else(|| shared.view.as_mut().and_then(|view| view.choice.take()))
         };
         taken.or_else(|| crate::widget::controls::take_control_invocation(&mut self.tree))
     }
@@ -2433,7 +2353,7 @@ impl crate::widget::controls::ActionControls for NavList {
                     shared
                         .view
                         .as_ref()
-                        .map(|view| view.action.metadata(format!("node:{node}")))
+                        .map(|view| view.choice.metadata(format!("node:{node}")))
                 },
                 |action| Some(action.metadata(format!("node:{node}"))),
             );
@@ -2475,7 +2395,7 @@ impl crate::widget::controls::ActionControls for NavList {
             action.refresh_availability(allowed);
         }
         if let Some(view) = shared.view.as_mut() {
-            view.action.refresh_availability(allowed);
+            view.choice.refresh_availability(allowed);
         }
         drop(shared);
         crate::widget::controls::refresh_control_action_availability(&mut self.tree, allowed);
@@ -2491,7 +2411,7 @@ impl crate::resources::PublishesResources for NavList {
 impl crate::widget::ResourceOperations for NavList {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         if self.shared.borrow().view.is_some() {
-            &[NAV_SELECT]
+            &[crate::widget::view_choice::CHOICE_SELECT]
         } else {
             &[]
         }
