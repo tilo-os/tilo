@@ -235,7 +235,7 @@ impl OskToolbarItem {
             Self::new(
                 "dismiss",
                 None,
-                &crate::i18n::t("osk-toolbar-dismiss"),
+                &crate::i18n::t("osk-toolbar-hide-short"),
                 OskToolbarAction::Dismiss,
             ),
         ]

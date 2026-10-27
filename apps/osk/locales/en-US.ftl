@@ -41,7 +41,8 @@ osk-toolbar-left = Move caret left
 osk-toolbar-right = Move caret right
 osk-toolbar-hide = Hide keyboard
 osk-toolbar-park = Put the keys away
-osk-toolbar-unpark = Bring the keys back
+osk-toolbar-unpark = Show keys
+osk-toolbar-hide-short = Hide
 
 osk-key-esc = Esc
 osk-key-tab = Tab
