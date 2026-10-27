@@ -700,7 +700,7 @@ fn a_declared_parameter_publishes_its_type_once() {
         .iter()
         .find(|spec| spec.id == "retitle")
         .unwrap();
-    let described = tilo_actions::door::survey(&[published.clone()])
+    let described = tilo_actions::door::survey(std::slice::from_ref(&published))
         .into_iter()
         .find(|descriptor| descriptor.address.action == "retitle")
         .expect("retitle is published");
