@@ -50,6 +50,10 @@ NATIVE_TEST_FEATURES = {
     "tilo-dav": ("test-support",),
     "tilo-crypto": ("srp-test-server",),
     "tilo-resource": ("test-support",),
+    # Its net-moved bytes are the default; the Automerge pairing on top of them
+    # (`FakeDocumentNet`) is a feature, so a package that wants only the
+    # environment does not link a CRDT.
+    "tilo-test-env": ("document",),
     "app-host": ("test-support",),
     "package-store": ("store",),
     "cloud-source": ("conformance",),
@@ -82,6 +86,7 @@ DEFAULT_BUILDS_ALSO_CHECKED = (
     "tilo-model-gateway",
     "tilo-moq",
     "tilo-net",
+    "tilo-test-env",
 )
 
 
