@@ -762,6 +762,21 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
     eprintln!("phase local_analysis_is_a_cancellable_background_job");
     {
         let effects = <PhotosEffect as ui::tilo_resource::Effect>::specs();
+        // Folders are reached by their path, which browser storage lacks:
+        // the framework publishes these unavailable on such a host.
+        for id in ["import-directory", "reindex-directory"] {
+            let spec = effects
+                .iter()
+                .find(|spec| spec.id == id)
+                .unwrap_or_else(|| panic!("{id} is published"));
+            assert!(
+                spec.contract
+                    .tags
+                    .iter()
+                    .any(|tag| tag == tilo_actions::REQUIRES_NATIVE_PATHS_TAG),
+                "{id} declares it needs file system paths"
+            );
+        }
         for id in ["analyze-image", "analyze-text"] {
             let spec = effects
                 .iter()

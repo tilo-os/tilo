@@ -123,7 +123,7 @@ pub enum PhotosEffect {
     /// Import photo folder: recursively index a folder with bounded
     /// real-file reads. Paths never enter collaboration and EXIF GPS is never
     /// uploaded.
-    #[effect(job, cancellable)]
+    #[effect(job, cancellable, tag = tilo_actions::REQUIRES_NATIVE_PATHS_TAG)]
     ImportDirectory {
         #[param("Authorised local folder path; omit to use the system folder picker")]
         path: Option<String>,
@@ -136,7 +136,7 @@ pub enum PhotosEffect {
     ImportCameraMedia { media_id: String, name: String },
     /// Reindex photo folder: refresh metadata re-read from a folder's files
     /// without overwriting deliberate organization.
-    #[effect(job, cancellable)]
+    #[effect(job, cancellable, tag = tilo_actions::REQUIRES_NATIVE_PATHS_TAG)]
     ReindexDirectory {
         #[param("Explicit authorised local folder path")]
         path: String,
