@@ -13,6 +13,7 @@
 
 pub mod action_api;
 pub mod app_content_index;
+mod app_scope;
 pub mod files_index;
 pub mod invocation_wake;
 pub mod launcher;
@@ -673,6 +674,19 @@ pub trait SearchProvider {
     /// the scope. So only a provider that narrows itself says yes; one that
     /// serves the whole desktop stays out of the scope entirely.
     fn narrows_to_active_app(&self) -> bool {
+        false
+    }
+
+    /// Whether this provider answers for the focused window from the window
+    /// itself under `ctx` ([`providers::focused_window`]).
+    fn speaks_for_active_window(&self, _ctx: &SearchContext<'_>) -> bool {
+        false
+    }
+
+    /// Whether this provider's rows of the focused app are the broker's copy
+    /// of what its window publishes, left out while the window answers for
+    /// itself ([`app_scope`]).
+    fn gives_way_to_window(&self) -> bool {
         false
     }
 
@@ -1608,8 +1622,13 @@ impl SearchRegistry {
         let mut loose: HashSet<(String, String)> = HashSet::new();
         let mut canonical_rows: HashMap<(String, String), usize> = HashMap::new();
         let mut incomplete = Vec::new();
-        for source in self.query_rounds(args, exhaustive, include_programmatic) {
+        let sources = self.query_rounds(args, exhaustive, include_programmatic);
+        let window_answers = app_scope::window_answers(&sources, args, include_programmatic);
+        for source in sources {
             let provider = source.provider;
+            if window_answers && provider.gives_way_to_window() {
+                continue;
+            }
             source.report_incomplete(args, include_programmatic, &mut incomplete);
             let top = provider.max_score().max(1);
             for r in source.results {
@@ -1853,8 +1872,9 @@ impl SearchRegistry {
         // An app's search is about what the app holds: its resources lead,
         // and what can be done follows them, however well an action's name
         // matched.
-        let (actions, mut held): (Vec<KindGroup>, Vec<KindGroup>) =
+        let (mut actions, mut held): (Vec<KindGroup>, Vec<KindGroup>) =
             groups.partition(|group| group.kind == ResourceKind::Action);
+        app_scope::selection_first(&mut actions);
         held.extend(actions);
         held
     }

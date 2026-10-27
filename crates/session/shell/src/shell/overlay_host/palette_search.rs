@@ -607,6 +607,9 @@ impl ShellOverlayHost {
             let active_provider = active_tab_provider_id(&st, &self.search_registry);
             (scope, active_provider)
         };
+        // The window answers its own search for this refresh, from what it
+        // publishes now.
+        let _window = self.lend_focused_window(doc, scope);
         let (groups, launcher) = {
             let st = chrome.borrow();
             self.search_chrome_revision = st.revision;
@@ -694,6 +697,55 @@ impl ShellOverlayHost {
         self.palette_layout_dirty = true;
     }
 
+    /// Lend the focused window to the search run before the guard drops:
+    /// what it publishes, read now. Nothing when the search is not the
+    /// focused app's, or no window of it is shown here.
+    pub(super) fn lend_focused_window(
+        &self,
+        doc: &automerge::AutoCommit,
+        scope: crate::shell::chrome_state::SearchScope,
+    ) -> crate::shell::search::providers::focused_window::Lent {
+        use crate::shell::search::providers::focused_window::WindowReading;
+        let reading = (scope == crate::shell::chrome_state::SearchScope::ActiveApp)
+            .then(|| {
+                let (tab, app) = {
+                    let state = self.chrome.as_ref()?.borrow();
+                    (
+                        state.active_tab_id()?,
+                        state.active_app_id().unwrap_or_default(),
+                    )
+                };
+                let host = self.active_app_host()?;
+                Some(WindowReading::of(host, doc, tab, app))
+            })
+            .flatten();
+        self.focused_window.lend(reading)
+    }
+
+    /// Hand the rows chosen in the focused window's search to the window's
+    /// app, which runs each as its own control would.
+    pub(crate) fn run_window_controls(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let queued = std::mem::take(&mut chrome.borrow_mut().window_controls);
+        for control in queued {
+            let refused = match self.desktop_surface_mut() {
+                Some(surface) => surface
+                    .queue_window_control(control.tab, control.invocation)
+                    .err(),
+                None => Some(control.invocation),
+            };
+            if let Some(invocation) = refused {
+                tracing::warn!(
+                    tab = control.tab,
+                    address = ?invocation.address,
+                    "the window a search row was chosen in takes no controls"
+                );
+            }
+        }
+    }
+
     /// Keep an open palette's rows true to what they show: rebuild them when
     /// the query changed without a keystroke (Escape cleared it, a scope
     /// was left) or when the chrome state rows read has moved (a switch
@@ -706,6 +758,7 @@ impl ShellOverlayHost {
         let revision = self.chrome.as_ref().map(|chrome| chrome.borrow().revision);
         if self.palette.query() != self.last_search_query
             || revision.is_some_and(|revision| revision != self.search_chrome_revision)
+            || self.focused_window.answer_arrived()
         {
             self.refresh_search_results(doc, root);
         }
