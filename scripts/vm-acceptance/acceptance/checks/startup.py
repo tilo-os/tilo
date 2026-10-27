@@ -680,10 +680,17 @@ def files_after_session_crash(ctx, res):
     ctx.vm.root_exec(f"kill -SEGV {pids[0]}; sleep 0.5; kill -SEGV {pids[0]} 2>/dev/null; true")
 
     def answering():
+        # The next session answers when its state and its action listing both do: a
+        # session still starting answered the state dump and then closed the connection
+        # of the listing the reset below reads.
         try:
             fields = session_unit.show(ctx)
             moved = fields and fields.get("MainPID", "0") not in ("0", "", wrapper)
-            return ctx.vm.state() if moved else None
+            if not moved:
+                return None
+            state = ctx.vm.state()
+            ctx.vm.actions()
+            return state
         except VmError:
             return None
 
