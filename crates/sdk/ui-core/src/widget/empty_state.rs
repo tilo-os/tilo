@@ -494,12 +494,16 @@ fn paint_empty_state(
             };
             if let Some(since) = waiting.spinner_since {
                 let turning = ctx.theme.motion().loops();
-                let step = if turning {
-                    crate::animation::indicator_step(since, crate::time::now())
+                let now = crate::time::now();
+                let (step, next) = if turning {
+                    (
+                        crate::animation::indicator_step(since, now),
+                        Some(crate::animation::next_indicator_step(since, now)),
+                    )
                 } else {
-                    0
+                    (0, None)
                 };
-                waiting_step = Some((step, turning));
+                waiting_step = Some((step, next));
                 waiting_spinner = Some(crate::widget::Spinner::started_at(since));
             }
             (&replaced, waiting_spinner.as_mut())
@@ -520,8 +524,8 @@ fn paint_empty_state(
     } = placed;
 
     if let Some(slot) = hero {
-        if let Some((step, turning)) = waiting_step {
-            crate::room_sync::spinner_painted(step, turning, transform.transform_rect_bbox(slot));
+        if let Some((step, next)) = waiting_step {
+            crate::room_sync::spinner_painted(step, next, transform.transform_rect_bbox(slot));
         }
         if let Some(spinner) = spinner {
             spinner.set_rect(slot);

@@ -2908,6 +2908,7 @@ impl AppHandler {
         let culled = culling.is_some();
         let cull_frame = culling.as_mut().map(crate::draw_cull::Culling::begin);
         let draw_phase = slow_event::phase("draw");
+        crate::room_sync::frame_drawing();
         let drawn = draw_frame_content_with(
             app,
             &mut scene,
@@ -4414,8 +4415,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.held_frame = None;
             request_primary_redraw();
         }
+        // A turning waiting spinner (`crate::room_sync`) takes its next pose:
+        // a frame paints it and damages its slot alone, with no sync, no
+        // layout and no frames between poses.
+        let spinner_pose = crate::room_sync::next_pose();
+        let spinner_due = spinner_pose.is_some_and(|at| at <= crate::time::now());
+        if spinner_due {
+            request_primary_redraw();
+        }
         let scheduled_deadline = scheduled_deadline
             .into_iter()
+            .chain(spinner_pose.filter(|_| !spinner_due))
             .chain(tooltip_reveal.filter(|_| !tooltip_pending))
             .chain(self.typing_step_at)
             .chain(self.held_frame)
