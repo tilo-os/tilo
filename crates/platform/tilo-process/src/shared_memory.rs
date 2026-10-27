@@ -186,7 +186,9 @@ mod imp {
         Ok(())
     }
 
-    #[cfg(not(target_os = "linux"))]
+    /// The platforms with shared memory objects but no memfd: Android's libc
+    /// has no `shm_open`, and macOS sizes an object once, so neither seals.
+    #[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
     fn create_descriptor(_name: &str) -> io::Result<OwnedFd> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
