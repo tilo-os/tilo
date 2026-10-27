@@ -63,9 +63,9 @@ pub use check::{
 pub use grant::{StepGrant, action_rule, edit_reach, grant_answer, step_node, step_node_at};
 pub use path::StepPath;
 pub use run::{
-    AskRequest, ConfirmationRequest, DEFAULT_STEP_TIMEOUT, RunHooks, RunId, RunMode, RunOutcome,
-    RunReport, RunRequest, RunTrigger, STEP_FACET, StepFailure, StepRecord, StepStatus, StopWatch,
-    invocation_id, run,
+    AskRequest, ConfirmationRequest, DEFAULT_BACKOFF_MS, DEFAULT_STEP_TIMEOUT, MAX_BACKOFF_MS,
+    Recovered, RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest, RunTrigger, STEP_FACET,
+    StepFailure, StepOutcome, StepRecord, StepStatus, StopWatch, invocation_id, run,
 };
 pub use scenario::{
     Assert, DOOR_CODES, FormatError, Holds, Input, Invocation, SCENARIO_FORMAT_VERSION, Scenario,
@@ -74,7 +74,7 @@ pub use scenario::{
 pub use shortcut::{
     ActorFilter, AiTransform, Binding, CatchUp, Condition, EVENT_INPUT, FOCUS_DO_NOT_DISTURB,
     FOCUS_SCHEDULE, FocusTransition, Schedule, ScheduleClaim, Selector, Shortcut, Step, StepKind,
-    TimeOfDay, TriggerSpec, Weekday,
+    StepPolicy, TimeOfDay, TriggerSpec, Weekday,
 };
 /// Application that publishes shortcuts as runnable actions.
 pub const SHORTCUTS_APP_ID: &str = "so.tilo.shortcuts";

@@ -72,18 +72,99 @@ impl Shortcut {
 pub struct Step {
     /// Unique within the shortcut; ASCII letters, digits, `-` and `_`.
     pub id: String,
+    /// What the run does when the step does not succeed. Absent, the step
+    /// must succeed and the run stops at it
+    /// ([`StepPolicy::Fail`](crate::StepPolicy::Fail)).
+    #[serde(default, skip_serializing_if = "StepPolicy::is_fail")]
+    pub on_error: StepPolicy,
     #[serde(flatten)]
     pub kind: StepKind,
 }
 
 impl Step {
+    /// The step must succeed; when it does not, the run stops at it.
     #[must_use]
     pub fn new(id: impl Into<String>, kind: StepKind) -> Self {
         Self {
             id: id.into(),
+            on_error: StepPolicy::Fail,
             kind,
         }
     }
+
+    /// The step, under `on_error` instead of the default policy.
+    #[must_use]
+    pub fn with_policy(mut self, on_error: StepPolicy) -> Self {
+        self.on_error = on_error;
+        self
+    }
+}
+
+/// What a run does with a step that did not succeed.
+///
+/// Whatever the policy, a failure is recorded with the step and shown: a
+/// step that is retried, run into a fallback or passed over is never the
+/// same as one that worked.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "on_error", rename_all = "snake_case")]
+pub enum StepPolicy {
+    /// Stop the run here (the default).
+    Fail,
+    /// Try the step again `attempts` times in all, waiting `backoff_ms`
+    /// before the second attempt and doubling the wait each time after it,
+    /// and stop the run if the last one fails too. A retry sends the same
+    /// [`InvocationId`](tilo_actions::outcome::InvocationId), so an action is
+    /// never applied twice.
+    Retry {
+        #[serde(default = "one")]
+        attempts: u32,
+        #[serde(default = "default_backoff_ms")]
+        backoff_ms: u64,
+    },
+    /// Run `steps` in this step's place, after it ran, instead of stopping
+    /// when it fails. The failed step's output stays unset, and the steps
+    /// that run here are recorded where they ran.
+    Fallback { steps: Vec<Step> },
+    /// Carry on with `value` as the step's output, if nothing it changed
+    /// can be taken back by simply not using it, and mark the run degraded.
+    Default { value: Binding },
+}
+
+impl Default for StepPolicy {
+    fn default() -> Self {
+        Self::Fail
+    }
+}
+
+impl StepPolicy {
+    #[must_use]
+    pub const fn is_fail(&self) -> bool {
+        matches!(self, Self::Fail)
+    }
+
+    /// How long the run waits before attempt `attempt` (the second one
+    /// being 2): `backoff_ms`, doubling each time, at most
+    /// [`MAX_BACKOFF_MS`](crate::run::MAX_BACKOFF_MS).
+    #[must_use]
+    pub fn wait_before(&self, attempt: u32) -> std::time::Duration {
+        match self {
+            Self::Retry { backoff_ms, .. } => {
+                let wait = backoff_ms
+                    .saturating_mul(1_u64 << attempt.saturating_sub(2).min(32))
+                    .clamp(1, crate::run::MAX_BACKOFF_MS);
+                std::time::Duration::from_millis(wait)
+            }
+            _ => std::time::Duration::ZERO,
+        }
+    }
+}
+
+fn one() -> u32 {
+    1
+}
+
+const fn default_backoff_ms() -> u64 {
+    crate::run::DEFAULT_BACKOFF_MS
 }
 
 /// What a step does.

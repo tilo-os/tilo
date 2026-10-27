@@ -21,10 +21,11 @@ use tilo_actions::remote::{
 use crate::{
     AGENT_APP_ID, AGENT_FREEFORM_ACTION, AGENT_SUMMARISE_ACTION, AGENT_TASK_ACTION,
     AGENT_TRANSFORM_KIND, ActionCatalog, AskRequest, Binding, CatchUp, CheckErrorKind, Condition,
-    ConfirmationRequest, NoShortcuts, RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest,
-    RunTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Selector,
-    Shortcut, Step, StepFailure, StepKind, StepPath, StepRecord, StepStatus, StopWatch, TimeOfDay,
-    TriggerSpec, Weekday, check, run, shortcut_resource_id,
+    ConfirmationRequest, NoShortcuts, Recovered, RunHooks, RunId, RunMode, RunOutcome, RunReport,
+    RunRequest, RunTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID,
+    Schedule, Selector, Shortcut, Step, StepFailure, StepKind, StepOutcome, StepPath, StepPolicy,
+    StepRecord, StepStatus, StopWatch, TimeOfDay, TriggerSpec, Weekday, check, run,
+    shortcut_resource_id,
 };
 
 const NOTES: &str = "so.tilo.notes";
@@ -130,6 +131,9 @@ fn list_schema() -> Value {
 /// caller's own authority is not what these tests are about.
 struct FakeHost {
     rows: Vec<CatalogueRow>,
+    /// Actions that are unavailable while they still have refusals left:
+    /// the name and how many invocations the host turns away.
+    flaky: Mutex<Vec<(String, usize)>>,
     state: Mutex<HostState>,
 }
 
@@ -217,8 +221,30 @@ impl FakeHost {
         ];
         Self {
             rows,
+            flaky: Mutex::new(Vec::new()),
             state: Mutex::new(HostState::default()),
         }
+    }
+
+    /// Serve `action` as unavailable for its next `refusals` invocations.
+    fn flaky(&self, action: &str, refusals: usize) {
+        self.flaky
+            .lock()
+            .unwrap()
+            .push((action.to_string(), refusals));
+    }
+
+    /// Spend one refusal of `action`, answering whether it is still flaky.
+    fn refusing(&self, action: &str) -> bool {
+        let mut flaky = self.flaky.lock().unwrap();
+        let Some((_, left)) = flaky
+            .iter_mut()
+            .find(|(name, left)| name == action && *left > 0)
+        else {
+            return false;
+        };
+        *left -= 1;
+        true
     }
 
     fn catalog(&self) -> ActionCatalog {
@@ -301,6 +327,12 @@ impl ActionHost for FakeHost {
         });
         if !offered {
             return Pending::ready(Err(ActionHostError::UnknownAction));
+        }
+        let action = request.target.address.action.to_string();
+        if self.refusing(&action) {
+            return Pending::ready(Err(ActionHostError::Unavailable {
+                reason: "the app is starting".into(),
+            }));
         }
         let mut state = self.state.lock().unwrap();
         let HostState { ledger, started } = &mut *state;
@@ -445,6 +477,189 @@ fn run_with(
             caused_by: None,
         },
     ))
+}
+
+#[test]
+fn a_retried_step_succeeds_against_a_flaky_app_without_acting_twice() {
+    // The app turns the first two invocations away, as one starting up does:
+    // nothing was applied, so trying again with the same invocation id is
+    // exactly what the host already saw.
+    let host = FakeHost::new();
+    host.flaky("create", 2);
+    let tidy = shortcut(
+        "tidy",
+        vec![
+            Step::new(
+                "make",
+                StepKind::Invoke {
+                    action: ActionKey::new(NOTES, "notes.folder", "create"),
+                    resource: Selector::Fixed(INBOX.into()),
+                    args: BTreeMap::from([("title".to_string(), Binding::Literal(json!("Tidy")))]),
+                    appearance: None,
+                },
+            )
+            .with_policy(StepPolicy::Retry {
+                attempts: 3,
+                backoff_ms: 1,
+            }),
+        ],
+    );
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &tidy,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let [made] = report.steps.as_slice() else {
+        panic!("one step: {report:?}");
+    };
+    assert!(
+        matches!(made.status, StepStatus::Succeeded { .. }),
+        "{made:?}"
+    );
+    assert_eq!(made.attempts.len(), 3, "two refusals and the one that ran");
+    assert_eq!(
+        made.attempts
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        1,
+        "every try sent the same invocation id"
+    );
+    assert_eq!(
+        host.started().len(),
+        1,
+        "the app applied the draft once, on the try that succeeded"
+    );
+    assert!(!report.is_degraded(), "{report:?}");
+}
+
+#[test]
+fn a_retried_step_that_keeps_failing_stops_the_run_with_every_try_recorded() {
+    let host = FakeHost::new();
+    host.flaky("create", 9);
+    let tidy = shortcut(
+        "tidy",
+        vec![
+            Step::new(
+                "make",
+                StepKind::Invoke {
+                    action: ActionKey::new(NOTES, "notes.folder", "create"),
+                    resource: Selector::Fixed(INBOX.into()),
+                    args: BTreeMap::from([("title".to_string(), Binding::Literal(json!("Tidy")))]),
+                    appearance: None,
+                },
+            )
+            .with_policy(StepPolicy::Retry {
+                attempts: 3,
+                backoff_ms: 1,
+            }),
+        ],
+    );
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &tidy,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    let (path, why) = failure(&report).expect("the run stopped at the step");
+    assert_eq!(path, &StepPath::root().child(0));
+    assert_eq!(why.code(), "remote_actions_unavailable");
+    assert_eq!(report.steps[0].attempts.len(), 3, "three tries were made");
+    assert!(!report.is_degraded(), "a stopped run is not a degraded one");
+}
+
+#[test]
+fn a_step_passed_over_with_its_default_is_degraded_in_the_run() {
+    let host = FakeHost::new();
+    // The count the default stands in for is one the list step never gave.
+    let tidy = shortcut(
+        "tidy",
+        vec![
+            Step::new(
+                "count",
+                StepKind::SetVar {
+                    name: "count".into(),
+                    value: Binding::Literal(json!(0)),
+                },
+            )
+            .with_policy(StepPolicy::Default {
+                value: Binding::Literal(json!(0)),
+            }),
+        ],
+    );
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &tidy,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert!(!report.is_degraded(), "nothing failed: {report:?}");
+}
+
+#[test]
+fn a_fallback_runs_in_the_failed_steps_place_and_marks_the_run_degraded() {
+    let host = FakeHost::new();
+    host.flaky("create", 99);
+    let tidy = shortcut(
+        "tidy",
+        vec![
+            Step::new(
+                "make",
+                StepKind::Invoke {
+                    action: ActionKey::new(NOTES, "notes.folder", "create"),
+                    resource: Selector::Fixed(INBOX.into()),
+                    args: BTreeMap::from([("title".to_string(), Binding::Literal(json!("Tidy")))]),
+                    appearance: None,
+                },
+            )
+            .with_policy(StepPolicy::Fallback {
+                steps: vec![invoke(
+                    "list-after",
+                    NOTES,
+                    Selector::Fixed(INBOX.into()),
+                    "list",
+                    &[],
+                )],
+            }),
+        ],
+    );
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &tidy,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert_eq!(
+        report
+            .steps
+            .iter()
+            .map(|s| s.step.as_str())
+            .collect::<Vec<_>>(),
+        ["make", "list-after"],
+        "the fallback ran where the step failed"
+    );
+    let (failed, fallback) = (&report.steps[0], &report.steps[1]);
+    assert!(matches!(failed.status, StepStatus::Failed { .. }));
+    assert!(matches!(
+        failed.degraded,
+        StepOutcome::Degraded {
+            recovered: Recovered::Fallback,
+            ..
+        }
+    ));
+    assert!(fallback.status.succeeded());
+    assert!(report.is_degraded());
+    let summary = report.degraded_summary().expect("a summary");
+    assert!(summary.contains("1 step"), "{summary}");
+    assert!(summary.contains("unavailable"), "{summary}");
 }
 
 fn failure(report: &RunReport) -> Option<(&StepPath, &StepFailure)> {
@@ -2036,7 +2251,8 @@ fn a_stopped_run_ends_as_cancelled_and_starts_nothing_more() {
         report.steps.as_slice(),
         [StepRecord {
             status: StepStatus::Failed {
-                failure: StepFailure::Stopped { .. }
+                failure: StepFailure::Stopped { .. },
+                ..
             },
             ..
         }]
@@ -2089,7 +2305,8 @@ fn a_stop_between_steps_keeps_what_already_landed() {
     assert!(matches!(
         second.status,
         StepStatus::Failed {
-            failure: StepFailure::Stopped { .. }
+            failure: StepFailure::Stopped { .. },
+            ..
         }
     ));
 }

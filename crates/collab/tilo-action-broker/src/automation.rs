@@ -962,6 +962,9 @@ pub fn completion(invocation: InvocationId, report: &RunReport) -> InvocationUpd
         // A stopped run did not fail: it ends where it was told to. What it
         // had already done is recorded and can be undone as one step, so it
         // answers like a completed run, with the report saying it stopped.
+        // A run that finished degraded still succeeded: the steps that
+        // fell short are recorded in the report, and carry the recovery the
+        // shortcut asked for, so nobody mistakes it for an untouched run.
         RunOutcome::Completed | RunOutcome::Cancelled { .. } => InvocationUpdate::Succeeded {
             invocation,
             output: ActionOutput {
