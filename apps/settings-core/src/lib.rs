@@ -81,6 +81,7 @@ pub mod resource;
 pub mod row;
 pub mod scenarios;
 pub use os_actions::codec_pack;
+pub use os_actions::windows_compat;
 pub mod continuity;
 pub mod device_read;
 pub mod effects;

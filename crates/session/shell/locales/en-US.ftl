@@ -3271,6 +3271,16 @@ host-crash-records-read-detail = Everything the record of one problem holds. It 
 
 ## Desk widgets
 
+desk-widgets-a11y = Desk widgets
+desk-widget-music = Music
+desk-widget-team = People here
+desk-widget-calendar = Calendar
+desk-widget-system-monitor = System monitor
+desk-widget-open = Open { $widget }
+desk-widget-close = Close { $widget }
+desk-widget-pin = Always show this widget on this workspace
+desk-widget-unpin = Stop always showing this widget
+
 desk-team-title = In this workspace
 # Where a person is: their strip, then the window they are on.
 desk-team-place = { $strip } · { $window }

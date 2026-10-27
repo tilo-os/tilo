@@ -96,6 +96,7 @@ impl<A: 'static> ContinuityAction<A> {
             }),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }
     }
 }
@@ -1206,6 +1207,7 @@ fn wake_search_result(
         }),
         on_invoke: None,
         on_begin_invoke: None,
+        resource: None,
     }
 }
 
@@ -1526,6 +1528,7 @@ impl ContinueFromDeviceProvider {
             ),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }
     }
 }

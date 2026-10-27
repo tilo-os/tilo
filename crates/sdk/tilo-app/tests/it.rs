@@ -5,6 +5,8 @@
 
 #[path = "action_groups.rs"]
 pub mod action_groups;
+#[path = "action_proposal.rs"]
+pub mod action_proposal;
 #[path = "actors.rs"]
 pub mod actors;
 #[path = "add_item_work.rs"]
@@ -80,6 +82,8 @@ pub mod reactivity;
 pub mod record_reactions;
 #[path = "references.rs"]
 pub mod references;
+#[path = "render_anchor.rs"]
+pub mod render_anchor;
 #[path = "render_view.rs"]
 pub mod render_view;
 #[path = "room_arrival.rs"]

@@ -1,38 +1,12 @@
-//! What the merge credits a row with beside its lexical fit: nearness in
-//! Workspace scope, what the person chose before, the open window a query
-//! names, and the order loose and file matches give way in.
+//! What the merge credits a row with beside its lexical fit: what the
+//! person chose before and the open window a query names, and the order
+//! loose and file matches give way in.
 
 use std::collections::{HashMap, HashSet};
 
 use ui::search::system;
 
-use super::{
-    QueryArgs, ResourceKind, SearchProvider, SearchProximity, SearchResult, SearchScope,
-    provider_score, usage,
-};
-
-/// How much nearer the person a row is in Workspace scope: from the focused
-/// app's provider, and in the workspace being looked at.
-pub(super) fn proximity_boost(
-    provider: &dyn SearchProvider,
-    row: &SearchResult,
-    args: &QueryArgs<'_>,
-) -> f32 {
-    if args.scope != SearchScope::Workspace {
-        return 0.0;
-    }
-    let active_app = if args.active_provider_id == Some(provider.id()) {
-        system::ACTIVE_APP_PROXIMITY_BOOST
-    } else {
-        0.0
-    };
-    let workspace = if provider.proximity(row, args.chrome) == SearchProximity::CurrentWorkspace {
-        system::ACTIVE_APP_PROXIMITY_BOOST
-    } else {
-        0.0
-    };
-    active_app + workspace
-}
+use super::{ResourceKind, SearchResult, provider_score, usage};
 
 /// Queries this short are what launchers live on: the thing chosen most
 /// leads every other prefix match.

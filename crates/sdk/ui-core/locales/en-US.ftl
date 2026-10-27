@@ -1057,3 +1057,20 @@ attention-deferred = { $count } put aside
 attention-pill-one = { $count } waiting
 attention-pill = { $count } waiting
 action-document-replaced = This action did not run because its document was reopened or replaced. Try again in the current document.
+
+# One-shot action proposals: one model call's answer, before it is written.
+proposal-model-on-device = { $model }, running on this device
+proposal-model-hosted = { $model }, running on another machine
+proposal-context-selection = The selection
+proposal-context-document = The document
+proposal-context-too-many = That is too much context to send at once. Choose less.
+# $name is the part, $limit how many kilobytes one part may carry.
+proposal-context-too-long = { $name } is longer than { $limit } KB. Choose less.
+proposal-diff-more =
+    { $count ->
+        [one] One more line not shown
+       *[other] { $count } more lines not shown
+    }
+proposal-accept = Apply
+proposal-reject = Discard
+proposal-decisions = Apply this change, or discard it

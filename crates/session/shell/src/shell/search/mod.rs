@@ -19,11 +19,13 @@ mod fallbacks;
 pub mod files_index;
 pub mod invocation_wake;
 pub mod launcher;
+mod merge;
 mod merge_strength;
 pub mod providers;
 pub mod recent_places;
 #[cfg(test)]
 mod relevance_tests;
+pub mod rows;
 mod timing;
 pub mod usage;
 pub mod verifier;
@@ -38,12 +40,14 @@ use automerge::{AutoCommit, ObjId};
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 use crate::shell::i18n::t;
 use action_api::{ActionArgs, ActionError, ActionParam};
+use merge::{proximity_boost, sources_keep_their_order};
+pub use rows::row_resource;
 
 #[cfg(test)]
 use merge_strength::looks_like_a_path;
 use merge_strength::{
-    files_follow_what_was_named, loose_matches_give_way, only_loosely_matched, proximity_boost,
-    usage_strength, window_intent,
+    files_follow_what_was_named, loose_matches_give_way, only_loosely_matched, usage_strength,
+    window_intent,
 };
 use ui::search::system::{self, query_input_is_bounded};
 
@@ -316,6 +320,10 @@ pub struct SearchResult {
     pub contract: Option<tilo_actions::ActionContract>,
     pub on_open: Rc<OpenFn>,
     pub on_invoke: Option<Rc<InvokeFn>>,
+    /// The resource this row acts on, when its id is not that resource. A
+    /// search opened on it ([`ui::search::SearchRequest::on`]) starts on this
+    /// row.
+    pub resource: Option<String>,
     /// Used only when admission itself is asynchronous. It must not claim an
     /// accepted action until its retained ticket resolves current authority.
     pub on_begin_invoke: Option<Rc<BeginInvokeFn>>,
@@ -375,6 +383,7 @@ impl SearchResult {
             }),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }
     }
 
@@ -407,6 +416,7 @@ impl SearchResult {
             on_open: Rc::new(move |doc, root, chrome, _args| on_open(doc, root, chrome)),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }
     }
 }
@@ -1905,72 +1915,6 @@ pub fn in_the_store() -> ResourceKind {
     ResourceKind::Custom(t("search-group-in-the-store"))
 }
 
-/// An app orders its own rows ([`SearchProvider::source_order`]): among
-/// one source's rows the merge hands the strongest strengths and earliest
-/// places to the rows the source ranks first, whatever the merge read in
-/// their titles. Tube's "Search `YouTube` for “lofi”" leads the videos that
-/// begin with "lofi", so Enter searches, and the videos keep `YouTube`'s
-/// order. The rows only trade their strengths and places among themselves,
-/// so a source's rows weigh no more against other providers' than they
-/// did: no ranking of its own floods a search with one app.
-fn sources_keep_their_order(
-    merged: &mut Vec<(SearchResult, f32)>,
-    providers: &HashMap<&str, &dyn SearchProvider>,
-) {
-    // Each source's rows: where each stands, its strength, its rank there.
-    type Rows = Vec<(usize, f32, i64)>;
-    let mut sources: HashMap<(String, String), Rows> = HashMap::new();
-    for (at, (row, strength)) in merged.iter().enumerate() {
-        let Some((source, order)) = providers
-            .get(row.provider_id.as_str())
-            .and_then(|provider| provider.source_order(row))
-        else {
-            continue;
-        };
-        sources
-            .entry((row.provider_id.clone(), source))
-            .or_default()
-            .push((at, *strength, order));
-    }
-    // Where each place's row and strength come from.
-    let mut from: Vec<(usize, f32)> = merged
-        .iter()
-        .enumerate()
-        .map(|(at, (_, strength))| (at, *strength))
-        .collect();
-    let mut moved = false;
-    for mut rows in sources.into_values().filter(|rows| rows.len() > 1) {
-        // The places and strengths these rows hold, best first ...
-        let mut places: Vec<(usize, f32)> = rows
-            .iter()
-            .map(|&(at, strength, _)| (at, strength))
-            .collect();
-        places.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-        // ... go to the rows in their source's order; rows it ranks alike
-        // keep the merge's order.
-        rows.sort_by(|a, b| {
-            b.2.cmp(&a.2)
-                .then_with(|| b.1.total_cmp(&a.1))
-                .then(a.0.cmp(&b.0))
-        });
-        for ((place, strength), (row, _, _)) in places.into_iter().zip(rows) {
-            if let Some(slot) = from.get_mut(place) {
-                moved |= slot.0 != row;
-                *slot = (row, strength);
-            }
-        }
-    }
-    if !moved {
-        return;
-    }
-    let mut taken: Vec<Option<SearchResult>> = merged.drain(..).map(|(row, _)| Some(row)).collect();
-    // `from` is a permutation of the places: every row moves once.
-    merged.extend(from.into_iter().filter_map(|(row, strength)| {
-        taken
-            .get_mut(row)
-            .and_then(Option::take)
-            .map(|row| (row, strength))
-    }));
 }
 
 fn scope_allows(
