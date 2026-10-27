@@ -292,7 +292,11 @@ fn undoing_a_variant_change_keeps_a_concurrent_edit_of_the_old_variant() {
         panic!("the shape names its variant");
     };
     assert!(
-        theirs.doc().get(&shape, "radius").unwrap().is_some(),
+        theirs
+            .doc()
+            .get(&shape, "$field/rect/radius")
+            .unwrap()
+            .is_some(),
         "the old variant's concurrent field edit is still stored, unused"
     );
 
@@ -627,6 +631,7 @@ fn version_two() -> serde_json::Value {
     .unwrap();
     before["layers"]["layer-1"]["adjust"] = serde_json::to_value(&adjust).unwrap();
     before["marks"]["tree"]["style"] = serde_json::to_value(&style).unwrap();
+    before["marks"]["label"]["style"] = serde_json::to_value(&style).unwrap();
     before
 }
 
