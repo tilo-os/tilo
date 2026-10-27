@@ -17,7 +17,7 @@ use ui::widget::{WheelJumpAccum, wheel_jump_detents};
 
 pub use crate::shell::input_policy::*;
 use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
-use smithay::input::keyboard::FilterResult;
+use smithay::input::keyboard::{FilterResult, KeyboardTarget};
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
     GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
@@ -616,7 +616,9 @@ impl State {
     /// **Every** key goes through here, including ones the shell keeps:
     /// smithay's xkb state derives modifier state from the keycode stream, so
     /// skipping them desynchronises it. `FilterResult::Intercept` advances
-    /// state without emitting; `keycode` is evdev, smithay wants xkb form (evdev + 8).
+    /// state without emitting the key; the modifier change it makes still
+    /// reaches the focused client (see [`Self::announce_kept_modifiers`]).
+    /// `keycode` is evdev, smithay wants xkb form (evdev + 8).
     pub fn deliver_client_key(&mut self, keycode: u32, pressed: bool, forward: bool) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
@@ -638,6 +640,7 @@ impl State {
             && crate::shell::launcher::LaunchSession::current().presentation_observer_enabled())
         .then(crate::compositor::metrics::monotonic_time_ns)
         .flatten();
+        let modifiers_before = keyboard.modifier_state();
         let intercepted: Option<()> = keyboard.input(
             self,
             keycode.saturating_add(8).into(),
@@ -652,6 +655,9 @@ impl State {
                 }
             },
         );
+        if intercepted.is_some() {
+            self.announce_kept_modifiers(&keyboard, modifiers_before, serial);
+        }
         let delivered = forward && has_focus && intercepted.is_none();
         if delivered {
             self.client_keys_delivered = self.client_keys_delivered.wrapping_add(1);
@@ -693,6 +699,50 @@ impl State {
             }
         }
         delivered
+    }
+
+    /// Tell the focused client the seat's modifiers after a key the shell
+    /// kept changed them.
+    ///
+    /// Smithay sends `wl_keyboard.modifiers` only together with a forwarded
+    /// key, yet the focused client holds the seat's modifier state from its
+    /// `enter` on. A modifier pressed while the shell or another window had
+    /// the keyboard is in that `enter`; its release is not the client's to
+    /// see (the press never reached it), so without this the client keeps
+    /// the modifier down and reads every later key as a chord. Keys stay
+    /// with the shell; only the state every focused window shares goes out.
+    fn announce_kept_modifiers(
+        &mut self,
+        keyboard: &smithay::input::keyboard::KeyboardHandle<Self>,
+        before: smithay::input::keyboard::ModifiersState,
+        serial: Serial,
+    ) {
+        let modifiers = keyboard.modifier_state();
+        if modifiers == before {
+            return;
+        }
+        if let Some(focus) = keyboard.current_focus() {
+            let seat = self.seat.clone();
+            focus.modifiers(&seat, self, modifiers, serial);
+        }
+    }
+
+    /// The keyboard the session reads lost every held key at once: the host
+    /// compositor of a nested session took keyboard focus away from its
+    /// window (`wl_keyboard.leave`), so each key this session saw go down is
+    /// up for it, and its release goes to another window of the host.
+    ///
+    /// Each local hold is released through the seat as a release would be:
+    /// the focused client gets the release of every key it saw pressed and
+    /// the modifiers that follow, so it neither repeats a key nor reads the
+    /// next one under a modifier nobody holds. Keys a remote participant
+    /// still holds stay down. Keyboard focus does not move.
+    pub fn release_local_keyboard(&mut self) {
+        for code in self.remote_seats.release_local_keys() {
+            self.client_input.early_released_keys.remove(&code);
+            let forward = self.client_input.forwarded_keys.remove(&code);
+            let _ = self.deliver_client_key(code, false, forward);
+        }
     }
 
     /// Move the seat pointer to `global` and focus it on `target` (`(surface
