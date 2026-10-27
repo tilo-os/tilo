@@ -4,7 +4,9 @@
 //! work as a header, their groups as tags, and every detail in one
 //! [`PropertyList`] whose labels say what each value is. Phone numbers and
 //! addresses copy, the website opens; Edit, Delete and Favorite are the
-//! column header's commands.
+//! column header's commands, and the call, message and email verbs of the
+//! person's own number and address are the window bar's
+//! ([`crate::app::ContactsApp::window_toolbar`]).
 
 use ui::TextRole;
 use ui::icons::Icon;
@@ -113,6 +115,27 @@ fn header(contact: &Contact, shared: &Shared) -> Element {
             .push(Box::new(avatar))
             .push(Box::new(who)),
     )
+}
+
+/// The number a call or a message from this page goes to: the first number
+/// the person has, which is the one the card and the list show first.
+/// `None` when they have no number, so the bar offers no call.
+pub(crate) fn primary_phone(contact: &Contact) -> Option<&str> {
+    contact
+        .phones
+        .iter()
+        .map(|phone| phone.value.trim())
+        .find(|number| crate::handoff::tel_uri(number).is_some())
+}
+
+/// The address an email from this page goes to: the first the person has.
+/// `None` when they have none, so the bar offers no email.
+pub(crate) fn primary_email(contact: &Contact) -> Option<&str> {
+    contact
+        .emails
+        .iter()
+        .map(|email| email.value.trim())
+        .find(|address| crate::handoff::mailto_uri(address).is_some())
 }
 
 /// The page for `contact`.
