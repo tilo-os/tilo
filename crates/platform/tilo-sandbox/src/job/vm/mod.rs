@@ -48,6 +48,9 @@ use super::{ExitStatus, JobSpec, Mount, Root, SpawnError};
 /// The guest's init script.
 const INIT: &str = include_str!("init.sh");
 
+/// The first line of `t_command`: the command's own process may be killed for memory again.
+const COMMAND_KILLABLE: &str = "echo 0 >/proc/self/oom_score_adj || { echo 't-vm: cannot let the guest kill the command for memory' >&2; exit 126; }";
+
 /// Where the output tar starts on the output disk; the status line is before it.
 const OUTPUTS_AT: u64 = 1 << 20;
 
@@ -780,11 +783,7 @@ mod tests {
     fn the_init_flushes_only_the_output_disk_before_it_stops_the_machine() {
         // A global sync reaches the host's whole filesystem through every virtio-fs share,
         // and a busy node took longer to sync it than t lets a step make no progress.
-        let commands: Vec<&str> = INIT
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.starts_with('#'))
-            .collect();
+        let commands = commands(INIT);
         assert!(
             !commands
                 .iter()
@@ -803,6 +802,108 @@ mod tests {
             flush < finish.find("reboot -f").expect("finish stops the machine"),
             "{finish}"
         );
+    }
+
+    /// The lines of `script` that run, comments and blank lines left out.
+    fn commands(script: &str) -> Vec<&str> {
+        script
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect()
+    }
+
+    #[test]
+    fn the_guest_init_cannot_be_killed_for_memory_and_the_command_can() {
+        // Killing pid 1 panics the guest, which ends QEMU before it says a word of why.
+        let init = commands(INIT);
+        let at = |l: &str| {
+            init.iter()
+                .position(|c| *c == l)
+                .unwrap_or_else(|| panic!("the init has no `{l}`"))
+        };
+        let protected = at("echo -1000 >/proc/self/oom_score_adj");
+        assert!(protected > at("$BB mount -t proc proc /proc"), "{INIT}");
+        assert!(
+            protected < at("exec switch_root /newroot $T/busybox sh $T/init stage2"),
+            "{INIT}"
+        );
+        // In a process of its own: `/proc/self` is then the command's, not init's.
+        assert!(
+            init.iter()
+                .any(|l| l.starts_with("(cd \"$T_CWD\" && t_command)") && l.ends_with('&')),
+            "{INIT}"
+        );
+        let f = job_file(&spec());
+        let command = f
+            .split("t_command() {\n")
+            .nth(1)
+            .and_then(|c| c.split("\n}").next())
+            .expect("the job file has t_command");
+        let first = command.lines().next().map(str::trim);
+        assert_eq!(first, Some(COMMAND_KILLABLE), "{command}");
+        assert!(command.contains("exec env -i"), "{command}");
+    }
+
+    #[test]
+    fn the_command_runs_with_the_default_oom_score() {
+        // The generated `t_command` in a shell that, as the guest's init, is the OOM killer's
+        // last choice (as far as the test may: raising needs no privilege, lowering does).
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = spec();
+        spec.argv = vec!["cat".into(), "/proc/self/oom_score_adj".into()];
+        spec.env = vec![("PATH".into(), "/usr/bin:/bin".into())];
+        let job = dir.path().join("job");
+        std::fs::write(&job, job_file(&spec)).unwrap();
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(
+                "echo 1000 >/proc/self/oom_score_adj || exit 99; \
+                 t_which() { command -v \"$1\"; }; . \"$1\"; (t_command)",
+            )
+            .arg("sh")
+            .arg(&job)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if out.status.success() {
+            assert_eq!(stdout, "0\n", "{stderr}");
+        } else {
+            // Lowering takes privilege below where this process started: where the test may
+            // not, the command must not run as unkillable as its init.
+            let own: i32 = std::fs::read_to_string("/proc/self/oom_score_adj")
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            assert!(own > 0, "{stdout}{stderr}");
+            assert_eq!(out.status.code(), Some(126), "{stdout}{stderr}");
+            assert!(stdout.is_empty(), "{stdout}");
+            assert!(
+                stderr.contains("cannot let the guest kill the command"),
+                "{stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_command_killed_for_memory_is_said_and_its_status_written() {
+        let init = commands(INIT);
+        let killed = init
+            .iter()
+            .position(|l| l.contains("'Out of memory: Killed process'"))
+            .expect("the init looks for the guest's OOM kills");
+        let said = init
+            .iter()
+            .position(|l| l.starts_with("say \"the command (status $code) was killed for memory"))
+            .expect("the init says the command was killed for memory");
+        let finished = init
+            .iter()
+            .rposition(|l| *l == "finish \"$code\"")
+            .expect("the init writes the command's status");
+        assert!(killed < said && said < finished, "{INIT}");
     }
 
     #[test]
