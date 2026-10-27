@@ -100,8 +100,10 @@ on the existing remote runner. It pins dataset revision
 layout SHA-256 values, and keeps the notice alongside extracted fixtures. It
 retains the original validation membership, removes session IDs, sentences and
 timestamps from evaluator input, and reports only aggregate session counts.
-No raw donated gesture fixture, FUTO app source, model output or model weight
-is committed to Git or shipped in the OS image. No training was performed.
+No FUTO app source, model output or model weight is committed to Git or
+shipped in the OS image. The only committed gestures are the test-only sample
+of the [held-out accuracy ratchet](#held-out-accuracy-ratchet). No training
+was performed.
 
 Run this concrete production-decoder evaluation on the remote builder:
 
@@ -251,6 +253,22 @@ nor its corpus-scoring calculation. Existing secrecy, focus cancellation,
 multi-thumb, correction, casing and theme journeys also exercise the updated geometric
 matcher. The corpus reports record the exact decoder source used for measurement.
 
+
+## Held-out accuracy ratchet
+
+`swipe::tests::futo_held_out_accuracy` decodes 1,500 swipes from the dataset's
+`test` split with the production decoder on the OSK's own QWERTY geometry and
+fails if top-1 or top-3 hits drop below the current counts: 1,339 (89.3%)
+and 1,451 (96.7%). A further 2,000 swipes from the `dev` split, from other
+contributors, are committed for fitting constants. Both are MIT samples under
+[`apps/osk/tests/data`](../../apps/osk/tests/data/README.md), outside the
+shipped app. Raise the floors when the decoder improves.
+
+A multi-channel scorer (shape, key coverage, endpoints, path length and
+frequency prior, plus the elastic alignment on its 64 best words) fitted on
+the `dev` sample reached 1,807 / 1,937 there against the elastic matcher's
+1,783 / 1,925, but only 1,344 / 1,455 on the held-out set: within noise, so
+the elastic matcher stays.
 
 The live decoder chooser still prefers the existing optional FUTO runtime when
 its libraries and caller-provided model assets are available. This increment

@@ -99,8 +99,18 @@ impl syn::parse::Parse for Param {
     }
 }
 
-fn enum_operation(input: &DeriveInput) -> syn::Result<String> {
+/// The `#[effect(...)]` options of the enum itself: the operation type its
+/// effects are routed as, and the app whose `ActionKey`s they are published
+/// under.
+struct EnumOptions {
+    operation: String,
+    /// The app its typed references name their effects by.
+    app: Option<String>,
+}
+
+fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
     let mut operation = None;
+    let mut app = None;
     for attr in input
         .attrs
         .iter()
@@ -110,17 +120,21 @@ fn enum_operation(input: &DeriveInput) -> syn::Result<String> {
             if meta.path.is_ident("operation") {
                 operation = Some(meta.value()?.parse::<syn::LitStr>()?.value());
                 Ok(())
+            } else if meta.path.is_ident("app") {
+                app = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+                Ok(())
             } else {
-                Err(meta.error("expected `operation = \"...\"`"))
+                Err(meta.error("expected `operation = \"...\"` or `app = \"...\"`"))
             }
         })?;
     }
-    operation.ok_or_else(|| {
+    let operation = operation.ok_or_else(|| {
         syn::Error::new(
             input.ident.span(),
             "name the effects' operation type: `#[effect(operation = \"app.effects\")]`",
         )
-    })
+    })?;
+    Ok(EnumOptions { operation, app })
 }
 
 #[derive(Default)]
@@ -334,7 +348,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             "an effect vocabulary names at least one effect",
         ));
     }
-    let operation = enum_operation(input)?;
+    let EnumOptions { operation, app } = enum_options(input)?;
     let any_arguments = data
         .variants
         .iter()
@@ -697,7 +711,15 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         consts.push(quote! {
             #[doc = #const_doc]
             pub const #const_ident: #krate::ActionRef<#name, #input_ty> =
-                #krate::ActionRef::new(#id, &[#(#field_names),*]);
+                #krate::ActionRef::new(
+                    #id,
+                    &[#(#field_names),*],
+                    #krate::ResourceKind::of_effect::<#name>(
+                        #operation,
+                        <#name as #krate::Effect>::LABEL,
+                        <#name as #krate::Effect>::APP_ID,
+                    ),
+                );
         });
     }
 
@@ -706,11 +728,16 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
     } else {
         quote!(_arguments)
     };
+    let app_id = app
+        .as_ref()
+        .map_or_else(|| quote!(#krate::kind::DEFAULT_APP), |app| quote!(#app));
     let row_count = decls.len();
     let rows = decls.into_iter().map(|row| name_self(row, name));
     Ok(quote! {
         impl #krate::Effect for #name {
             const OPERATION: &'static str = #operation;
+
+            const APP_ID: &'static str = #app_id;
 
             fn declarations() -> ::std::vec::Vec<#krate::effect::EffectDecl> {
                 #krate::effect::EffectDecl::of_rows(Self::__effect_rows())

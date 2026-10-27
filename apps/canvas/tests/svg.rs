@@ -24,8 +24,11 @@ const BADGE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" heig
   <text x="20" y="60" font-size="24" font-family="serif" font-weight="700" fill="#ffffff">Hello</text>
 </svg>"##;
 
-const IMPORT: ActionRef<Artwork, (String, String)> =
-    ActionRef::new("import-svg", &["svg", "group"]);
+const IMPORT: ActionRef<Artwork, (String, String)> = ActionRef::new(
+    "import-svg",
+    &["svg", "group"],
+    canvas::resource::ARTWORK_KIND,
+);
 
 fn import(app: &mut TestApp<App>, svg: &str, group: &str) {
     app.invoke(IMPORT.with((svg.into(), group.into())))
@@ -160,8 +163,11 @@ fn compare_scores_the_artwork_against_its_reference() {
     };
     assert!(app.effect(&compare).is_err(), "no reference yet");
 
-    let set: ActionRef<Artwork, (String, [f64; 4])> =
-        ActionRef::new("set-reference", &["image", "frame"]);
+    let set: ActionRef<Artwork, (String, [f64; 4])> = ActionRef::new(
+        "set-reference",
+        &["image", "frame"],
+        canvas::resource::ARTWORK_KIND,
+    );
     app.invoke(set.with((
         path.to_string_lossy().into_owned(),
         [100.0, 100.0, 200.0, 200.0],
@@ -175,7 +181,8 @@ fn compare_scores_the_artwork_against_its_reference() {
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900"><rect x="100" y="100" width="{width}" height="200" fill="{fill}"/></svg>"#
         )
     };
-    let clear: ActionRef<Artwork, String> = ActionRef::new("remove-marks", &["layer"]);
+    let clear: ActionRef<Artwork, String> =
+        ActionRef::new("remove-marks", &["layer"], canvas::resource::ARTWORK_KIND);
     let score = |value: &Value| value["difference"].as_f64().unwrap();
     import(&mut app, &rect(100, "#1e40c8"), "wrong");
     let wrong = operate(&mut app, "compare");
@@ -200,7 +207,8 @@ fn compare_scores_the_artwork_against_its_reference() {
         serde_json::json!([64, 64])
     );
 
-    let remove: ActionRef<Artwork, bool> = ActionRef::new("set-reference", &["remove"]);
+    let remove: ActionRef<Artwork, bool> =
+        ActionRef::new("set-reference", &["remove"], canvas::resource::ARTWORK_KIND);
     app.invoke(remove.with(true)).unwrap();
     assert!(app.state().reference.is_none());
     app.invoke(remove.with(true))

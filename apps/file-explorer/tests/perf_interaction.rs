@@ -46,28 +46,5 @@ fn sidebar_hover() {
     let sweep = ui::framework::testing::perf::sidebar_sweep::<file_explorer::FileExplorerShell>(4)
         .expect("file-explorer opens");
     sweep.print();
-    for step in &sweep.steps {
-        let rows = step.rows.map(|row| row.inflate(2.0, 2.0));
-        let allowed: f64 = rows.iter().map(vello::kurbo::Rect::area).sum();
-        assert!(
-            step.damaged_area() <= allowed,
-            "hovering from {:?} to {:?} repainted {:.0}px, more than its two rows' {allowed:.0}px: {:?}",
-            step.from,
-            step.to,
-            step.damaged_area(),
-            step.damage,
-        );
-        assert!(
-            !step.unsettled,
-            "hovering from {:?} to {:?} asked for a sync or a layout",
-            step.from, step.to,
-        );
-    }
-    if !cfg!(debug_assertions) {
-        let p50 = sweep.report.p50_us();
-        assert!(
-            p50 <= 2_000,
-            "a sidebar hover change: p50 {p50}us exceeds the 2000us pointer-motion budget"
-        );
-    }
+    sweep.assert_each_hover_repaints_only_its_rows();
 }

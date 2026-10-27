@@ -284,8 +284,8 @@ fn bring_forward_window_of(
     let window = {
         let state = chrome.borrow();
         let tree = state.tree();
-        let shown = workspace;
-        tree.desktop.workspaces.iter().find(|workspace| workspace.id == shown).and_then(|workspace| {
+        let wanted = workspace;
+        tree.desktop.workspaces.iter().find(|workspace| workspace.id == wanted).and_then(|workspace| {
             let shows = |tab: &crate::shell::state::Tab| {
                 matches!(&tab.tile, crate::shell::state::TileContent::Foreign { app_id, .. } if is_app(app_id))
             };

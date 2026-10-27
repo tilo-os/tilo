@@ -369,7 +369,6 @@ impl DirectorySheet {
                     },
                 ..
             } => self.handle_key(logical_key, mods),
-            WindowEvent::KeyboardInput { .. } => DirectoryOutcome::consumed(),
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
@@ -433,7 +432,9 @@ impl DirectorySheet {
                 });
                 DirectoryOutcome::consumed()
             }
-            WindowEvent::MouseInput { .. } => DirectoryOutcome::consumed(),
+            WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. } => {
+                DirectoryOutcome::consumed()
+            }
             _ => DirectoryOutcome::ignored(),
         }
     }

@@ -1550,7 +1550,10 @@ impl MouseKeyboardPane {
                 let mut cards = Vec::new();
                 if self.sections.touchpad {
                     cards.push(self.touchpad_card());
-                    cards.push(self.touchpad_click_scroll_card());
+                    // Everything else a touchpad does is moot while it is off.
+                    if self.last.touchpad_enabled {
+                        cards.push(self.touchpad_click_scroll_card());
+                    }
                 }
                 if self.sections.mouse {
                     cards.push(self.mouse_card());
@@ -1725,14 +1728,23 @@ impl MouseKeyboardPane {
 
     /// Everything that is specific to a touchpad, starting with whether it
     /// works at all. The touchpad key on a laptop keyboard flips the same
-    /// saved setting.
+    /// saved setting. While it is off the rest is moot, so only the switch
+    /// shows.
     fn touchpad_card(&self) -> crate::widgets::SettingsSection {
         let last = &self.last;
-        section(
-            &t("input-touchpad-title"),
-            rows(vec![
-                touchpad(&self.cx, &self.input),
-                disable_with_mouse(&self.cx, &self.input),
+        let mut content = vec![touchpad(&self.cx, &self.input)];
+        if last.touchpad_enabled {
+            content.extend([
+                self.cx
+                    .row(t("input-touchpad-disable-with-mouse"))
+                    .described(t("input-touchpad-disable-with-mouse-description"))
+                    .id("input.touchpad_disabled_on_external_mouse")
+                    .nested()
+                    .of(
+                        &self.input,
+                        InputPrefs::paths().touchpad_disabled_on_external_mouse,
+                    )
+                    .toggle(),
                 self.cx
                     .row(t("input-touchpad-speed"))
                     .id("input.touchpad_pointer_speed")
@@ -1750,59 +1762,76 @@ impl MouseKeyboardPane {
                     InputPrefs::paths().touchpad_natural_scroll,
                     "input.touchpad_natural_scroll",
                 ),
-                tap_to_click(&self.cx, &self.input),
-                self.field_row(
-                    "input-tap-drag",
-                    "input-tap-drag-description",
-                    InputPrefs::paths().tap_drag,
-                    "input.tap_drag",
-                ),
-                self.field_row(
-                    "input-tap-drag-lock",
-                    "input-tap-drag-lock-description",
-                    InputPrefs::paths().tap_drag_lock,
-                    "input.tap_drag_lock",
-                ),
-                disable_while_typing(&self.cx, &self.input),
                 gestures(&self.cx, &self.input),
-            ]),
-        )
+                disable_while_typing(&self.cx, &self.input),
+            ]);
+        }
+        section(&t("input-touchpad-title"), rows(content))
+    }
+
+    /// Tapping, and the refinements a tap allows: dragging after a tap
+    /// shows only while a tap clicks, and its lock only while tap-and-drag
+    /// is on.
+    fn tapping_rows(&self) -> Vec<Item> {
+        let mut content = vec![tap_to_click(&self.cx, &self.input)];
+        if self.last.tap_to_click {
+            content.push(
+                self.cx
+                    .row(t("input-tap-drag"))
+                    .described(t("input-tap-drag-description"))
+                    .id("input.tap_drag")
+                    .nested()
+                    .of(&self.input, InputPrefs::paths().tap_drag)
+                    .toggle(),
+            );
+            if self.last.tap_drag {
+                content.push(
+                    self.cx
+                        .row(t("input-tap-drag-lock"))
+                        .described(t("input-tap-drag-lock-description"))
+                        .id("input.tap_drag_lock")
+                        .nested()
+                        .of(&self.input, InputPrefs::paths().tap_drag_lock)
+                        .toggle(),
+                );
+            }
+        }
+        content
     }
 
     /// How a touchpad turns presses and finger movement into clicks and
     /// scrolling. Each choice is applied only to devices whose libinput
     /// driver offers it.
     fn touchpad_click_scroll_card(&self) -> crate::widgets::SettingsSection {
-        section(
-            &t("input-clicking-title"),
-            rows(vec![
-                self.cx
-                    .row(t("input-click-method"))
-                    .described(t("input-click-method-caption"))
-                    .id("input.touchpad_click_method")
-                    .keyed_choice(
-                        localized_choices(&CLICK_METHOD_CHOICES),
-                        click_method_id(self.last.touchpad_click_method),
-                        InputPrefs::paths().touchpad_click_method,
-                        |id: String| {
-                            click_method_for_id(&id)
-                                .ok_or_else(|| format!("`{id}` is not a click method"))
-                        },
-                    ),
-                self.cx
-                    .row(t("input-scroll-method"))
-                    .id("input.touchpad_scroll_method")
-                    .keyed_choice(
-                        localized_choices(&SCROLL_METHOD_CHOICES),
-                        scroll_method_id(self.last.touchpad_scroll_method),
-                        InputPrefs::paths().touchpad_scroll_method,
-                        |id: String| {
-                            scroll_method_for_id(&id)
-                                .ok_or_else(|| format!("`{id}` is not a scroll method"))
-                        },
-                    ),
-            ]),
-        )
+        let mut content = self.tapping_rows();
+        content.extend([
+            self.cx
+                .row(t("input-click-method"))
+                .described(t("input-click-method-caption"))
+                .id("input.touchpad_click_method")
+                .keyed_choice(
+                    localized_choices(&CLICK_METHOD_CHOICES),
+                    click_method_id(self.last.touchpad_click_method),
+                    InputPrefs::paths().touchpad_click_method,
+                    |id: String| {
+                        click_method_for_id(&id)
+                            .ok_or_else(|| format!("`{id}` is not a click method"))
+                    },
+                ),
+            self.cx
+                .row(t("input-scroll-method"))
+                .id("input.touchpad_scroll_method")
+                .keyed_choice(
+                    localized_choices(&SCROLL_METHOD_CHOICES),
+                    scroll_method_id(self.last.touchpad_scroll_method),
+                    InputPrefs::paths().touchpad_scroll_method,
+                    |id: String| {
+                        scroll_method_for_id(&id)
+                            .ok_or_else(|| format!("`{id}` is not a scroll method"))
+                    },
+                ),
+        ]);
+        section(&t("input-clicking-title"), rows(content))
     }
 
     /// Mice, trackballs and pointing sticks.

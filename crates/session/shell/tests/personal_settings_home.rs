@@ -24,7 +24,7 @@ struct Room {
     guest: WorkspaceTree,
     personal: WorkspaceId,
     shared: WorkspaceId,
-    room: RoomId,
+    id: RoomId,
 }
 
 /// The host has its personal workspace and a shared one the guest was
@@ -57,19 +57,19 @@ fn shared_room() -> Room {
         guest,
         personal,
         shared,
-        room,
+        id: room,
     }
 }
 
 /// The host's room changes, applied on the guest's machine.
 fn ship(room: &mut Room) {
-    room.host.sync_room_doc(room.room);
+    room.host.sync_room_doc(room.id);
     let changes = room
         .host
-        .export_room_changes_since(room.room, &[])
+        .export_room_changes_since(room.id, &[])
         .expect("the host is in the room");
     room.guest
-        .apply_room_changes(room.room, &changes, &PeerOrigin::hub(1))
+        .apply_room_changes(room.id, &changes, &PeerOrigin::hub(1))
         .expect("the guest merges the room");
 }
 
@@ -116,24 +116,20 @@ fn settings_opened_from_a_shared_workspace_lands_in_the_personal_one() {
         Some(room.personal),
         "Settings opens in the personal workspace, not the shared one shown"
     );
-    let attributed = tab_binding::adopt_toplevel_in_room(
-        &mut room.host,
-        7_002,
-        Some(SETTINGS.into()),
-        room.room,
-    );
+    let attributed =
+        tab_binding::adopt_toplevel_in_room(&mut room.host, 7_002, Some(SETTINGS.into()), room.id);
     if let Some(tab) = attributed {
         assert_eq!(workspace_of(&room.host, tab), Some(room.personal));
     }
     assert!(
-        settings_tabs_in(&room.host, room.room).is_empty(),
+        settings_tabs_in(&room.host, room.id).is_empty(),
         "no Settings window on the shared strip"
     );
 
     // What the collaborator's machine receives from the room.
     ship(&mut room);
     assert!(
-        settings_tabs_in(&room.guest, room.room).is_empty(),
+        settings_tabs_in(&room.guest, room.id).is_empty(),
         "the collaborator never receives Settings as a peer window"
     );
 }
@@ -153,7 +149,7 @@ fn a_held_place_for_settings_is_held_in_the_personal_workspace() {
         "the view goes to the personal workspace, where Settings opens"
     );
     ship(&mut room);
-    assert!(settings_tabs_in(&room.guest, room.room).is_empty());
+    assert!(settings_tabs_in(&room.guest, room.id).is_empty());
 }
 
 #[test]
@@ -177,7 +173,7 @@ fn a_settings_window_never_moves_onto_a_shared_strip() {
     );
     assert_eq!(workspace_of(&room.host, tab), Some(room.personal));
     ship(&mut room);
-    assert!(settings_tabs_in(&room.guest, room.room).is_empty());
+    assert!(settings_tabs_in(&room.guest, room.id).is_empty());
 
     // Onto another workspace only the person is in, the same move goes.
     let also_mine = room.host.append_empty_workspace("Also mine");
