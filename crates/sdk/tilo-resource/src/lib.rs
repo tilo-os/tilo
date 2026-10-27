@@ -199,6 +199,15 @@ pub use tilo_resource_macros::{Effect, JsonSchema, Model, committed_surface, res
 pub use unreadable::withhold_document_actions;
 pub use vocabulary::{Built, Declaration, Vocabulary, vocabulary};
 
+/// What `description` says beyond `label`, the words its first line is
+/// already published as: a description does not repeat the label beside it.
+#[must_use]
+pub(crate) fn beyond_label<'a>(label: &str, description: &'a str) -> &'a str {
+    description.strip_prefix(label).map_or(description, |rest| {
+        rest.trim_start_matches('.').trim_start()
+    })
+}
+
 /// Items the generated code refers to. Not part of the public API.
 #[doc(hidden)]
 pub mod __private {
@@ -464,12 +473,7 @@ pub mod __private {
         decl.by_arguments = verb.by_arguments;
         decl.writes = crate::footprint::declared(verb.shape, verb.item_field, verb.writes);
         // What the description says beyond its first line, the label.
-        let description = verb
-            .description
-            .strip_prefix(verb.label)
-            .map_or(verb.description, |rest| {
-                rest.trim_start_matches('.').trim_start()
-            });
+        let description = crate::beyond_label(verb.label, verb.description);
         if !description.is_empty() {
             decl.description = Some(description.to_owned());
         }

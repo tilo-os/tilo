@@ -710,7 +710,9 @@ impl EffectDecl {
             build,
         );
         if !self.description.is_empty() {
-            spec = spec.with_description(self.description);
+            // What the description says beyond its first line, the label: a
+            // surface does not carry the label's sentence twice.
+            spec = spec.with_description(crate::beyond_label(self.label, self.description));
         }
         let base = if view {
             ActionContract::view()
@@ -978,7 +980,8 @@ mod tests {
         assert_eq!(rename.label, "Rename a thing");
         assert_eq!(
             rename.description.as_deref(),
-            Some("Rename a thing. It keeps its id.")
+            Some("It keeps its id."),
+            "the description says what the label does not"
         );
         assert_eq!(rename.kind, OperationKind::Effect);
         assert_eq!(rename.contract.kind, ActionKind::Read);

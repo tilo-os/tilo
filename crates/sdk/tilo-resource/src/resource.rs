@@ -529,19 +529,22 @@ pub(crate) fn edit_schema(vocabulary: &Vocabulary) -> serde_json::Value {
 }
 
 /// The schema a field edit is checked against, with every editable path
-/// described: its template, the operations it takes, the value's schema,
-/// its title and flags (the description), and one example edit per path
-/// (the examples) — what an agent builds a field edit from.
+/// described: its template, the operations it takes, the value's schema and
+/// its title and flags (the description), and one example edit per shape of
+/// path (a field, an item's field, an entry) — what an agent builds a field
+/// edit from. Each thing is said once: a path's line does not restate the
+/// field the path names or a description already stated for it, the step
+/// forms are the action's own description, and the operations are what the
+/// schema's `op` offers and each line says.
 fn described_edit(
     alternatives: &[serde_json::Value],
     ops: &[(String, serde_json::Value)],
 ) -> serde_json::Value {
     let mut schema = generic_edit_schema(ops);
-    let mut lines = vec![
-        "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:".to_owned(),
-    ];
+    let mut lines = vec!["Editable paths:".to_owned()];
     let mut examples = Vec::new();
     let mut shapes: Vec<Vec<String>> = Vec::new();
+    let mut said: Vec<String> = Vec::new();
     for alternative in alternatives {
         let at = |pointer: &str| alternative.pointer(pointer).cloned().unwrap_or_default();
         let template = at("/properties/path/examples/0");
@@ -558,14 +561,19 @@ fn described_edit(
         let text = |key: &str| at(key).as_str().unwrap_or_default().to_owned();
         let kind = value_kind(&value);
         lines.push(format!(
-            "- `{}`: {} — {}{}",
+            "- `{}`: {}{}{}",
             text("/title"),
             ops.join(", "),
-            text("/description"),
+            beyond_repeated_description(
+                &text("/title"),
+                &text("/field"),
+                &text("/flags"),
+                &mut said,
+            ),
             kind.map_or_else(String::new, |kind| format!(" ({kind})")),
         ));
-        // One example per shape of path (a field, an item's field, an
-        // entry): the listing names every path of each shape.
+        // One example per shape of path: the listing names every path of
+        // each shape, and the example shows how a path of it is written.
         let shape: Vec<String> = template
             .as_array()
             .map(|steps| {
@@ -591,6 +599,45 @@ fn described_edit(
         object.insert("examples".into(), examples.into());
     }
     schema
+}
+
+/// What a path's line says beyond the path and its operations: the field's
+/// own words and its flags, less what the listing already tells beside it.
+///
+/// Which field the path names is in the path, so a title that only restates
+/// the path's last step (`- \`layers.*.name\`: set — Name`) says nothing; an
+/// entry's or cell's line names a field its parent's line describes, so it
+/// carries the flags alone; and a description already stated for an earlier
+/// path (a record type the record holds twice, as a layer's adjustments and
+/// a mark's) is said once.
+fn beyond_repeated_description(
+    path: &str,
+    field: &str,
+    flags: &str,
+    said: &mut Vec<String>,
+) -> String {
+    let step = path
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .replace('_', " ");
+    let entry = path.ends_with(".*");
+    let restated = field.trim().eq_ignore_ascii_case(&step);
+    let repeated = !entry && said.iter().any(|said| said == field);
+    if !entry && !restated && !repeated && !field.is_empty() {
+        said.push(field.to_owned());
+    }
+    let title = if entry || restated || repeated {
+        ""
+    } else {
+        field
+    };
+    match (title.is_empty(), flags.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => format!(" — {flags}"),
+        (false, true) => format!(" — {title}"),
+        (false, false) => format!(" — {title}; {flags}"),
+    }
 }
 
 /// The kind of value a schema describes, in a word or two, when it says one
@@ -777,11 +824,10 @@ fn edit_paths(
         }
         serde_json::json!({
             "title": dotted.join("."),
-            "description": if description.is_empty() {
-                title.to_owned()
-            } else {
-                format!("{title}; {description}")
-            },
+            // The field's own words and its flags, apart: the listing decides
+            // which of them the line beside the path still has to say.
+            "field": title,
+            "flags": description,
             "type": "object",
             "properties": properties,
             "required": ["path", "op"],

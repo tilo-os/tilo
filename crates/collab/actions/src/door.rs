@@ -390,7 +390,15 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
             kind: action.kind,
             contract: action.contract.clone(),
             input: InputSpec::of(&action.input),
-            params: action.params().to_vec(),
+            // What a caller reads: a schema that only restates a parameter's
+            // declared type says nothing the descriptor does not, and
+            // binding enforces that type before it reads any schema.
+            params: action
+                .params()
+                .iter()
+                .cloned()
+                .map(ActionParam::without_restated_schema)
+                .collect(),
             view,
         });
     }

@@ -689,6 +689,73 @@ fn an_agent_builds_a_field_edit_from_the_published_descriptor_alone() {
     );
 }
 
+/// A declared parameter's schema that only restated its declared type is
+/// published once — on the type — and the action admits and refuses exactly
+/// the arguments it did before.
+#[test]
+fn a_declared_parameter_publishes_its_type_once() {
+    let published = Replica::<Board>::new().published().unwrap();
+    let retitle = published
+        .actions
+        .iter()
+        .find(|spec| spec.id == "retitle")
+        .unwrap();
+    let described = tilo_actions::door::survey(&[published.clone()])
+        .into_iter()
+        .find(|descriptor| descriptor.address.action == "retitle")
+        .expect("retitle is published");
+    for name in ["title", "suffix"] {
+        let param = described
+            .params
+            .iter()
+            .find(|param| param.name == name)
+            .unwrap();
+        assert!(
+            param.schema.is_none(),
+            "`{name}`'s type is published as `ty`, not again as a schema: {param:?}"
+        );
+        assert_eq!(
+            param.validate_declaration(),
+            Vec::<String>::new(),
+            "its declaration still passes at the publication boundary"
+        );
+        let declared = retitle
+            .params()
+            .iter()
+            .find(|param| param.name == name)
+            .unwrap();
+        assert!(
+            declared.schema.is_some(),
+            "the declaration keeps the type's schema for the surface file"
+        );
+    }
+    let admits = |arguments: serde_json::Value| {
+        retitle
+            .build_json(arguments.as_object().expect("an argument object"))
+            .is_ok()
+    };
+    // The declared types are what binding checks, so what a caller may send
+    // is what the published `ty` says.
+    assert!(admits(serde_json::json!({"title": "Plan"})));
+    assert!(admits(
+        serde_json::json!({"title": "Plan", "suffix": " II"})
+    ));
+    assert!(admits(serde_json::json!({"title": "Plan", "suffix": null})));
+    assert!(
+        !admits(serde_json::json!({})),
+        "a required argument is missing"
+    );
+    assert!(!admits(serde_json::json!({"title": 7})), "the wrong type");
+    assert!(
+        !admits(serde_json::json!({"title": "Plan", "suffix": 2})),
+        "the wrong type, optionally"
+    );
+    assert!(
+        !admits(serde_json::json!({"title": "Plan", "unknown": 2})),
+        "an argument it does not declare"
+    );
+}
+
 #[test]
 fn an_item_resource_offers_the_field_edits_of_its_item() {
     let mut board = Replica::<Board>::new();

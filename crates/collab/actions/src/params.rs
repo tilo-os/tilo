@@ -41,6 +41,19 @@ pub const ARGUMENTS_JSON_PREFIX: &str = "\u{1e}tilo-args:";
 /// `const`) or owned (so an app can build one per frame from its document).
 pub type Str = Cow<'static, str>;
 
+/// The JSON type a [`ParamType`]'s values have, as `type` spells it.
+#[must_use]
+fn json_type(ty: ParamType) -> &'static str {
+    match ty {
+        ParamType::Text | ParamType::Secret | ParamType::Resource | ParamType::DateTime => "string",
+        ParamType::Integer => "integer",
+        ParamType::Number => "number",
+        ParamType::Boolean => "boolean",
+        ParamType::Object => "object",
+        ParamType::Array => "array",
+    }
+}
+
 /// The type of one action parameter. Deliberately small: these are values a
 /// caller with no screen can produce from a descriptor alone.
 ///
@@ -270,6 +283,68 @@ impl ActionParam {
     #[must_use]
     pub fn with_shared_schema(mut self, schema: std::sync::Arc<serde_json::Value>) -> Self {
         self.schema = Some(schema);
+        self
+    }
+
+    /// Whether this parameter's schema says nothing its declared
+    /// [`ty`](Self::ty) and [`nullable`](Self::nullable) do not already say:
+    /// the same one JSON type, and null in it only where binding would not
+    /// have refused it first.
+    ///
+    /// [`ActionArgs::bind`] enforces the declared type before it ever reads
+    /// the schema, and settles null on the flag before that: an optional
+    /// parameter's null is left out, a required one's is refused. So a schema
+    /// that names the declared type, with or without `null` beside it, states
+    /// the same contract as `ty`. A publication leaves the copy out; argument
+    /// admission is the same either way.
+    #[must_use]
+    pub fn schema_restates_type(&self) -> bool {
+        let Some(schema) = self.schema.as_deref() else {
+            return false;
+        };
+        let Some(fields) = schema.as_object() else {
+            return false;
+        };
+        if fields.keys().any(|keyword| keyword != "type") {
+            return false;
+        }
+        let Some(types) = fields.get("type") else {
+            return false;
+        };
+        let mut described: Vec<&str> = match types {
+            serde_json::Value::String(kind) => vec![kind.as_str()],
+            serde_json::Value::Array(kinds) => {
+                let mut described = Vec::with_capacity(kinds.len());
+                for kind in kinds {
+                    let Some(kind) = kind.as_str() else {
+                        return false;
+                    };
+                    described.push(kind);
+                }
+                described
+            }
+            _ => return false,
+        };
+        described.sort_unstable();
+        let stated = json_type(self.ty);
+        // A nullable parameter's null does reach the schema, so a schema
+        // without it says more than the flag does.
+        if self.nullable && !described.contains(&"null") {
+            return false;
+        }
+        described
+            .iter()
+            .all(|described| matches!(*described, "null") || *described == stated)
+            && described.contains(&stated)
+    }
+
+    /// Drop the schema when it only restates the declared type
+    /// ([`Self::schema_restates_type`]).
+    #[must_use]
+    pub fn without_restated_schema(mut self) -> Self {
+        if self.schema_restates_type() {
+            self.schema = None;
+        }
         self
     }
 
@@ -2136,5 +2211,176 @@ mod rich_schema_tests {
             validate_json_schema(&json!(["photos.photo:a", "photos.photo:a"]), &schema).is_err()
         );
         assert!(validate_schema_definition(&json!({"uniqueItems": "yes"})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod restated_schema_tests {
+    use serde_json::json;
+
+    use super::{ActionArgs, ActionParam, ParamType};
+
+    /// Whether `supplied` is admitted by the parameter, as a host reads the
+    /// answer: the bound arguments, or the refusal.
+    fn admitted(param: &ActionParam, supplied: serde_json::Value) -> Result<Vec<String>, String> {
+        ActionArgs::bind_json(
+            std::slice::from_ref(param),
+            supplied.as_object().expect("an argument object"),
+        )
+        .map(|bound| {
+            let mut names: Vec<String> = bound.to_json().keys().cloned().collect();
+            names.sort_unstable();
+            names
+        })
+        .map_err(|refusal| refusal.to_string())
+    }
+
+    #[test]
+    fn a_schema_that_restates_the_type_admits_exactly_what_the_type_admits() {
+        // A required text field, an optional number, and a nullable one, with
+        // the values a caller sends: the declared type, another type, null,
+        // and none at all.
+        let cases = [
+            (
+                ActionParam::required("name", ParamType::Text, "Name"),
+                json!({"type": "string"}),
+                vec![
+                    json!({"name": "Sun"}),
+                    json!({"name": 4}),
+                    json!({"name": null}),
+                    json!({}),
+                    json!({"name": "Sun", "other": 1}),
+                ],
+            ),
+            (
+                ActionParam::optional("opacity", ParamType::Number, "Opacity"),
+                json!({"type": ["number", "null"]}),
+                vec![
+                    json!({"opacity": 0.5}),
+                    json!({"opacity": 1}),
+                    json!({"opacity": "0.5"}),
+                    json!({"opacity": null}),
+                    json!({}),
+                ],
+            ),
+            (
+                ActionParam::required("visible", ParamType::Boolean, "Visible").nullable(),
+                json!({"type": ["boolean", "null"]}),
+                vec![
+                    json!({"visible": true}),
+                    json!({"visible": null}),
+                    json!({"visible": "yes"}),
+                    json!({}),
+                ],
+            ),
+            (
+                ActionParam::optional("count", ParamType::Integer, "Count"),
+                json!({"type": ["integer", "null"]}),
+                vec![
+                    json!({"count": 3}),
+                    json!({"count": 3.5}),
+                    json!({"count": null}),
+                    json!({}),
+                ],
+            ),
+        ];
+        for (param, schema, values) in cases {
+            let with_schema = param.clone().with_schema(schema);
+            assert!(
+                with_schema.schema_restates_type(),
+                "{}'s schema only restates its type",
+                with_schema.name
+            );
+            let published = with_schema.clone().without_restated_schema();
+            assert!(
+                published.schema.is_none(),
+                "{} publishes its type once",
+                published.name
+            );
+            for supplied in values {
+                assert_eq!(
+                    admitted(&with_schema, supplied.clone()),
+                    admitted(&published, supplied.clone()),
+                    "{} admits {supplied} the same either way",
+                    published.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_schema_that_says_more_than_the_type_is_kept() {
+        for (param, schema) in [
+            (
+                ActionParam::required("name", ParamType::Text, "Name"),
+                json!({"type": "string", "minLength": 3}),
+            ),
+            (
+                ActionParam::optional("ids", ParamType::Array, "Ids"),
+                json!({"type": ["array", "null"], "items": {"type": "string"}}),
+            ),
+            (
+                ActionParam::required("steps", ParamType::Integer, "Steps"),
+                json!({"type": "integer", "minimum": 0}),
+            ),
+            (
+                // Nullable, but the schema refuses null: dropping it would
+                // admit one value more.
+                ActionParam::optional("limit", ParamType::Integer, "Limit").nullable(),
+                json!({"type": "integer"}),
+            ),
+            (
+                // A number parameter whose schema narrows it to integers.
+                ActionParam::optional("scale", ParamType::Number, "Scale"),
+                json!({"type": "integer"}),
+            ),
+        ] {
+            let parameter = param.with_schema(schema.clone());
+            assert!(
+                !parameter.schema_restates_type(),
+                "{} keeps {schema}",
+                parameter.name
+            );
+            assert_eq!(
+                parameter.clone().without_restated_schema().schema,
+                parameter.schema,
+                "{} still publishes {schema}",
+                parameter.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_restating_schema_and_the_type_it_restates_bind_the_same_everywhere() {
+        // Every declared type: the schema its Rust type writes, and what
+        // binding admits with and without it.
+        for (ty, schema) in [
+            (ParamType::Text, json!({"type": ["string", "null"]})),
+            (ParamType::Integer, json!({"type": "integer"})),
+            (ParamType::Number, json!({"type": ["number", "null"]})),
+            (ParamType::Boolean, json!({"type": "boolean"})),
+            (ParamType::Object, json!({"type": ["object", "null"]})),
+            (ParamType::Array, json!({"type": ["array", "null"]})),
+        ] {
+            let parameter = ActionParam::required("value", ty, "Value").with_schema(schema);
+            let published = parameter.clone().without_restated_schema();
+            assert!(published.schema.is_none(), "{ty:?} publishes its type once");
+            for supplied in [
+                json!({"value": "text"}),
+                json!({"value": 1}),
+                json!({"value": 1.5}),
+                json!({"value": true}),
+                json!({"value": {}}),
+                json!({"value": []}),
+                json!({"value": null}),
+                json!({}),
+            ] {
+                assert_eq!(
+                    admitted(&parameter, supplied.clone()),
+                    admitted(&published, supplied.clone()),
+                    "{ty:?} admits {supplied} the same either way"
+                );
+            }
+        }
     }
 }
