@@ -17,7 +17,7 @@ import pre_push  # noqa: E402
 import t_matrix  # noqa: E402
 
 # What a push to main must never wait for: tests, VM checks, images, suites, previews.
-TEST_FAMILIES = ("test/", "test-x86_64/", "goldens/", "check/")
+TEST_FAMILIES = ("test/", "test-x86_64/", "test-aarch64/", "goldens/", "check/")
 
 
 def is_test(name: str) -> bool:
@@ -39,10 +39,13 @@ class SelectTests(unittest.TestCase):
         self.assertNotIn("fmt", run, "the whole tree's fmt stays on main; a push formats what it changed")
         self.assertIn("fmt-changed", run)
         self.assertIn("changes", run)
-        self.assertIn("clippy/shell", run)
+        # The shell's code differs between architectures: it is linted on each.
+        self.assertIn("clippy-x86_64/shell", run)
+        self.assertIn("clippy-aarch64/shell", run)
+        self.assertNotIn("clippy-idle/shell", run)
         for name in run:
             with self.subTest(check=name):
-                if name.startswith("clippy/"):
+                if name.startswith(pre_push.CLIPPY):
                     continue
                 check = checks[name]
                 self.assertNotEqual(check.get("isolation"), "vm")

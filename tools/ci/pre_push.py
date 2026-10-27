@@ -26,7 +26,7 @@ those whose inputs are the whole tree take minutes each on a loaded node, and st
 `pre_push = true` on them. Run one yourself with `t test policy <step>`.
 
 A check red on main runs all the same: t compares what fails with the same check at the commit
-the push is based on, and only what fails there too passes. A lint (`clippy/*`) and a policy
+the push is based on, and only what fails there too passes. A lint (`clippy*/*`) and a policy
 step's problem (`policy/*`, tools/policy/findings.py) are compared one finding at a time, so a
 push that adds one is refused however red main is. A check that fails as a whole (a compile
 error, a generated file out of date) can only be compared as a whole: it passes when main fails
@@ -80,7 +80,9 @@ REPLACED = frozenset({"fmt"})
 POLICY = "policy/"
 POLICY_TESTS = "policy/tests/"
 POLICY_SOURCES = "tools/policy/"
-CLIPPY = "clippy/"
+# The lint families of a package: `clippy`, or for one whose code differs between architectures
+# `clippy-<arch>` on each (t.toml); not `clippy-idle`, which waits for main.
+CLIPPY = ("clippy/", "clippy-x86_64/", "clippy-aarch64/")
 
 
 def policy_steps(root: Path = ROOT) -> set[str]:
@@ -126,7 +128,7 @@ def wanted(check: str, changed: list[str], packages: set[str], steps: set[str]) 
     if check.startswith(POLICY_TESTS):
         return any(path.startswith(POLICY_SOURCES) for path in changed)
     if check.startswith(CLIPPY):
-        return check.removeprefix(CLIPPY) in packages
+        return check.split("/", 1)[1] in packages
     return check.startswith(POLICY) and check in steps
 
 

@@ -12,7 +12,7 @@ import sys
 import tomllib
 
 T_TOML = Path(__file__).resolve().parents[2] / "t.toml"
-FAMILIES = ("test", "test-x86_64")
+FAMILIES = ("test", "test-x86_64", "test-aarch64")
 
 
 def sandboxed(path: Path = T_TOML) -> list[str]:
