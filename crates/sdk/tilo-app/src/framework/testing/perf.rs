@@ -195,7 +195,8 @@ pub fn measure<A: ResourceApp>(
 /// What the GPU, the window and the compositor add on a device is not here:
 /// this is the part of a launch the app's own code decides.
 pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
-    let profile = tempfile::tempdir().map_err(|error| LaunchError::Operation(error.to_string()))?;
+    let profile = crate::framework::headless::profile_directory()
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
     drop(HeadlessApp::<A>::open_data_dir(profile.path())?);
     let mut report = Report {
         label: format!("{} start", A::ID),
@@ -227,7 +228,12 @@ pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
 /// frame as its window would, without a window or GPU. The profile is a
 /// private directory the first, unmeasured launch makes, so each measured
 /// launch opens an existing record, as a second launch does; the process's
-/// environment points nowhere real (no display, bus or runtime).
+/// environment points nowhere real (no display, bus or runtime). The
+/// scratch directory is in memory where the system has one, as a test's
+/// profile is:
+/// each launch syncs the records it opens and drains its store on exit, and
+/// on a shared disk those syncs wait for every other writer, seconds a
+/// launch on a loaded machine, none of it inside the measured span.
 ///
 /// Each sample is the time from the process starting to its first frame
 /// drawn; the phases are the startup marks' (`APP-STARTUP`) and the named
@@ -239,7 +245,7 @@ pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
     reason = "a measurement fails loudly when the app binary cannot run or says nothing"
 )]
 pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdStart {
-    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let scratch = crate::framework::headless::profile_directory().expect("a scratch directory");
     let root = scratch.path();
     let launch = || {
         let output = std::process::Command::new(exe)
