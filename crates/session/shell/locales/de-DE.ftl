@@ -571,6 +571,7 @@ host-activity-action-move-boundary = Grenze der Arbeitssitzung verschieben
 host-activity-action-undo = Änderungen rückgängig machen
 host-activity-action-restore = Auf den Stand davor zurücksetzen
 host-activity-action-undo-run = Agentenaufgabe rückgängig machen
+host-activity-action-undo-record = Diese Änderung rückgängig machen
 host-activity-action-open = Öffnen
 host-activity-action-choose-source = Morgenquelle wählen
 host-activity-action-source = Morgenquelle verwenden

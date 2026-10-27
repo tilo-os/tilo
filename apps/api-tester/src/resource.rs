@@ -259,6 +259,59 @@ impl Workspace {
         Ok(())
     }
 
+    /// Keep what a sent request sent as a saved request in a collection.
+    ///
+    /// The builder is left as it is: saving a request from the history is
+    /// something a person does while writing another one. An entry recorded
+    /// before the history kept the request itself saves the method and URL
+    /// that are all it has.
+    #[action(item = collections)]
+    pub fn save_sent(
+        &mut self,
+        cx: &mut ActionCx,
+        collection: &Id,
+        #[param("The sent request")] sent: &Id,
+        #[param("Request name; the sent route when none")] name: Option<String>,
+    ) -> Result<(), Refusal> {
+        let entry = self.history.get(sent).ok_or("no such request")?;
+        let mut request = match entry.replay_of() {
+            Some(replay) => RequestRecord::of(&replay.to_request()),
+            None => RequestRecord {
+                method: entry.method,
+                url: entry.url.0.clone(),
+                ..RequestRecord::named("New request")
+            },
+        };
+        request.name = name
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| {
+                // The route names it: the query is where a token usually sits,
+                // and a request's name is searchable.
+                let route = entry.url.0.split(['?', '#']).next().unwrap_or_default();
+                format!(
+                    "{} {}",
+                    entry.method.as_str(),
+                    crate::palette::short_path(route)
+                )
+            });
+        self.collections
+            .get_mut(collection)
+            .ok_or("no such collection")?
+            .requests
+            .push(Id::from_raw(cx.uuid().to_string()), request);
+        Ok(())
+    }
+
+    /// Forget a sent request. Undo brings it back, so nobody is asked first.
+    #[action(destructive, item = history)]
+    pub fn delete_sent(&mut self, sent: &Id) -> Result<(), Refusal> {
+        self.history
+            .remove(sent)
+            .map(drop)
+            .ok_or_else(|| Refusal::new("no such request"))
+    }
+
     /// Record a request that was sent.
     #[action]
     pub fn record_sent(
@@ -340,7 +393,7 @@ pub struct ApiTesterShell;
 impl ApiTesterShell {
     /// The view state a screenshot scenario stages: the sample request and
     /// its response (`default`, the response's headers), a contextual form,
-    /// the rail, the URL's focus, a failed send.
+    /// the rail, the URL's focus, a sent request's actions, a failed send.
     pub const SCENARIOS: &'static [&'static str] = &[
         "default",
         "response-headers",
@@ -356,6 +409,7 @@ impl ApiTesterShell {
         "form-rename-environment",
         "form-new-variable",
         "form-delete-variable",
+        "history-actions",
     ];
 }
 

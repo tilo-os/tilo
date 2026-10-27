@@ -270,7 +270,7 @@ fn worker_loop(
                 None => DbReply::Queried {
                     connection_id,
                     generation,
-                    result: Err("No live connection".to_string()),
+                    result: Err(crate::i18n::t("db-no-connection")),
                     schema: None,
                 },
             },
@@ -283,7 +283,7 @@ fn worker_loop(
             } => {
                 let result = match engine.as_mut() {
                     Some(eng) => eng.browse_table(&schema, &table, limit, offset),
-                    None => Err("No live connection".to_string()),
+                    None => Err(crate::i18n::t("db-no-connection")),
                 };
                 DbReply::Browsed {
                     connection_id,
