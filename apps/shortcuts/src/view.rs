@@ -629,6 +629,9 @@ fn overview_page(ui: &Ui) -> Element {
 fn overview_body(ui: &Ui, description: &LocalState<String>, door: &DoorState) -> Element {
     let mut items: Vec<Element> = Vec::new();
     let drafting = drafting_offered(door);
+    if let Some(proposal) = &door.proposal {
+        items.push(proposal_panel(ui, proposal, door));
+    }
     if drafting {
         items.push(describe_panel(ui, description, door.drafted.as_ref()));
     }
@@ -666,6 +669,62 @@ fn overview_body(ui: &Ui, description: &LocalState<String>, door: &DoorState) ->
     Box::new(Section::new(items))
 }
 
+/// The repeated work the app noticed: what the shortcut would be called, its
+/// steps and the permissions saving it would grant, and the choice to open it
+/// as a draft or to stop being offered it.
+fn proposal_panel(ui: &Ui, proposal: &crate::proposal::Proposal, door: &DoorState) -> Element {
+    let catalog = door.catalogue.ready().cloned().unwrap_or_default();
+    let mut items: Vec<Element> = vec![Box::new(
+        Text::new(&proposal.evidence())
+            .with_id("proposal-evidence")
+            .with_role(TextRole::Label),
+    )];
+    items.push(Box::new(caption(&proposal.name(&catalog))));
+    let steps: Vec<Element> = proposal
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| {
+            let line = format!(
+                "{}. {}, {}",
+                index + 1,
+                crate::proposal::label(step, &catalog),
+                step.kind
+            );
+            Box::new(Text::new(&line)) as Element
+        })
+        .collect();
+    items.push(Box::new(Section::titled(
+        ui::i18n!("shortcuts-steps"),
+        steps,
+    )));
+    let program = proposal.program();
+    let permissions = grant::least_privilege(&program.steps, &catalog);
+    let mut grants: Vec<Element> = permissions
+        .iter()
+        .map(|permission| Box::new(Text::new(&permission.label)) as Element)
+        .collect();
+    if grants.is_empty() {
+        grants.push(Box::new(caption("shortcuts-grant-none")));
+    }
+    items.push(Box::new(Section::titled(
+        ui::i18n!("shortcuts-grant"),
+        grants,
+    )));
+    let json = serde_json::to_value(&program).unwrap_or(Value::Null);
+    let open = ui.bind(
+        Button::new("open-proposal", "shortcuts-open-drafted").role(ButtonRole::Primary),
+        Workbench::DRAFT_PROPOSAL.map(move |()| json.clone()),
+    );
+    let key = proposal.key();
+    let stop = ui.bind(
+        Button::new("ignore-proposal", "shortcuts-ignore-proposal").role(ButtonRole::Secondary),
+        Workbench::IGNORE_PROPOSAL.map(move |()| key.clone()),
+    );
+    items.push(Box::new(ActionGroup::new(open).secondary(stop)));
+    Box::new(Section::titled(ui::i18n!("shortcuts-proposal"), items))
+}
+
 /// Asking the agent for a draft: shown only when the person is offered the
 /// agent's transform to draft with. A drafted shortcut is only offered to
 /// open as a draft; it is saved, like any other, after the grant review.
@@ -695,20 +754,20 @@ fn describe_panel(
             ));
         }
         Some(door::Drafting::Ready(drafted)) => {
-            let steps = drafted.shortcut.steps.len();
+            let steps = drafted.drafted.shortcut.steps.len();
             items.push(Box::new(
                 Text::new(&format!(
                     "“{}” has {steps} step{}",
-                    drafted.shortcut.name,
+                    drafted.drafted.shortcut.name,
                     if steps == 1 { "" } else { "s" }
                 ))
                 .with_id("drafted-summary")
                 .with_role(TextRole::Label),
             ));
-            if !drafted.problems.is_empty() {
+            if !drafted.drafted.problems.is_empty() {
                 items.push(Box::new(
                     Banner::warning(ui::i18n!("shortcuts-draft-problems"))
-                        .with_message(drafted.problems.join("\n")),
+                        .with_message(drafted.drafted.problems.join("\n")),
                 ));
             }
         }
@@ -760,7 +819,7 @@ fn describe_buttons(
     // the quieter choice beside it.
     Box::new(match drafted {
         Some(door::Drafting::Ready(drafted)) => {
-            let json = serde_json::to_value(&drafted.shortcut).unwrap_or(Value::Null);
+            let json = serde_json::to_value(&drafted.drafted.shortcut).unwrap_or(Value::Null);
             let open = ui.bind(
                 Button::new("open-drafted", "shortcuts-open-drafted").role(ButtonRole::Primary),
                 Workbench::OPEN_SHORTCUT.map(move |()| json.clone()),
@@ -866,6 +925,9 @@ fn saved_page(ui: &Ui, input: &EditorInput, shortcut: &Shortcut) -> Element {
         )));
     }
     items.push(Box::new(ActionGroup::new(run)));
+    if drafting_offered(&ui.door.get()) {
+        items.push(refine_panel(ui, shortcut));
+    }
 
     let numbered: Vec<Element> = shortcut
         .steps
@@ -887,6 +949,75 @@ fn saved_page(ui: &Ui, input: &EditorInput, shortcut: &Shortcut) -> Element {
         )));
     }
     page(ui, items)
+}
+
+/// Saying what the last run should do differently: the comment, and the
+/// program the agent proposed in answer, with what changed for review before
+/// it is saved.
+fn refine_panel(ui: &Ui, shortcut: &Shortcut) -> Element {
+    let comment = LocalState::new(String::new());
+    let field = TextInput::from_state(&comment)
+        .with_id("refine-shortcut")
+        .with_accessible_name("shortcuts-refine")
+        .with_placeholder("shortcuts-refine-placeholder")
+        .multiline(true);
+    let mut items: Vec<Element> = vec![Box::new(field)];
+    let program = serde_json::to_string(shortcut).unwrap_or_default();
+    let ask = ui.actions.bind_effect(
+        Button::new("refine-it", "shortcuts-refine-it"),
+        DoorEffect::REFINE.map(move |()| (program.clone(), comment.get())),
+    );
+    items.push(Box::new(ActionGroup::new(ask)));
+    let review = {
+        let builder = ui.clone();
+        Box::new(ModelView::from_state_by(
+            &ui.door,
+            |door| door.drafted.clone(),
+            // `ModelView` hands the view's own state, not the key.
+            move |door: &DoorState| refined_body(&builder, door.drafted.as_ref()),
+        ))
+    };
+    items.push(review);
+    Box::new(Section::titled(ui::i18n!("shortcuts-refine"), items))
+}
+
+/// What the agent proposes in answer to a comment: each step that changes,
+/// and the choice to open it as a draft to review.
+fn refined_body(ui: &Ui, drafted: Option<&door::Drafting>) -> Element {
+    let mut items: Vec<Element> = Vec::new();
+    match drafted {
+        Some(door::Drafting::Drafting) => {
+            items.push(Box::new(
+                Row::new()
+                    .push(Box::new(Spinner::new()))
+                    .push(Box::new(caption("shortcuts-drafting"))),
+            ));
+        }
+        Some(door::Drafting::Failed(reason)) => {
+            items.push(Box::new(
+                Banner::warning(ui::i18n!("shortcuts-draft-failed")).with_message(reason.clone()),
+            ));
+        }
+        Some(door::Drafting::Ready(refined)) => {
+            for line in &refined.changes {
+                items.push(Box::new(Text::new(line)));
+            }
+            if !refined.drafted.problems.is_empty() {
+                items.push(Box::new(
+                    Banner::warning(ui::i18n!("shortcuts-draft-problems"))
+                        .with_message(refined.drafted.problems.join("\n")),
+                ));
+            }
+            let json = serde_json::to_value(&refined.drafted.shortcut).unwrap_or(Value::Null);
+            let open = ui.bind(
+                Button::new("open-refined", "shortcuts-open-drafted").role(ButtonRole::Primary),
+                Workbench::OPEN_SHORTCUT.map(move |()| json.clone()),
+            );
+            items.push(Box::new(ActionGroup::new(open)));
+        }
+        None => {}
+    }
+    Box::new(Section::new(items))
 }
 
 /// What is known about a saved shortcut, following its runs.
