@@ -300,8 +300,15 @@ impl AttachedView {
         if let Some(joined_at) = &joined_at {
             refuse_written_on_open(definition, &records, &checkout, joined_at)?;
         }
+        // A record joined starts where it was handed over: the only write
+        // its view may make on open is a storage migration, which is sent
+        // with the participant's first changes, as a window's is, so the
+        // room and its other holders take it rather than diverge.
         let mut frontier = DocumentFrontier::default();
-        if let Some(heads) = records.with(&checkout.id, ui_core::automerge::AutoCommit::get_heads) {
+        let start = joined_at
+            .clone()
+            .or_else(|| records.with(&checkout.id, ui_core::automerge::AutoCommit::get_heads));
+        if let Some(heads) = start {
             frontier.advance(heads);
         }
         Ok(Self {
@@ -911,9 +918,9 @@ fn refuse_written_on_open(
 /// migration, or the structure and identity every member derives the same
 /// way, is the framework's and none of the app's.
 ///
-/// Refused rather than kept: the view's write would land under the
-/// replication frontier the view starts from, so it would never be sent and
-/// the participant would see a record nobody else does. Deferring it until
+/// Refused rather than kept: the participant's own changes are sent from
+/// where it joined, so the view's write would be sent as if the participant
+/// had made it, which no member did. Deferring it until
 /// the record's content arrives would only move that fork later.
 fn written_on_open(
     doc: &mut ui_core::automerge::AutoCommit,
