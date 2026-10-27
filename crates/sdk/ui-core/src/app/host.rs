@@ -940,9 +940,10 @@ fn run_layout_pass(
         }
     }
     // Initial redraws and programmatic changes need the same semantic door
-    // as input. Publish only after the retained control tree has settled;
-    // the publisher diffs the surface and checks broker connectivity.
-    app.publish_action_surface();
+    // as input. Published once the retained control tree has settled, and
+    // after the frame is handed to the render thread
+    // (`App::publish_owed_action_surface`): no frame waits on it.
+    app.actions.action_surface_owed = true;
     let geometry_changed = recomposed
         || remounted
         || viewport_changed
@@ -1132,6 +1133,8 @@ pub(crate) fn draw_prepared_component_test_frame(app: &mut App) {
     run_layout_pass(app, root, 800, 600, 1.0, true, None).unwrap();
     let mut scene = Scene::new();
     draw_frame_content(app, &mut scene, 800, 600, 1.0, None);
+    // As the window does once it handed the frame to its render thread.
+    app.publish_owed_action_surface();
 }
 
 #[cfg(test)]
