@@ -1901,9 +1901,8 @@ fn field_of(m: &Mutation) -> String {
 /// there, the one being moved left out, else the end. Read as the runtime reads a position.
 fn beside(listing: &Listing, index: usize, moving: Option<&str>) -> tilo_resource::At {
     listing
-        .items
         .iter()
-        .filter(|id| Some(&***id) != moving)
+        .filter(|id| Some(&**id) != moving)
         .nth(index)
         .map_or(tilo_resource::At::End, |id| {
             tilo_resource::At::Before(Id::from_raw(id.to_string()))
