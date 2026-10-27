@@ -2903,6 +2903,7 @@ impl TerminalWidget {
         // waker (or an embedding host's own pump), is what shows output.
         self.pump();
         self.type_asked_run();
+        self.show_setup_failure();
         self.begin_reconnect_if_lost();
         self.reconnect_when_due();
         self.sync_window_bar();
@@ -6805,11 +6806,25 @@ impl TerminalBackend {
         relay_session: &str,
     ) -> Self {
         Self {
+            relay_session: Some(relay_session.to_owned()),
+            ..Self::for_test_leased(output, lease)
+        }
+    }
+
+    /// A session on this device whose terminal output arrives on `output`,
+    /// held open by `lease`, on which the supervisor reports how it ended.
+    #[cfg(test)]
+    #[cfg(unix)]
+    pub(crate) fn for_test_leased(
+        output: std::os::unix::net::UnixStream,
+        lease: std::os::unix::net::UnixStream,
+    ) -> Self {
+        Self {
             writer: Box::new(std::io::sink()),
             reader: Box::new(output),
             master: Box::new(NullMaster),
             shell_name: "ush".into(),
-            relay_session: Some(relay_session.to_owned()),
+            relay_session: None,
             supervisor_session: None,
             runs: None,
             native_editor: None,
@@ -7327,14 +7342,10 @@ pub(crate) fn ush_request(
         if let Some(session) = relay_session {
             fields.insert("relay_session".to_string(), serde_json::json!(session));
         }
-        // A remote shell's lease says how its session ended, so a lost
-        // connection reconnects and only an exit closes the window.
-        if target
-            .location()
-            .is_some_and(|location| !location.is_this_device())
-        {
-            fields.insert("end_report".to_string(), serde_json::json!(true));
-        }
+        // The lease says how the session ended: only a shell that exited
+        // closes the window; a lost connection to a remote shell reconnects,
+        // and an environment that could not be set up says so on the tab.
+        fields.insert("end_report".to_string(), serde_json::json!(true));
         if let Some(key) = runs {
             fields.insert("runs".to_string(), serde_json::json!(key));
         }
