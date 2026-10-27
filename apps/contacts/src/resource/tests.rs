@@ -697,3 +697,13 @@ fn export_vcard_content_keeps_every_card_or_one_by_name_as_content() {
         "a name no card carries is refused"
     );
 }
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<ContactsShell>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+}

@@ -10666,6 +10666,10 @@ mod tests;
 #[path = "files_app/notice_action_tests.rs"]
 mod notice_action_tests;
 
+#[cfg(test)]
+#[path = "files_app/sidebar_button_tests.rs"]
+mod sidebar_button_tests;
+
 /// What the palette, agents and scripts reach of a Files window, for the
 /// tests that drive the widget without a framework host: the resource's
 /// publication with the window's effects beside it and its live rows

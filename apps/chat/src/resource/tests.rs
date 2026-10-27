@@ -1124,3 +1124,13 @@ fn the_compact_channels_show_who_is_in_a_call_and_who_joins() {
     join(&mut app, "u_sora");
     assert!(in_call(&mut app, "u_sora"), "who joins shows at once");
 }
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<ChatShell>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+}

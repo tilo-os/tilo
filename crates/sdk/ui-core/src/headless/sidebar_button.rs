@@ -106,6 +106,32 @@ impl FrameHarness {
         Ok(states)
     }
 
+    /// Click the window bar's sidebar button three times and check that
+    /// each click flipped the sidebar, with the bar, the window's shell and
+    /// its frame agreeing every time, whatever opened it. Returns whether
+    /// the sidebar was shown before the first click.
+    ///
+    /// # Errors
+    /// What the clicks did instead, as a sentence naming each state.
+    pub fn check_window_sidebar_button(&mut self) -> Result<bool, String> {
+        let states = self.press_window_sidebar_button(3)?;
+        let mut expected = None;
+        for (presses, state) in states.iter().enumerate() {
+            let shown = state.agreed().ok_or_else(|| {
+                format!("after {presses} clicks the bar, shell and frame disagree: {state:?}")
+            })?;
+            let wanted = expected.unwrap_or(shown);
+            if shown != wanted {
+                return Err(format!(
+                    "click {presses} left the sidebar {} (states: {states:?})",
+                    if shown { "shown" } else { "hidden" }
+                ));
+            }
+            expected = Some(!shown);
+        }
+        Ok(states.first().and_then(|state| state.agreed()) == Some(true))
+    }
+
     /// Lay out frames as the window's host draws them: the one asked for,
     /// then more only while the app asks.
     fn relayout_until_still(&mut self) {
