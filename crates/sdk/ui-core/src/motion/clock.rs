@@ -50,9 +50,10 @@ thread_local! {
     static LAYING_OUT: Cell<u32> = const { Cell::new(0) };
 }
 
-/// While the guard lives, a frame's layout is under way on this thread: its
-/// composition passes settle against one state of the app, as they read
-/// their motions at one instant ([`pin_frame`]).
+/// While the guard lives, a frame is built, laid out and drawn on this
+/// thread: its composition passes settle against the state of the app its
+/// model pass took in, as they read their motions at one instant
+/// ([`pin_frame`]).
 pub(crate) fn laying_out_frame() -> LayingOutFrame {
     LAYING_OUT.with(|count| count.set(count.get().saturating_add(1)));
     LayingOutFrame(())
@@ -67,7 +68,7 @@ impl Drop for LayingOutFrame {
     }
 }
 
-/// Whether a frame's layout is under way on this thread. Work an app ran
+/// Whether a frame is being built, laid out or drawn on this thread. Work an app ran
 /// elsewhere that lands meanwhile (a device read on a thread of its own) is
 /// taken in by the next frame, which the work's wake asks for: taken in
 /// now, it would compose the frame again partway through, at whatever pass

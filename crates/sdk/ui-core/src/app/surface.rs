@@ -933,10 +933,10 @@ impl App {
         let record_changed = self.pump_hosted_model_record_changed();
         #[cfg(test)]
         drop(pump_probe);
-        // The model's pass took in what landed from elsewhere; the rest of
-        // the frame builds, lays out and draws that state. Work landing
-        // meanwhile is the next frame's, which its wake asks for.
-        let _laying_out = crate::motion::laying_out_frame();
+        // The model's pass took in what landed from elsewhere; the frame
+        // builds, lays out and draws that state. Work landing meanwhile is
+        // the next frame's, which its wake asks for.
+        let laying_out = crate::motion::laying_out_frame();
         if self.layout.root_node.is_none() {
             self.init_layout();
         }
@@ -1063,6 +1063,7 @@ impl App {
         );
         #[cfg(test)]
         drop(draw_probe);
+        drop(laying_out);
         // The surface a handled input left for this frame, now that its sync
         // ran and the frame built the tree, as a window of its own pays it.
         #[cfg(test)]
