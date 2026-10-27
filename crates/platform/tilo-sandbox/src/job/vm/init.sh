@@ -132,6 +132,20 @@ t_which() {
 	return 1
 }
 
+# `t_killed CODE`: say so when the guest's OOM killer ended a process of the command, which
+# ended with CODE: its status alone doesn't say why. The command itself only for 137 (SIGKILL);
+# otherwise it went on after the kill of one of its processes, and ended with a status of its own.
+t_killed() {
+	[ "$1" -ne 0 ] || return 0
+	killed=$(dmesg 2>/dev/null | grep 'Out of memory: Killed process' | tail -n 1)
+	[ -n "$killed" ] || return 0
+	if [ "$1" -eq 137 ]; then
+		say "the command was killed for memory in the guest, which has $T_MEMORY_MIB MiB: ${killed#*] }"
+	else
+		say "a process of the command was killed for memory in the guest, which has $T_MEMORY_MIB MiB, and it ended with status $1: ${killed#*] }"
+	fi
+}
+
 # `t_output PATTERN`: every file matching PATTERN (a glob over absolute paths, where `*` also
 # matches `/`), listed for the output tar.
 t_output() {
@@ -164,9 +178,7 @@ done
 (cd "$T_CWD" && t_command) </dev/null >"$port" 2>&1 &
 wait $!
 code=$?
-if [ "$code" -gt 128 ] && dmesg | grep -q 'Out of memory'; then
-	echo "t-vm: the command ran out of the VM's memory ($T_MEMORY_MIB MiB)" >"$port"
-fi
+t_killed "$code"
 
 : >$T/outputs
 t_outputs
