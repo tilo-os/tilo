@@ -8,11 +8,26 @@
 use ui::tilo_resource::{Id, Replica};
 
 use crate::model::{
-    Imported, ImportedMessage, MessageKind, Question, Run, RunOutcome, RunPhase, Status, Tracker,
-    agent_assignee, tracker,
+    Imported, ImportedMessage, MessageKind, Question, Run, RunOutcome, RunPhase, Status, StepSpend,
+    Tracker, agent_assignee, tracker,
 };
 
 const AGENT: &str = "agent:claude";
+
+/// A settled step receipt for `cents` micro-units on the default model, as a
+/// provider reports one.
+fn priced_step(step: u64, cost_micros: u64) -> StepSpend {
+    StepSpend {
+        step,
+        model: "claude-sonnet-4-6".into(),
+        device: "Ada's laptop".into(),
+        input_tokens: 800,
+        output_tokens: 400,
+        priced_calls: 0,
+        cost_micros,
+        currency: "EUR".into(),
+    }
+}
 
 fn create(title: &str, parent: Option<Id>, assignee: Option<&str>) -> tracker::Create {
     tracker::Create {
@@ -287,6 +302,7 @@ fn a_budget_is_set_only_between_runs_and_within_its_ceilings() {
             issue: issue.clone(),
             turn_ms,
             total_ms,
+            limits: None,
         })
     };
     assert!(replica.apply(budget(Some(10), Some(5))).is_err());
@@ -533,9 +549,9 @@ fn an_issue_reads_its_goal_its_urgency_and_its_cost_and_its_agent_records_what_i
     assert!(other.apply(on_steam_deck()).is_err());
     agent.apply(on_steam_deck()).unwrap();
     agent
-        .apply(Tracker::RECORD_SPEND.with(tracker::RecordSpend {
+        .apply(Tracker::SETTLE_SPEND.with(tracker::SettleSpend {
             issue: issue.clone(),
-            spent: 1_200,
+            step: priced_step(1, 1_200),
         }))
         .unwrap();
     person.sync_with(&mut agent).unwrap();
@@ -695,9 +711,9 @@ fn a_task_syncs_to_another_device_survives_a_restart_and_merges_its_edits() {
         .unwrap();
     let mut agent = on_laptop.fork().as_agent_for(AGENT, "ada");
     agent
-        .apply(Tracker::RECORD_SPEND.with(tracker::RecordSpend {
+        .apply(Tracker::SETTLE_SPEND.with(tracker::SettleSpend {
             issue: issue.clone(),
-            spent: 1_200,
+            step: priced_step(1, 1_200),
         }))
         .unwrap();
     on_laptop.sync_with(&mut agent).unwrap();
@@ -758,9 +774,9 @@ fn the_task_is_published_with_its_verbs_and_its_changes_carry_the_task() {
         .unwrap();
     let mut agent = person.fork().as_agent_for(AGENT, "ada");
     agent
-        .apply(Tracker::RECORD_SPEND.with(tracker::RecordSpend {
+        .apply(Tracker::SETTLE_SPEND.with(tracker::SettleSpend {
             issue,
-            spent: 1_200,
+            step: priced_step(1, 1_200),
         }))
         .unwrap();
     let versions = agent.versions();
@@ -911,9 +927,9 @@ fn a_run_that_stopped_showing_a_step_is_ended_as_idle_and_leaves_what_it_did() {
         .unwrap();
     person.sync_with(&mut agent).unwrap();
     agent
-        .apply(Tracker::RECORD_SPEND.with(tracker::RecordSpend {
+        .apply(Tracker::SETTLE_SPEND.with(tracker::SettleSpend {
             issue: issue.clone(),
-            spent: 900,
+            step: priced_step(1, 900),
         }))
         .unwrap();
     person.sync_with(&mut agent).unwrap();
