@@ -11,6 +11,7 @@
 
 mod door;
 mod narrow;
+mod opening;
 mod rooms;
 mod support;
 mod sync;

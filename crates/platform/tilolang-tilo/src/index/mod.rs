@@ -21,6 +21,20 @@
 //! the workspace already depends on. Each commit is one transaction, so the file always holds
 //! one commit's whole state and its heads; a reader holds a snapshot that later commits do not
 //! change, which is what a paged listing reads from.
+//!
+//! # Where it is kept
+//!
+//! Apps own neither their pixels nor their storage, so the index belongs with the committed
+//! documents, in the platform's storage service, where the search host would query the same
+//! index instead of keeping a copy of its own. For now it is kept in the app's cache directory,
+//! per room ([`room_dir`]), and only the app reads it. The storage service holds the
+//! committed documents only of rooms a host governs: the rooms this device minted, joined with
+//! a direct invite, or keeps as a person's own still go through the shell's own engine, and
+//! their records live in the app's profile. Moved now, the index would have no record to be
+//! derived from in those rooms, or would need a second path for them. Once every room's
+//! committed documents live in one storage service (the shell's two engines made one), the
+//! index moves there: derived beside the record as each change commits, read by apps and the
+//! search host through the committed-document reads they already make.
 
 pub mod codec;
 pub mod derive;
@@ -247,22 +261,21 @@ pub fn file_of(dir: &Path, app: &str) -> PathBuf {
     dir.join(format!("{name}.index"))
 }
 
-/// The directory of the indexes of the room whose record is `doc`, under `base`: named by the
-/// object every replica of the room keeps its packages' records in, which they agree on.
-/// `None` for a room that holds no record yet.
+/// The directory of the indexes of the room `room` (the workspace a window's launch names),
+/// under `base`: known before the room's record is, so a window opens over them first.
 #[must_use]
-pub fn room_dir(base: &Path, doc: &tilo_resource::Doc) -> Option<PathBuf> {
-    use automerge::ReadDoc as _;
-    let (_, records) = doc
-        .get(&automerge::ROOT, crate::action::RECORDS_KEY)
-        .ok()
-        .flatten()?;
-    let name: String = records
-        .to_string()
+pub fn room_dir(base: &Path, room: &str) -> PathBuf {
+    let name: String = room
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    Some(base.join(name))
+    base.join("rooms").join(name)
 }
 
 fn create_tables(txn: &WriteTransaction) -> Result<(), IndexError> {

@@ -45,6 +45,11 @@ pub struct ApplicationDefinition {
     /// everyone in the room shares), rather than a record per window: every
     /// window of the app in the room opens it, and the first creates it.
     pub room_record: bool,
+    /// The app's window shows before the room's record is read: a record this device holds
+    /// opens off the frame, and the component takes it in when it is decoded
+    /// ([`HostContext::record_opening`]). Only for an app that
+    /// [keeps one record per room](Self::room_record).
+    pub opens_before_record: bool,
     pub create: ComponentFactory,
 }
 
@@ -605,9 +610,13 @@ impl HostContext {
                 {
                     return Err(LaunchError::BindingMismatch);
                 }
-                records
-                    .try_open_record(checkout)
-                    .map_err(LaunchError::Record)?;
+                // A record opening off the frame is taken in by the component that shows
+                // before it ([`HostContext::record_opening`]), not here.
+                if !records.is_opening(&checkout.id) {
+                    records
+                        .try_open_record(checkout)
+                        .map_err(LaunchError::Record)?;
+                }
                 (checkout.clone(), None)
             }
         };
@@ -747,6 +756,18 @@ impl HostContext {
     /// that lends nothing leaves the app on its own services.
     pub fn lend<T: std::any::Any>(&mut self, service: T) {
         self.lent.push(Box::new(service));
+    }
+    /// Lend the component a service already boxed: what a component that showed before its
+    /// record hands the one that shows it (`T` stays the service's own type).
+    pub fn lend_boxed(&mut self, service: Box<dyn std::any::Any>) {
+        self.lent.push(service);
+    }
+    /// The record this context opened, while it is still opening off the frame
+    /// ([`RecordStore::begin_opening`]): the component shows before it, and takes it in.
+    pub fn record_opening(&self) -> Option<crate::record::RecordOpening> {
+        self.records
+            .is_opening(&self.record.id)
+            .then(|| self.records.opening(&self.record))
     }
     /// The services the host lent, once.
     pub fn take_lent(&mut self) -> Vec<Box<dyn std::any::Any>> {
@@ -1181,11 +1202,13 @@ impl ApplicationDefinition {
         let entry = context.wake_scope.enter();
         let result = (self.create)(context, target, restore).and_then(|mut component| {
             if !Rc::ptr_eq(&construction, &component.context.construction)
-                || !records.is_ready(&record.id)
+                || !(records.is_ready(&record.id) || records.is_opening(&record.id))
             {
                 return Err(LaunchError::BindingMismatch);
             }
-            if let Some(saved) = local {
+            // A component shown before its record restores nothing of it: the component built
+            // once the record is had restores the saved view.
+            if let Some(saved) = local.filter(|_| !records.is_opening(&record.id)) {
                 component
                     .restore_local_pair_owned(&saved)
                     .map_err(LaunchError::Restore)?;
@@ -1288,8 +1311,12 @@ impl AppComponent {
     /// The component the app built to show another record in this one's
     /// place, once: the host closes this component and mounts that one.
     pub fn take_replacement(&mut self) -> Option<ComponentReplacement> {
-        let pending = self.context.replacement.borrow_mut().take()?;
-        pending.take()
+        let pending = self.context.replacement.borrow_mut().take();
+        if let Some(pending) = pending {
+            return pending.take();
+        }
+        let _entry = self.context.wake_scope.enter();
+        self.root.as_deref_mut()?.take_component_replacement()
     }
     /// What this component's app would open another record with.
     #[cfg(test)]
@@ -1992,21 +2019,25 @@ impl AppComponent {
                 .collect::<Vec<_>>(),
         );
         let result = if let Some(root) = owned.0.as_deref_mut() {
-            let result = self
-                .context
-                .records
-                .with_checked(&self.context.record.id, |doc| {
-                    for invocation in &owned.2 {
-                        crate::widget::poll_resource_operation(
-                            &mut *root,
-                            *invocation,
-                            true,
-                            doc,
-                            &automerge::ROOT,
-                        );
-                    }
-                })
-                .map_err(|error| error.to_string());
+            // A component shown before its record ran no operation on it, and has none to end.
+            let result = if self.context.records.is_opening(&self.context.record.id) {
+                Ok(())
+            } else {
+                self.context
+                    .records
+                    .with_checked(&self.context.record.id, |doc| {
+                        for invocation in &owned.2 {
+                            crate::widget::poll_resource_operation(
+                                &mut *root,
+                                *invocation,
+                                true,
+                                doc,
+                                &automerge::ROOT,
+                            );
+                        }
+                    })
+                    .map_err(|error| error.to_string())
+            };
             crate::widget::unmount_native_views(root);
             result
         } else {
@@ -2386,6 +2417,7 @@ mod bound_lifetime_tests {
             optional: vec![],
             opens: &[],
             room_record: false,
+            opens_before_record: false,
             create: factory,
         };
         let supplied = RecordId::for_tab(55);
@@ -2433,6 +2465,7 @@ mod bound_lifetime_tests {
             optional: vec![],
             opens: &[],
             room_record: false,
+            opens_before_record: false,
             create: factory,
         };
         let prepare = |checkout| {
@@ -2493,6 +2526,7 @@ mod bound_lifetime_tests {
                 optional: vec![],
                 opens: &[],
                 room_record: false,
+                opens_before_record: false,
                 create: factory,
             };
             let prepare = |target: &LaunchTarget| {
@@ -2581,6 +2615,7 @@ mod bound_lifetime_tests {
                 optional: vec![],
                 opens: &[],
                 room_record: false,
+                opens_before_record: false,
                 create: factory,
             };
             let context = HostContext::prepare(

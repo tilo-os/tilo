@@ -30,10 +30,15 @@ pub struct HostRows {
     prefix: String,
     /// Reads the rows as the window's other components are read, reporting to the same place.
     reconciler: Rc<RefCell<Reconciler>>,
-    keys: Keys,
+    keys: RefCell<Keys>,
+    /// Whether `keys` holds the key of every row. Until a change needs them, the rows' keys are
+    /// read from the view as the list asks for them: a list of a hundred thousand notes opens
+    /// reading the pages its rows are on, not all of them.
+    read: std::cell::Cell<bool>,
 }
 
-/// The keys of every row of a list, rendered or not, and what changed of them.
+/// The keys of the rows of a list, rendered or not (every one, once read), and what changed of
+/// them.
 #[derive(Default)]
 struct Keys {
     /// The rows' keys, in order.
@@ -58,15 +63,23 @@ impl HostRows {
         prefix: &str,
         reconciler: Rc<RefCell<Reconciler>>,
     ) -> Self {
-        let mut rows = Self {
+        Self {
             view: Rc::clone(view),
             list: list.to_owned(),
             prefix: prefix.to_owned(),
             reconciler,
-            keys: Keys::default(),
-        };
-        rows.keys.order = rows.read_keys();
-        rows
+            keys: RefCell::default(),
+            read: std::cell::Cell::new(false),
+        }
+    }
+
+    /// The keys, with every row's read first when they are not.
+    fn every_key(&self) -> std::cell::RefMut<'_, Keys> {
+        let mut keys = self.keys.borrow_mut();
+        if !self.read.replace(true) {
+            keys.order = self.read_keys();
+        }
+        keys
     }
 
     /// Whether these are the rows of `list` of `view`.
@@ -88,22 +101,55 @@ impl HostRows {
 
     /// The view replaced the list as a whole: read its rows anew.
     pub fn reread(&mut self) {
-        self.keys = Keys {
-            order: self.read_keys(),
-            ..Keys::default()
-        };
-        self.keys.changes.push(ListModelChange::Reset);
+        let keys = self.keys.get_mut();
+        *keys = Keys::default();
+        self.read.set(false);
+        keys.changes.push(ListModelChange::Reset);
     }
 
     /// Apply the view's changes of the list's own children, in order: rows inserted, removed
     /// and moved, each queued for the list against the order the ones before it left.
     pub fn apply(&mut self, patches: &[Patch]) {
-        self.keys.apply(patches);
+        if self.read.get() {
+            self.keys.get_mut().apply(patches);
+            return;
+        }
+        let structural = patches.iter().filter(|patch| {
+            matches!(
+                patch,
+                Patch::Insert { .. } | Patch::Remove { .. } | Patch::Move { .. }
+            )
+        });
+        let inserted: Option<Vec<usize>> = structural
+            .map(|patch| match patch {
+                Patch::Insert { index, .. } => Some(*index),
+                _ => None,
+            })
+            .collect();
+        if let Some(indices) = inserted {
+            // Rows inserted say where: the keys need not be read for them.
+            let keys = self.keys.get_mut();
+            for index in indices {
+                keys.changes
+                    .push(ListModelChange::RowsInserted { index, count: 1 });
+            }
+        } else {
+            // Where a removed or moved row was is in the order before the change, which was
+            // never read: the list reads its rows anew, and the keys are read from now on.
+            let order = self.read_keys();
+            let keys = self.keys.get_mut();
+            *keys = Keys {
+                order,
+                ..Keys::default()
+            };
+            self.read.set(true);
+            keys.changes.push(ListModelChange::Reset);
+        }
     }
 
     /// The view changed what the rendered rows of `keys` show: the list builds them again.
     pub fn changed(&mut self, keys: impl IntoIterator<Item = String>) {
-        self.keys.changed(keys);
+        self.keys.get_mut().changed(keys);
     }
 
     /// Show again what each rendered row's bound fields hold: a checkbox's state.
@@ -112,7 +158,7 @@ impl HostRows {
         else {
             return;
         };
-        for key in &self.keys.shown {
+        for key in &self.keys.borrow().shown {
             let Some(row) = view.find(key) else { continue };
             bound_values(&view, row, &self.prefix, &reconciler);
         }
@@ -256,15 +302,25 @@ fn find_kind<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
 
 impl RowSource for HostRows {
     fn len(&self) -> usize {
-        self.keys.order.len()
+        if self.read.get() {
+            return self.keys.borrow().order.len();
+        }
+        self.view
+            .try_borrow()
+            .ok()
+            .and_then(|view| view.list_len(&self.list))
+            .unwrap_or(0)
     }
 
     fn key_at(&self, index: usize) -> Option<String> {
-        self.keys.order.get(index).map(ToString::to_string)
+        if self.read.get() {
+            return self.keys.borrow().order.get(index).map(ToString::to_string);
+        }
+        self.view.try_borrow().ok()?.row_key(&self.list, index)
     }
 
     fn index_of(&self, key: &str) -> Option<usize> {
-        self.keys.index_of(key)
+        self.every_key().index_of(key)
     }
 
     /// The view renders the rows in `range` it has not rendered yet, and forgets those it
@@ -277,19 +333,28 @@ impl RowSource for HostRows {
             if let Patch::Remove { parent, .. } = patch
                 && let Some(row) = parent.last()
             {
-                self.keys.shown.remove(row);
+                self.keys.get_mut().shown.remove(row);
             }
         }
         for index in range {
-            let Some(key) = self.keys.order.get(index).cloned() else {
+            let key = if self.read.get() {
+                self.keys
+                    .get_mut()
+                    .order
+                    .get(index)
+                    .map(ToString::to_string)
+            } else {
+                view.row_key(&self.list, index)
+            };
+            let Some(key) = key else {
                 break;
             };
-            if self.keys.shown.contains(&*key) {
+            if self.keys.get_mut().shown.contains(&key) {
                 continue;
             }
             match view.row(&self.list, index) {
                 Ok(Some(_)) => {
-                    self.keys.shown.insert(key.to_string());
+                    self.keys.get_mut().shown.insert(key);
                 }
                 Ok(None) => {}
                 Err(error) => tracing::warn!(%error, "a row of the list did not render"),
@@ -336,15 +401,15 @@ impl RowSource for HostRows {
     }
 
     fn key_presenting(&self, id: &str) -> Option<String> {
-        self.keys.key_presenting(id)
+        self.every_key().key_presenting(id)
     }
 
     fn take_changes(&mut self) -> Vec<ListModelChange<String>> {
-        std::mem::take(&mut self.keys.changes)
+        std::mem::take(&mut self.keys.get_mut().changes)
     }
 
     fn has_changes(&self) -> bool {
-        !self.keys.changes.is_empty()
+        !self.keys.borrow().changes.is_empty()
     }
 }
 

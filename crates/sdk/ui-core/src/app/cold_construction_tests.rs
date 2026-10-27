@@ -53,6 +53,7 @@ fn absent_existing_record_cannot_reach_a_default_new_factory() {
         optional: vec![],
         opens: &[],
         room_record: false,
+        opens_before_record: false,
         create: |_, _, _| {
             Err(crate::launch::LaunchError::Operation(
                 "definition factory ran".into(),
