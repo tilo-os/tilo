@@ -327,6 +327,10 @@ struct ContainerOptions {
     /// `label = "first last"`: the fields whose texts, joined by spaces,
     /// name a value.
     label: Vec<String>,
+    /// `label = path`: the function that names a value, where its name is
+    /// not a field's text as stored (a place kept as `xdg:documents` is
+    /// "Documents").
+    label_with: Option<syn::Path>,
     /// `check_reads = "a b"`: the fields the invariant reads; an edit of
     /// none of them (nor of an item of `check_items`) cannot break it.
     check_reads: Option<Vec<String>>,
@@ -364,7 +368,8 @@ fn field_list(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Vec<String>>
         .collect())
 }
 
-/// `#[model(check = path, label = "first last")]` on the type.
+/// `#[model(check = path, label = "first last")]` on the type, or
+/// `label = path` naming the function `fn(&Self) -> String` that names it.
 fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
     let mut options = ContainerOptions::default();
     for attr in attrs.iter().filter(|attr| attr.path().is_ident("model")) {
@@ -379,7 +384,17 @@ fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
                 options.check_items = field_list(&meta)?;
                 Ok(())
             } else if meta.path.is_ident("label") {
-                options.label = field_list(&meta)?;
+                let value = meta.value()?;
+                if !value.peek(syn::LitStr) {
+                    options.label_with = Some(value.parse::<syn::Path>()?);
+                    return Ok(());
+                }
+                options.label = value
+                    .parse::<syn::LitStr>()?
+                    .value()
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect();
                 if options.label.is_empty() {
                     return Err(meta.error("`label = \"..\"` names the fields that make the label"));
                 }
@@ -387,7 +402,8 @@ fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
             } else {
                 Err(meta.error(
                     "expected `check = path`, `check_reads = \"field ..\"`, \
-                     `check_items = \"field ..\"` or `label = \"field field ..\"` on the type",
+                     `check_items = \"field ..\"`, `label = \"field field ..\"` or `label = path` \
+                     on the type",
                 ))
             }
         })?;
@@ -639,6 +655,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let ContainerOptions {
         check,
         label: label_parts,
+        label_with,
         check_reads,
         check_items,
     } = container_options(&input.attrs)?;
@@ -876,12 +893,30 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             quote!(::core::option::Option::Some(#position))
         },
     );
-    let label_fn = if label.is_none() && label_fields.is_empty() {
+    let label_with_desc = label_with.as_ref().map_or_else(
+        || quote!(::core::option::Option::None),
+        |_| quote!(::core::option::Option::Some(Self::__label_with)),
+    );
+    let label_with_fn = label_with.as_ref().map_or_else(
+        || quote!(),
+        |path| {
+            quote! {
+                #[doc(hidden)]
+                fn __label_with(
+                    value: &dyn ::core::any::Any,
+                ) -> ::core::option::Option<::std::string::String> {
+                    value.downcast_ref::<Self>().map(#path)
+                }
+            }
+        },
+    );
+    let label_fn = if label.is_none() && label_fields.is_empty() && label_with.is_none() {
         quote!()
     } else {
         quote! {
-            /// The label: the texts of its label fields joined by spaces,
-            /// else its `#[model(label)]` field.
+            /// The label: what its `label = path` names it, else the texts
+            /// of its label fields joined by spaces, else its
+            /// `#[model(label)]` field.
             #[inline]
             fn label(&self) -> ::core::option::Option<::std::string::String> {
                 #table::label(&Self::__RECORD, self)
@@ -990,11 +1025,14 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 own_check: #own_check,
                 label: #label_index,
                 label_parts: &[#(#label_positions),*],
+                label_with: #label_with_desc,
                 name: ::core::any::type_name::<Self>,
                 shape: <Self as #krate::Model>::SHAPE,
                 checks: <Self as #krate::Model>::CHECKS,
                 has_ops: <Self as #krate::Model>::OPS,
             };
+
+            #label_with_fn
 
             #[allow(clippy::match_single_binding, reason = "a record may have no stored field")]
             fn __field(

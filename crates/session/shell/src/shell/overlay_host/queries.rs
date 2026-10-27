@@ -1009,6 +1009,16 @@ impl ShellOverlayHost {
         self.overview_press = None;
     }
 
+    /// Open the search of the app in `tab` with `query` typed, as the app's
+    /// own search control asks for it ([`Self::open_app_search`]), for
+    /// `bin/shots`.
+    pub fn open_app_search_for_shots(&mut self, tab: crate::shell::state::TabId, query: &str) {
+        self.open_app_search(
+            tab,
+            &ui::search::SearchRequest::this_app().with_query(query),
+        );
+    }
+
     /// Single-frame settle for the palette's entry animation, so a
     /// one-frame headless scene doesn't land at alpha 0 — which is
     /// indistinguishable from no overlay at all. Test-only.
