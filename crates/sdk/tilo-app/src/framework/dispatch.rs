@@ -1349,6 +1349,28 @@ impl<R: Resource> Dispatcher<R> {
         );
     }
 
+    /// Send `call`, another resource's published action, to the session's
+    /// host, continuing `parent`, the invocation the host delivered here for
+    /// someone: the host decides it as theirs. A past version calls nothing.
+    ///
+    /// # Errors
+    /// A past version, custody that no longer holds, or a call that cannot
+    /// be addressed.
+    pub(crate) fn call_published(
+        &self,
+        parent: Option<tilo_actions::InvocationId>,
+        call: &super::Call,
+    ) -> Result<ui_core::InvocationCall, String> {
+        if self.core.past {
+            return Err("a past version calls nothing".into());
+        }
+        if let Some(custody) = &self.core.custody {
+            custody.check()?;
+        }
+        let (target, argument) = call.request()?;
+        Ok(self.core.opener.call(parent, target, argument))
+    }
+
     /// Invoke an action published on a nested resource, such as one item of
     /// a collection.
     pub(crate) fn invoke_at(
