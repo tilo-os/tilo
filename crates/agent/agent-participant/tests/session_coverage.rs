@@ -2836,3 +2836,7 @@ mod decompose;
 /// The room's pictures, read as content.
 #[path = "session_coverage/pictures.rs"]
 mod pictures;
+
+/// Plans told only the relevant apps' operations.
+#[path = "session_coverage/catalog.rs"]
+mod catalog;

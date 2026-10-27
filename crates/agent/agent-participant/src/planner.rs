@@ -533,6 +533,14 @@ pub struct PlanContext {
     pub obligations: String,
     /// Which part of a coordinated task this plan is.
     pub role: Role,
+    /// How much of what the apps can do the plan is told: in
+    /// [`crate::profile::Catalog::Relevant`], [`Self::reference`] holds every
+    /// granted app, and only those the request is about are described in
+    /// full.
+    pub catalog: crate::profile::Catalog,
+    /// What each granted app is called (Sheets, PDF Viewer), by app id: a
+    /// request names an app by it.
+    pub app_names: Vec<(String, String)>,
 }
 
 impl PlanContext {
@@ -821,6 +829,18 @@ pub trait Planner: Send {
     /// where it is not. A planner that does not say, is not.
     fn sees(&self) -> bool {
         false
+    }
+
+    /// How much of what the apps can do this planner's plans are told
+    /// ([`crate::profile::CATALOG_ENV`]). A planner that does not say, all.
+    fn catalog(&self) -> crate::profile::Catalog {
+        crate::profile::Catalog::All
+    }
+
+    /// What the plan this planner last made was told of the apps and how it
+    /// used it, taken once; `None` for a plan no model made.
+    fn take_catalog(&mut self) -> Option<crate::model::CatalogUse> {
+        None
     }
 }
 

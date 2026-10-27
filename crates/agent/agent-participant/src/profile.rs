@@ -59,6 +59,43 @@ pub const DECOMPOSE_ITEM_PRESET_ENV: &str = "TILO_AGENT_DECOMPOSE_ITEM_PRESET";
 /// `OpenAI` takes Responses); unset, `OpenAI`'s own API takes Responses and
 /// any other endpoint chat completions.
 pub const OPENAI_API_ENV: &str = "TILO_AGENT_OPENAI_API";
+/// How much of what the agent's apps can do a plan is told ([`Catalog`]):
+/// `all` (the default) or `relevant`.
+pub const CATALOG_ENV: &str = "TILO_AGENT_CATALOG";
+
+/// How much of what the agent's apps can do a plan is told.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Catalog {
+    /// Every granted app's operations in full, for an agent granted at most
+    /// a few apps; for one granted more, those of the apps in play.
+    #[default]
+    All,
+    /// One line per granted app, and in full only the operations of the
+    /// apps the request is about; the others' on demand, at the cost of a
+    /// turn.
+    Relevant,
+}
+
+impl Catalog {
+    /// Parse a setting: `relevant` or `all`, in any case.
+    #[must_use]
+    pub fn named(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "all" => Some(Self::All),
+            "relevant" => Some(Self::Relevant),
+            _ => None,
+        }
+    }
+
+    /// The setting's name, as the plan log gives it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Relevant => "relevant",
+        }
+    }
+}
 
 /// A coarse model-family hint, overridable for provider aliases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,6 +184,8 @@ pub struct Profile {
     /// ([`DECOMPOSE_ENV`]); a setting naming agents turns it on for them
     /// where each starts.
     decompose: bool,
+    /// How much of what the apps can do a plan is told ([`CATALOG_ENV`]).
+    catalog: Catalog,
 }
 
 impl Profile {
@@ -200,6 +239,12 @@ impl Profile {
                 .as_deref(),
             Some("1" | "on" | "true" | "yes" | "all")
         );
+        // Anything but a recognised mode keeps every app's operations, as
+        // before the setting.
+        profile.catalog = explicit(CATALOG_ENV)
+            .as_deref()
+            .and_then(Catalog::named)
+            .unwrap_or_default();
         if let Some(hedge) = explicit(HEDGE_ENV) {
             // `0` or anything not a number (`off`) leaves calls unhedged.
             profile.hedge_after = hedge
@@ -236,6 +281,12 @@ impl Profile {
     #[must_use]
     pub const fn decomposes(&self) -> bool {
         self.decompose
+    }
+
+    /// How much of what the apps can do a plan is told.
+    #[must_use]
+    pub const fn catalog(&self) -> Catalog {
+        self.catalog
     }
 
     /// After how long a planning call is sent again, if ever.
@@ -285,6 +336,7 @@ impl Profile {
             token_limit: None,
             openai_api: None,
             decompose: false,
+            catalog: Catalog::All,
         }
     }
 
@@ -513,6 +565,41 @@ mod tests {
         assert_eq!(
             Profile::resolve_items("claude-haiku-5-5", &told(Some("balanced"))).token_limit_param(),
             None
+        );
+    }
+
+    /// The catalogue setting is read in any case and anything else keeps
+    /// every app's operations; no preset changes it.
+    #[test]
+    fn the_catalog_is_all_unless_set_to_relevant() {
+        let told =
+            |value: &'static str| move |name: &str| (name == CATALOG_ENV).then(|| value.to_owned());
+        assert_eq!(
+            Profile::resolve("gpt-6-luna", &|_| None).catalog(),
+            Catalog::All
+        );
+        assert_eq!(
+            Profile::resolve("gpt-6-luna", &told(" Relevant ")).catalog(),
+            Catalog::Relevant
+        );
+        assert_eq!(
+            Profile::resolve("gpt-6-luna", &told("all")).catalog(),
+            Catalog::All
+        );
+        assert_eq!(
+            Profile::resolve("gpt-6-luna", &told("some")).catalog(),
+            Catalog::All
+        );
+        for goal in [Goal::Fastest, Goal::Balanced, Goal::Cheapest] {
+            assert_eq!(
+                Profile::preset(ModelClass::Small, goal).catalog(),
+                Catalog::All
+            );
+        }
+        assert_eq!(
+            Profile::resolve_items("gpt-6-luna", &told("relevant")).catalog(),
+            Catalog::Relevant,
+            "items plan as the agent does"
         );
     }
 

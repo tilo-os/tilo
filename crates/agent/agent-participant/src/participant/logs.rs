@@ -25,6 +25,8 @@ pub(super) struct PlanLine<'a> {
     pub shown: Option<serde_json::Value>,
     /// Who made it, in a coordinated task.
     pub role: Option<&'a PlanRole>,
+    /// What a model's plan was told of the apps and how it used it.
+    pub catalog: Option<&'a crate::model::CatalogUse>,
 }
 
 /// Appends one JSON line per plan to `TILO_AGENT_PLAN_LOG`, when set: the
@@ -33,7 +35,10 @@ pub(super) struct PlanLine<'a> {
 /// early can be traced to its plan. With them, the obligations the plan
 /// declared (each step's in `steps_for`) and the checklist it was shown,
 /// each item open, done or set aside; and for a repair, which it is and the
-/// failure it answers. A plan of a coordinated task also names its role and
+/// failure it answers. A model's plan says what it was told of the apps
+/// (`catalog`: the mode, the apps described in full, listed in a line and
+/// looked up, and how many steps named an app it was not told). A plan of
+/// a coordinated task also names its role and
 /// item, under the task id its role logs (an item's agent's with its own
 /// suffix), and the items and notes it declared.
 pub(super) fn record_plan(plan: &PlanLine<'_>) {
@@ -57,6 +62,7 @@ pub(super) fn plan_line(plan: &PlanLine<'_>) -> serde_json::Value {
         declared,
         ref shown,
         role,
+        catalog,
     } = *plan;
     let serves: Option<Vec<Option<usize>>> = steps
         .as_ref()
@@ -79,6 +85,9 @@ pub(super) fn plan_line(plan: &PlanLine<'_>) -> serde_json::Value {
         "checklist": shown,
         "repair": repair,
     });
+    if let (Some(catalog), Some(fields)) = (catalog, line.as_object_mut()) {
+        fields.insert("catalog".into(), catalog.logged());
+    }
     if let (Some(role), Some(fields)) = (role, line.as_object_mut()) {
         fields.insert("task".into(), role.task.clone().into());
         fields.insert("role".into(), role.role.into());
@@ -236,10 +245,11 @@ mod tests {
             declared: &declared,
             shown: None,
             role,
+            catalog: None,
         };
         let uncoordinated = plan_line(&plan(None));
         assert_eq!(uncoordinated["task"], "t1");
-        for key in ["role", "item", "items", "adjust", "reply"] {
+        for key in ["role", "item", "items", "adjust", "reply", "catalog"] {
             assert!(uncoordinated.get(key).is_none(), "{key}: {uncoordinated}");
         }
         let role = PlanRole {
@@ -254,5 +264,38 @@ mod tests {
         assert_eq!(line["items"][0]["apps"], serde_json::json!(["chat"]));
         assert_eq!(line["adjust"], serde_json::json!([[1, "say Alfa"]]));
         assert_eq!(line["reply"], "Listed.");
+    }
+
+    /// A model's plan says what it was told of the apps and what it
+    /// missed; a plan without says nothing of it.
+    #[test]
+    fn a_plan_line_carries_what_the_plan_was_told_of_the_apps() {
+        let steps: Result<Vec<Step>, String> = Ok(Vec::new());
+        let used = crate::model::CatalogUse {
+            mode: crate::profile::Catalog::Relevant,
+            described: vec!["so.tilo.chat".into()],
+            listed: vec!["so.tilo.mail".into()],
+            looked_up: vec!["so.tilo.mail".into()],
+            misses: 1,
+        };
+        let line = plan_line(&PlanLine {
+            agent: "ana",
+            task: "t1",
+            text: "reply",
+            continues: false,
+            turn: None,
+            repair: None,
+            by_model: true,
+            steps: &steps,
+            declared: &Obligations::default(),
+            shown: None,
+            role: None,
+            catalog: Some(&used),
+        });
+        assert_eq!(
+            line["catalog"],
+            serde_json::json!({"mode": "relevant", "described": ["so.tilo.chat"],
+                "listed": ["so.tilo.mail"], "looked_up": ["so.tilo.mail"], "misses": 1})
+        );
     }
 }
