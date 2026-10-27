@@ -84,6 +84,8 @@ pub enum TextError {
     TooLarge,
     #[error("the program has no step {0}")]
     NoStep(String),
+    #[error("{0} has no words in text yet")]
+    Unwritable(&'static str),
 }
 
 /// A text that is not a program.
@@ -299,7 +301,10 @@ fn diff_steps(
 /// What a step reads as, which is what tells a step in the text from the step
 /// the document holds.
 fn reads_as(shared: &Shared<'_>, step: &Step) -> String {
-    title(shared, step).trim_end_matches(':').to_owned()
+    title(shared, step).map_or_else(
+        |_| String::new(),
+        |title| title.trim_end_matches(':').to_owned(),
+    )
 }
 
 // Everything below is one compiler pass over the same vocabulary: a step is
@@ -430,7 +435,7 @@ impl Walk<'_> {
             let Some(naming) = namings.get(index).cloned() else {
                 continue;
             };
-            let (phrase, notes) = step_line(self.shared, step, &namings, self.hints.get(&here));
+            let (phrase, notes) = step_line(self.shared, step, &namings, self.hints.get(&here))?;
             let mut line = phrase.clone();
             if let Some(condition) = condition_clause(step) {
                 let _ = write!(line, ": {}", condition_render(condition, &namings));
@@ -460,6 +465,7 @@ impl Walk<'_> {
                 | StepKind::Ask { .. }
                 | StepKind::Ai { .. }
                 | StepKind::Task { .. } => {}
+                _ => {}
             }
         }
         self.namings = outer;
@@ -496,7 +502,7 @@ impl Walk<'_> {
 
 /// What each step of one block is called in its text.
 fn name_block(shared: &Shared<'_>, steps: &[Step]) -> Vec<Naming> {
-    let phrase = |step: &Step| title(shared, step).trim_end_matches(':').to_owned();
+    let phrase = |step: &Step| reads_as(shared, step);
     // Two steps of one block may read alike; the one the program refers to its
     // result of then takes a number, so each name means one step.
     let mut used: BTreeSet<String> = BTreeSet::new();
@@ -542,13 +548,14 @@ fn refer_name_step(shared: &Shared<'_>, step: &Step) -> Option<String> {
             {
                 return Some(field);
             }
-            Some(title(shared, step).trim_end_matches(':').to_owned())
+            Some(reads_as(shared, step))
         }
         StepKind::If { .. } => None,
         StepKind::ForEach { item, .. } | StepKind::SetVar { name: item, .. } => Some(item.clone()),
         StepKind::Ask { param } => Some(param.name.to_string()),
         StepKind::Ai { .. } => Some("its answer".to_owned()),
         StepKind::Task { .. } => Some("its summary".to_owned()),
+        _ => None,
     }
 }
 
@@ -585,8 +592,8 @@ impl AsLiteral for Binding {
 }
 
 /// A step's heading: what it does, in the words the catalogue uses for it.
-fn title(shared: &Shared<'_>, step: &Step) -> String {
-    match &step.kind {
+fn title(shared: &Shared<'_>, step: &Step) -> Result<String, TextError> {
+    Ok(match &step.kind {
         StepKind::Invoke {
             resource, action, ..
         } => invoke_title(shared, action, resource),
@@ -596,7 +603,13 @@ fn title(shared: &Shared<'_>, step: &Step) -> String {
         StepKind::Ask { param } => format!("ask for {}", param.description),
         StepKind::Ai { prompt, .. } => format!("ask AI {prompt}"),
         StepKind::Task { instruction, .. } => format!("tell SaaSy {instruction}"),
-    }
+        StepKind::Compute { .. } | StepKind::Return { .. } => {
+            return Err(TextError::Unwritable("a step that works something out"));
+        }
+        StepKind::Repeat { .. } | StepKind::While { .. } => {
+            return Err(TextError::Unwritable("a loop that counts its passes"));
+        }
+    })
 }
 
 fn invoke_title(shared: &Shared<'_>, action: &ActionKey, resource: &Selector) -> String {
@@ -652,23 +665,27 @@ fn step_line(
     step: &Step,
     namings: &[Naming],
     hint: Option<&Hint>,
-) -> (String, Vec<String>) {
-    let phrase = title(shared, step);
+) -> Result<(String, Vec<String>), TextError> {
+    let phrase = title(shared, step)?;
     match &step.kind {
         StepKind::ForEach { items, .. } => {
-            return (
+            return Ok((
                 format!("{phrase} {}", value_text(items, namings)),
                 Vec::new(),
-            );
+            ));
         }
         StepKind::SetVar { value, .. } => {
-            return (
+            return Ok((
                 format!("{phrase} to {}", value_text(value, namings)),
                 Vec::new(),
-            );
+            ));
         }
-        StepKind::If { .. } | StepKind::Ask { .. } => return (phrase, Vec::new()),
-        StepKind::Invoke { .. } | StepKind::Ai { .. } | StepKind::Task { .. } => {}
+        StepKind::If { .. } | StepKind::Ask { .. } => return Ok((phrase, Vec::new())),
+        StepKind::Compute { .. }
+        | StepKind::Repeat { .. }
+        | StepKind::While { .. }
+        | StepKind::Return { .. } => {}
+        _ => {}
     }
     let mut notes = Vec::new();
     match &step.kind {
@@ -701,7 +718,11 @@ fn step_line(
         StepKind::If { .. }
         | StepKind::ForEach { .. }
         | StepKind::SetVar { .. }
-        | StepKind::Ask { .. } => {}
+        | StepKind::Ask { .. }
+        | StepKind::Compute { .. }
+        | StepKind::Repeat { .. }
+        | StepKind::While { .. }
+        | StepKind::Return { .. } => {}
         StepKind::Ai { input, .. } => {
             if let Some(input) = input {
                 notes.push(format!("of {}", value_text(input, namings)));
@@ -713,7 +734,7 @@ fn step_line(
             }
         }
     }
-    (phrase, notes)
+    Ok((phrase, notes))
 }
 
 /// The parameters of the action a step invokes, from the catalogue the
@@ -818,6 +839,7 @@ fn value_text(binding: &Binding, namings: &[Naming]) -> String {
             let written: Vec<String> = items.iter().map(|item| value_text(item, namings)).collect();
             format!("[{}]", written.join(", "))
         }
+        Binding::Expression(expr) => expr.to_string(),
     }
 }
 
@@ -1247,6 +1269,7 @@ impl Targets {
             StepKind::Invoke { .. } | StepKind::Ai { .. } | StepKind::Task { .. } => {
                 Binding::step(phrase, "")
             }
+            _ => return,
         };
         self.bindings.push(binding);
         self.phrases.push(phrase.to_owned());
@@ -1485,7 +1508,7 @@ impl Reader<'_> {
         // steps: both name results the steps above them have.
         let mut targets = Targets::default();
         for step in &steps {
-            let heading = title(shared, step).trim_end_matches(':').to_owned();
+            let heading = reads_as(shared, step);
             targets.note(&heading, step);
         }
         while self.at_left_edge(next) {
@@ -1588,7 +1611,7 @@ impl Reader<'_> {
             // The line's phrase is the full heading; what the text refers to a
             // result by can be shorter (`file` for a named field's edit), so
             // the heading itself is what a later line names.
-            let heading = title(shared, &step).trim_end_matches(':').to_owned();
+            let heading = reads_as(shared, &step);
             targets.note(&heading, &step);
             steps.push(step);
             index = next;
@@ -2479,7 +2502,7 @@ fn collect_references(steps: &[Step], names: &mut BTreeSet<String>) {
             }
             StepKind::SetVar { value, .. } => args.push(value.clone()),
             StepKind::Ai { input, .. } => args.extend(input.iter().cloned()),
-            StepKind::Ask { .. } | StepKind::Task { .. } => {}
+            _ => {}
         }
         for arg in args {
             binding_names(&arg, names);
@@ -2517,7 +2540,7 @@ fn binding_names(binding: &Binding, names: &mut BTreeSet<String>) {
                 binding_names(item, names);
             }
         }
-        Binding::Literal(_) | Binding::Input(_) | Binding::Var(_) => {}
+        Binding::Expression(_) | Binding::Literal(_) | Binding::Input(_) | Binding::Var(_) => {}
     }
 }
 
@@ -2529,6 +2552,7 @@ fn condition_names(condition: &Condition, names: &mut BTreeSet<String>) {
             binding_names(right, names);
         }
         Condition::Not(inner) => condition_names(inner, names),
+        Condition::Holds(_) => {}
         Condition::All(all) | Condition::Any(all) => {
             for inner in all {
                 condition_names(inner, names);
@@ -2573,6 +2597,7 @@ fn condition_render(condition: &Condition, namings: &[Naming]) -> String {
             .map(|inner| condition_render(inner, namings))
             .collect::<Vec<_>>()
             .join(" or "),
+        Condition::Holds(expr) => expr.to_string(),
     }
 }
 
