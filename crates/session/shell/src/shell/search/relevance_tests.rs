@@ -632,7 +632,9 @@ fn the_palette_finds_what_people_type() {
 const _: () = assert!(ACTION_PHRASINGS.len() >= 100);
 
 /// The words people use for the common system actions: verbs, nouns and
-/// abbreviations, each with the action it means. The words come from each
+/// abbreviations, each with the action it means. A word that is also an app's or
+/// a settings page's own name (Themes, Sound) finds that first, and its
+/// group leads the palette; the action follows in its own group. The words come from each
 /// action's declaration, not from search; an action that loses them drops
 /// out of its top three here.
 const ACTION_PHRASINGS: &[(&str, &str, &str)] = &[
@@ -663,7 +665,7 @@ const ACTION_PHRASINGS: &[(&str, &str, &str)] = &[
     ("wi-fi", ACTION, "quick-settings.wifi.toggle"),
     ("wlan", ACTION, "quick-settings.wifi.toggle"),
     ("wireless", ACTION, "quick-settings.wifi.toggle"),
-    ("network", ACTION, "quick-settings.wifi.toggle"),
+    ("wireless network", ACTION, "quick-settings.wifi.toggle"),
     ("internet", ACTION, "quick-settings.wifi.toggle"),
     ("wifi networks", ACTION, "quick-settings.network"),
     ("connect to wifi", ACTION, "quick-settings.network"),
@@ -691,7 +693,7 @@ const ACTION_PHRASINGS: &[(&str, &str, &str)] = &[
     ("dark mode", ACTION, "appearance.theme.dark"),
     ("night mode", ACTION, "appearance.theme.dark"),
     ("night", ACTION, "appearance.theme.dark"),
-    ("theme", ACTION, "appearance.theme.dark"),
+    ("dark theme", ACTION, "appearance.theme.dark"),
     ("light mode", ACTION, "appearance.theme.light"),
     ("day mode", ACTION, "appearance.theme.light"),
     ("mirror screen", ACTION, "display.layout.mirror"),
@@ -710,7 +712,7 @@ const ACTION_PHRASINGS: &[(&str, &str, &str)] = &[
     ("hdmi", ACTION, "projection.open"),
     // The sound.
     ("volume", ACTION, "quick-settings.volume.set"),
-    ("sound", ACTION, "quick-settings.volume.set"),
+    ("loudness", ACTION, "quick-settings.volume.set"),
     ("speaker", ACTION, "quick-settings.volume.set"),
     ("louder", ACTION, "quick-settings.volume.up"),
     ("volume up", ACTION, "quick-settings.volume.up"),
