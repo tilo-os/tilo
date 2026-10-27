@@ -1703,6 +1703,11 @@ impl MusicApp {
     /// Push the latest player state to MPRIS. Deduped inside the handle, so this
     /// is cheap to call every frame.
     fn publish_mpris(&mut self) {
+        if self.pb.current.is_some() {
+            let snap = self.mpris_snapshot();
+            self.audio
+                .set_now_playing(&crate::mpris::now_playing_of(&snap));
+        }
         if !self.mpris.is_active() {
             return;
         }
@@ -1788,7 +1793,12 @@ impl MusicApp {
     /// widget, `playerctl`) and dispatch each through the normal `Action`
     /// pipeline — external and in-app controls share one code path.
     fn drain_mpris(&mut self, state: &mut ui::widget::Edits<'_>) {
-        for cmd in self.mpris.drain_commands() {
+        // The platform player's own system controls (a page's Media
+        // Session) ask as MPRIS does.
+        let pressed = self.audio.take_now_playing_actions();
+        let commands = self.mpris.drain_commands();
+        let pressed = pressed.into_iter().map(crate::mpris::command_for);
+        for cmd in pressed.chain(commands) {
             match cmd {
                 MprisCommand::Play => {
                     if !self.pb.playing {
