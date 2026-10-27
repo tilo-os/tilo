@@ -1141,6 +1141,32 @@ mod tests {
     }
 
     #[test]
+    fn a_person_ruling_that_it_is_work_starts_the_task_without_asking() {
+        let mut request = request(ComposerIntent::Request);
+        request.task = None;
+        request.text = "Rename every file to its invoice number".into();
+        request.as_task = Some(true);
+        let operation = submission_operation(request.clone()).unwrap();
+        assert_ne!(operation.action, "respond", "no question to the agent");
+        assert_eq!(
+            (
+                operation.resource.as_str(),
+                operation.action.as_str(),
+                operation.app
+            ),
+            (TRACKER, "ask-agent", TRACKER_APP)
+        );
+        assert_eq!(
+            operation.arguments["title"],
+            "Rename every file to its invoice number"
+        );
+
+        // Ruling that it is an answer leaves the question to the agent.
+        request.as_task = Some(false);
+        assert_eq!(submission_operation(request).unwrap().action, "respond");
+    }
+
+    #[test]
     fn the_agent_answers_or_names_the_work_and_nothing_else_is_believed() {
         let decided = |value: Value| respond_outcome(Some(&value));
         assert!(matches!(
