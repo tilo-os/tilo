@@ -848,7 +848,7 @@ fn a_page_action_either_finishes_or_says_what_became_of_it() {
         .unwrap();
     let operation = widget.page_operation.take().unwrap();
     let ui::tilo_actions::InvocationUpdate::Failed { error, .. } =
-        BrowserWidget::answer_a_timed_out_page_operation(operation)
+        BrowserWidget::answer_a_timed_out_page_operation(&operation)
     else {
         panic!("a page action that ran out of time answers as a failure");
     };

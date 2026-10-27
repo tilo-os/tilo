@@ -58,7 +58,7 @@ impl BrowserWidget {
     /// Answer the caller of a page action that ran out of time, saying that
     /// the page may have acted.
     pub(super) fn answer_a_timed_out_page_operation(
-        operation: PageOperation,
+        operation: &PageOperation,
     ) -> ui::tilo_actions::InvocationUpdate {
         let phase = Self::phase_name(&operation.phase);
         // The request may have reached the page before this deadline: a failed
