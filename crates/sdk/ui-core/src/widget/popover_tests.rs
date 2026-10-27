@@ -170,6 +170,11 @@ fn menu_pointer_selection_and_dismissal() {
         "the outside click is swallowed"
     );
     assert!(!p.is_open());
+    let doc = automerge::AutoCommit::new();
+    assert!(
+        crate::resources::resources(&p, &doc).is_empty(),
+        "a closed popover offers no way to close it"
+    );
     assert!(dismissed.get());
     assert_eq!(p.take_selection(), None);
 }

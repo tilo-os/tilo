@@ -1,3 +1,2 @@
 [ratchets.closure_control]
-"apps/remote/src/app/live_session.rs" = 1
-"apps/remote/src/view.rs" = 5
+"apps/remote/src/view.rs" = 4

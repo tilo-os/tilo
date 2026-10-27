@@ -206,12 +206,16 @@ impl NavList {
     pub fn fed_by(self, feed: &NavFeed) -> Self {
         let (reads, chooses, acts) = (feed.clone(), feed.clone(), feed.clone());
         let (checks, folds) = (feed.clone(), feed.clone());
+        // The list's id names its published selection.
+        let id = crate::widget::Widget::test_id(&self.tree)
+            .unwrap_or("navigation")
+            .to_owned();
         let mut list = self
             .follow({
                 let mut seen = None;
                 move || reads.pull(&mut seen)
             })
-            .on_select(move |id| {
+            .on_view(id, move |id| {
                 let mut feed = chooses.0.borrow_mut();
                 feed.chosen.push(id);
                 feed.answer_due = true;

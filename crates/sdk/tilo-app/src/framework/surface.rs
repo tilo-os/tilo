@@ -1158,7 +1158,16 @@ impl Decorator for HostedSurface {
 
 impl ResourceOperations for HostedSurface {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        ui_core::host_operation::resource_operation_handlers(self.host.surface())
+        let surface = self.host.surface();
+        let mut handlers = ui_core::host_operation::resource_operation_handlers(surface);
+        // A decorated container lists its own; the surface's children it
+        // shows over it (a dialog) answer theirs too.
+        if decorates_routing(surface) {
+            surface.for_each_child(&mut |child| {
+                handlers.extend(ui_core::host_operation::resource_operation_handlers(child));
+            });
+        }
+        handlers
     }
 
     fn start_operation(
@@ -1175,11 +1184,16 @@ impl ResourceOperations for HostedSurface {
         // answer theirs, never the surface by hand. A toolkit container the
         // surface decorates (its shell) routes them to its parts, those its
         // children do not list among them too (a header button shown in
-        // the window's bar), as it lists their handlers.
+        // the window's bar), as it lists their handlers. What it does not
+        // answer goes to the surface's own children: a dialog the surface
+        // shows over its shell.
         let before = doc.pending_ops();
         let surface = self.host.surface_mut();
         let started = if decorates_routing(surface) {
-            ui_core::host_operation::start_operation(surface, op, doc, path)
+            match ui_core::host_operation::start_operation(surface, op, doc, path) {
+                Ok(None) => ui_core::host_operation::start_in_children(surface, op, doc, path),
+                answered => answered,
+            }
         } else {
             ui_core::host_operation::start_in_children(surface, op, doc, path)
         };
@@ -1198,14 +1212,16 @@ impl ResourceOperations for HostedSurface {
             return Some(update);
         }
         let surface = self.host.surface_mut();
-        if decorates_routing(surface) {
-            return ui_core::host_operation::poll_resource_operation(
+        if decorates_routing(surface)
+            && let Some(update) = ui_core::host_operation::poll_resource_operation(
                 surface,
                 invocation,
                 cancellation_requested,
                 doc,
                 path,
-            );
+            )
+        {
+            return Some(update);
         }
         surface.children_mut().into_iter().find_map(|child| {
             ui_core::host_operation::poll_resource_operation(
