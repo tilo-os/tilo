@@ -844,18 +844,39 @@ fn pin_pdf(agent: &ConfinedReplica, room: &ContentStore, hash: &str, name: &str)
         .expect("the pin is the agent's change");
     // The view opens the PDF it now names, and the record takes on what
     // opening it adds the first time (its page plan, the markup the file
-    // carries): the app's own work, not a read's.
+    // carries): the app's own work, not a read's. The file's own markup is
+    // read by the app's PDF owner thread and recorded on whichever frame
+    // its answer arrives, which may be after the read that opened it has
+    // ended: the view only runs frames while it performs something, so
+    // reads are repeated until the record has taken the markup over, and a
+    // later read or look starts from a settled record.
     let read = operation(agent, "read-text");
-    agent
-        .invoke(&read.address, &serde_json::Map::new(), false)
-        .expect("the pinned PDF opens");
-    if let Some(opened) = agent.take_mutation().unwrap() {
-        let opening = did(&opened);
+    let adopted = || {
+        agent
+            .read(|doc| pdf_viewer::PdfMarkup::of(doc).imported_source().is_some())
+            .unwrap()
+    };
+    // Bounds a hang only: the answer comes from an in-memory PDF.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        agent
+            .invoke(&read.address, &serde_json::Map::new(), false)
+            .expect("the pinned PDF opens");
+        if let Some(opened) = agent.take_mutation().unwrap() {
+            let opening = did(&opened);
+            assert!(
+                opening
+                    .iter()
+                    .all(|verb| verb == "start-page-plan" || verb == "adopt-existing"),
+                "{opening:?}"
+            );
+        }
+        if adopted() {
+            break;
+        }
         assert!(
-            opening
-                .iter()
-                .all(|verb| verb == "start-page-plan" || verb == "adopt-existing"),
-            "{opening:?}"
+            std::time::Instant::now() < deadline,
+            "the record never took over the PDF's own markup"
         );
     }
 }
