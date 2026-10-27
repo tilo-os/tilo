@@ -33,7 +33,10 @@ mod private_history;
 pub use private_history::PrivateAction;
 mod fs_store;
 pub mod load_hint;
-pub use doc_writer::{DEFAULT_DEBOUNCE, DocOwner, DocWriter, DurabilitySnapshot, StoredLoad};
+pub use doc_writer::{
+    DEFAULT_DEBOUNCE, DecodedBytes, DocOwner, DocWriter, DurabilitySnapshot, StoredBytes,
+    StoredLoad,
+};
 pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR};
 
 pub const DOCUMENT_FILE: &str = "state.automerge";
