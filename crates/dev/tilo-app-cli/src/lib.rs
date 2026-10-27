@@ -3067,7 +3067,7 @@ impl Default for {type_name}Config {{
 /// activated. The concrete return type deliberately preserves `TreeView`'s
 /// row-delegate, model-notification, selection, and reorder configuration
 /// methods.
-pub fn {module_name}<M: TreeModel>(
+pub fn {module_name}<M: TreeModel + 'static>(
     id: &str,
     model: M,
     config: &{type_name}Config,
