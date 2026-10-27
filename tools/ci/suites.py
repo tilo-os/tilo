@@ -307,7 +307,15 @@ def run(root: Path, suites: list[str], jobs: int) -> int:
             output += f"\ntimed out after {SUITE_TIMEOUT_SECONDS}s\n"
         return suite, code, time.monotonic() - started, output
 
+    # Each suite, and each unittest case that failed in one, reported at the end as libtest
+    # reports a test (tools/policy/run_unit_tests.py): t reads those lines, names the failed
+    # suites in the run's result and leads its log with their output, so a failure is not
+    # hundreds of lines down a group's log, and compares each with main's.
+    sys.path.insert(0, str(ROOT / "tools/policy"))
+    from run_unit_tests import RAN, Result, report
+
     failed: list[str] = []
+    results: list[Result] = []
     started = time.monotonic()
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
         for suite, code, elapsed, output in pool.map(one, suites):
@@ -317,6 +325,9 @@ def run(root: Path, suites: list[str], jobs: int) -> int:
             print("::endgroup::", flush=True)
             if code:
                 failed.append(suite)
+                output += f"\n{suite} exited with {code}\n"
+            results.append(Result(Path(suite), code == 0, elapsed, sum(int(n) for n in RAN.findall(output)), output))
+    print(report(results), flush=True)
     print(f"{len(suites) - len(failed)}/{len(suites)} suites passed in {time.monotonic() - started:.1f}s")
     for suite in failed:
         print(f"::error::{suite} failed")

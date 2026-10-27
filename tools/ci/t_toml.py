@@ -40,6 +40,7 @@ so t.toml carries both, generated between markers:
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import fnmatch
 import json
 import os
@@ -246,7 +247,8 @@ def suite_checks(manifest: suites.Manifest) -> str:
     for group in manifest.groups:
         fields = GROUP_FIELDS.get(group.name, {})
         inputs = sorted({glob(path) for path in (*group.inputs, *group.suites)}
-                        | {suites.MANIFEST, "tools/ci/suites.py", "tools/with-test-environment.sh"}
+                        | {suites.MANIFEST, "tools/ci/suites.py", "tools/policy/run_unit_tests.py",
+                           "tools/with-test-environment.sh"}
                         | set(fields.get("prepare", "").split()[1:2]))
         run = f"python3 tools/ci/suites.py run --jobs 8 --group {group.name}"
         if "prepare" in fields:
@@ -1057,8 +1059,15 @@ def main(argv: list[str]) -> int:
         return 0
     if expected != text:
         print("t.toml is out of date with tools/ci/suites.toml, tools/ci/products.toml, .config/ or the workspace: "
-              "run python3 tools/ci/t_toml.py write",
+              "run python3 tools/ci/t_toml.py write (`t fix t-toml`)",
               file=sys.stderr)
+        # Which generated blocks differ, and how, so the reason is in the first lines of the log.
+        have = {m["name"]: m[0] for m in BLOCK.finditer(text)}
+        for m in BLOCK.finditer(expected):
+            if have.get(m["name"]) != m[0]:
+                diff = difflib.unified_diff(have.get(m["name"], "").splitlines(), m[0].splitlines(),
+                                            "t.toml", "generated", n=0, lineterm="")
+                print(f"\nblock {m['name']}:", *list(diff)[2:12], sep="\n", file=sys.stderr)
         return 1
     print("t.toml matches tools/ci/suites.toml, tools/ci/products.toml, .config/ and the workspace")
     return 0
