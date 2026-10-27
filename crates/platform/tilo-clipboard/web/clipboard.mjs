@@ -51,3 +51,31 @@ function writeClipboard(data, report, document) {
     document.removeEventListener('copy',transfer,{capture:true});
   }
 }
+
+// A copy claimed inside the click for text that arrives after it (a link the
+// click asks a host for): the async clipboard takes a promised item while
+// the click still counts as one, and writes it once `fill(text)` resolves
+// it. `fill(null)` gives the claim up without reporting a failure. Returns
+// `fill`, or `null` where the browser cannot hold a copy open.
+export function reserveClipboardText(report, navigator=globalThis.navigator, Item=globalThis.ClipboardItem) {
+  if(typeof navigator?.clipboard?.write!=='function'||typeof Item!=='function')return null;
+  let resolve, reject, given=false;
+  const text=new Promise((ok,fail)=>{resolve=ok;reject=fail;});
+  let written;
+  try {
+    written=navigator.clipboard.write([new Item({'text/plain':text})]);
+  } catch(error) {
+    console.warn('clipboard: copy refused',error);
+    return null;
+  }
+  Promise.resolve(written).then(()=>report(true),error=>{
+    if(given){report(false);return;}
+    console.warn('clipboard: copy refused',error);
+    report(false,COPY_REFUSED);
+  });
+  return value=>{
+    if(typeof value==='string'){resolve(new Blob([value],{type:'text/plain'}));return;}
+    given=true;
+    reject(Error('nothing to copy'));
+  };
+}

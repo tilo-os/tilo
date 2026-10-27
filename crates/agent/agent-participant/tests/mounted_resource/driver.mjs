@@ -237,7 +237,10 @@ try {
     const frameBeforeOpen = await tab.evaluate('mount.state().frames');
     const openedChannel = await tab.evaluate("mount.invokeAction(fixture.channel, 'open-channel')");
     assert.equal(openedChannel.state, 'completed');
-    await tab.waitFor('mount.state().presentation && mount.state().frames > ' + frameBeforeOpen);
+    // A frame was presented since: `frames` counts presented frames only.
+    // `presentation` marks the one status a frame publishes, and the next
+    // status (semantics built after the frame, the peer's) clears it again.
+    await tab.waitFor(`mount.state().phase === 'presented' && mount.state().frames > ${frameBeforeOpen}`);
     await tab.waitFor(`JSON.stringify(mount.state().semantics).includes('Browser fixture queued during disconnect')
       && JSON.stringify(mount.state().semantics).includes('Native fixture while browser disconnected')`);
     stage('browser-recovered');

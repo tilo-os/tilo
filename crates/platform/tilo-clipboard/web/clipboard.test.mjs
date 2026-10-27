@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {COPY_REFUSED,COPY_UNAVAILABLE,writeClipboardRich,writeClipboardText} from './clipboard.mjs';
+import {COPY_REFUSED,COPY_UNAVAILABLE,reserveClipboardText,writeClipboardRich,writeClipboardText} from './clipboard.mjs';
 
 // The external browser command/clipboard boundary is unavailable in Node.
 function browser({allowed=true,dispatch=true,throws=false,transferFails=false}={}) {
@@ -54,4 +54,47 @@ test('a rich copy publishes its HTML and its words in one transfer',()=>{
   assert.equal(writeClipboardRich('<p>plain <b>bold</b></p>','plain bold',(ok)=>reports.push(ok),host.document),true);
   assert.deepEqual(host.data(),{'text/html':'<p>plain <b>bold</b></p>','text/plain':'plain bold'});
   assert.deepEqual(reports,[true]);
+});
+
+// The async clipboard: `write` takes the promised items inside the click and
+// settles once they resolve, as a browser does.
+function asyncClipboard({refuse=false}={}) {
+  const written=[];
+  class Item { constructor(items){this.items=items;} }
+  const navigator={clipboard:{async write(items){
+    if(refuse)throw Error('Write permission denied');
+    for(const item of items)written.push(await (await item.items['text/plain']).text());
+  }}};
+  return {navigator,Item,written};
+}
+
+test('a copy claimed in the click is written once its text arrives',async()=>{
+  const browser=asyncClipboard(),reports=[];
+  const fill=reserveClipboardText((ok,error)=>reports.push([ok,error]),browser.navigator,browser.Item);
+  assert.equal(typeof fill,'function');
+  await new Promise(done=>setTimeout(done,10));
+  assert.deepEqual(reports,[],'nothing settles before the text is in');
+  fill('https://tilo.so/app/#/@host/room/so.tilo.chat');
+  await new Promise(done=>setTimeout(done,10));
+  assert.deepEqual(browser.written,['https://tilo.so/app/#/@host/room/so.tilo.chat']);
+  assert.deepEqual(reports,[[true,undefined]]);
+});
+
+test('a claimed copy given up copies nothing and reports no refusal',async()=>{
+  const browser=asyncClipboard(),reports=[];
+  const fill=reserveClipboardText((ok,error)=>reports.push([ok,error]),browser.navigator,browser.Item);
+  fill(null);
+  await new Promise(done=>setTimeout(done,10));
+  assert.deepEqual(browser.written,[]);
+  assert.deepEqual(reports,[[false,undefined]]);
+});
+
+test('a refused claimed copy says what to do, and no async clipboard claims nothing',async()=>{
+  const browser=asyncClipboard({refuse:true}),reports=[];
+  const fill=reserveClipboardText((ok,error)=>reports.push([ok,error]),browser.navigator,browser.Item);
+  fill('link');
+  await new Promise(done=>setTimeout(done,10));
+  assert.deepEqual(reports,[[false,COPY_REFUSED]]);
+  assert.equal(reserveClipboardText(()=>{},{},browser.Item),null);
+  assert.equal(reserveClipboardText(()=>{},browser.navigator,undefined),null);
 });

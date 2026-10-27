@@ -2199,6 +2199,7 @@ input-map-iso = ISO mit 105 Tasten
 input-map-instructions = Drücke Tasten, während diese Seite geöffnet ist, auch während der Layoutsuche. Die Karte zeigt die physische Position, ohne deine Eingabe zu verändern.
 input-map-levels = Wähle eine Ebene, um zu sehen, was jede Taste mit Umschalt oder AltGr tippt.
 input-map-unavailable = Diese Belegung kann nicht angezeigt werden.
+input-map-drawing = Die Tastatur wird gezeichnet…
 input-map-apply = Diese Belegung verwenden
 input-map-extra-levels = Ebenen 5–8 zeigen, wenn die Belegung sie hat
 input-map-dead-keys = Tottasten werden mit einem gepunkteten Kreis angezeigt.

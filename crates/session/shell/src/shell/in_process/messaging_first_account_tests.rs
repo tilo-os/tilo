@@ -261,7 +261,7 @@ fn receive_and_reply(
                 harness
                     .a11y_nodes()
                     .iter()
-                    .any(|(_, node)| node.label() == Some("native private arrival"))
+                    .any(|(_, node)| speaks(node.label(), "native private arrival"))
             })
     );
     let reply = MessagesEffect::Send {
@@ -279,7 +279,7 @@ fn receive_and_reply(
             .harness
             .a11y_nodes()
             .iter()
-            .any(|(_, node)| node.label() == Some("native private reply"))
+            .any(|(_, node)| speaks(node.label(), "native private reply"))
     );
     assert!(
         !mounted
