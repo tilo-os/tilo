@@ -125,16 +125,18 @@ Authors who use `std` get the native look with no effort.
 
 ## 3.1 Custom widgets: a ladder
 
-Most needs stop at the first or second step. Each step stays native under any theme.
+Most needs stop at the first or second step. Each step stays native under any theme. Primitives
+and anything on the hot path stay Rust for performance as well: Tilo must run well on slow
+hardware.
 
 1. **Compose `ui.*`.** Card, Row, Stack, Grid, Overlay, Badge, Avatar, and text by role. A view is
    a component, and it costs only its boundaries.
 2. **Draw with the design system.** A small declarative drawing vocabulary inside the widget
    tree:
    - **Shapes:** rectangles, rounded paths, arcs, lines and gradients.
-   - **Theme only:** colours only by theme role (`.accent`, `.surface`, `.separator`, `.muted`,
-     `.app_tint`), sizes and strokes from tokens, text through text roles, motion through the
-     platform's curves and durations.
+   - **Theme only:** colours only by theme role (`.accent`, `.surface`, `.separator`, `.muted`),
+     sizes and strokes from tokens, text through text roles, motion through the platform's curves
+     and durations.
    - **Retained:** nodes are diffed and patched like any other, damage is limited to their own
      rect, and geometry is cached.
    - **A semantic role is required** (`role: .progress(0.6)`, `.slider`, `.chart(series)`), so
@@ -143,9 +145,9 @@ Most needs stop at the first or second step. Each step stays native under any th
      come from the platform.
 
    A progress ring, a timeline, a custom segmented control or a waveform overview gives an app
-   identity while staying in the person's colours, font and motion. `.app_tint` is an app's
-   signature role, and the person's theme decides how it renders (muted, accented, or ignored in
-   high contrast).
+   identity while staying in the person's colours, font and motion. Theming belongs to the
+   person: one global theme they choose, and no app has colours of its own. An app's identity
+   comes from shape, layout, iconography and motion.
 3. **Render graph.** Declared nodes (WGSL shaders, compositing, colour transforms) over textures
    and frames, executed by the platform. A video editor's preview and an image editor's layer
    stack use this.
