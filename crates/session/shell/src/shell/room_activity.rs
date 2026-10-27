@@ -1789,6 +1789,7 @@ mod tests {
                     mode: tilo_automation::RunMode::Unattended,
                     steps: Vec::new(),
                     output: None,
+                    degraded: Vec::new(),
                     outcome: tilo_automation::RunOutcome::Completed,
                 },
             },
@@ -1992,11 +1993,14 @@ mod tests {
                 mode: tilo_automation::RunMode::Unattended,
                 steps: vec![tilo_automation::StepRecord {
                     invocation: Some(tilo_automation::invocation_id(run, &path)),
+                    attempts: Vec::new(),
                     path,
                     step: "draft".into(),
+                    degraded: tilo_automation::StepOutcome::None,
                     status: tilo_automation::StepStatus::Succeeded { output: None },
                 }],
                 output: None,
+                degraded: Vec::new(),
                 outcome: tilo_automation::RunOutcome::Completed,
             },
         }

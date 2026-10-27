@@ -155,7 +155,12 @@ pub fn record_run_steps(
         finished.shortcut.name,
         finished.report.trigger,
         match &finished.report.outcome {
-            RunOutcome::Completed => "completed".to_string(),
+            // A run that finished degraded says so here: the chip shows what
+            // it produced, and the record says which steps fell short.
+            RunOutcome::Completed => match finished.report.degraded_summary() {
+                Some(summary) => format!("completed, degraded: {summary}"),
+                None => "completed".to_string(),
+            },
             RunOutcome::Failed { path, failure } => format!("stopped at {path}: {failure}"),
             RunOutcome::Cancelled { at } => format!("stopped at {at}"),
         }
