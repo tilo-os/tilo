@@ -3,7 +3,7 @@
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tilo_resource::{Invoke, Reader, Resource};
 use ui_core::application::{
@@ -1070,10 +1070,10 @@ fn record_content(context: &mut HostContext) {
     let Some(local) = context.content().cloned() else {
         return;
     };
-    let lane = ui_core::collaboration::record_content::ContentLane::of_record(
-        context.app_id(),
-        &context.record().id,
-    );
+    let lane = ui_core::collaboration::record_content::ContentLane::of_window();
+    // The window keeps its lane: another window of the app on this thread
+    // reads its own, never this one's queue of wants.
+    ui_core::collaboration::record_content::keep_lane(&context.wake_handle(), Arc::clone(&lane));
     context
         .provide_content(ui_core::collaboration::record_content::RecordContent::store(local, lane));
 }
