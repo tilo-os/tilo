@@ -80,6 +80,20 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
             u32::from(ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION),
             "at the version the shell speaks"
         );
+        // Collaboration and the filesystem at the version the runtime serves them, or the
+        // install is refused.
+        for service in ["collab", "tilo-fs"] {
+            let requirement = manifest
+                .sandbox
+                .services
+                .get(service)
+                .unwrap_or_else(|| panic!("{} asks for no {service}", app.app));
+            assert_eq!(
+                requirement.version,
+                runtime_portal::RUNTIME_INTERFACE_VERSION,
+                "{service} at the version the runtime serves"
+            );
+        }
     }
     let board = apps.last().unwrap();
     let notes = apps
