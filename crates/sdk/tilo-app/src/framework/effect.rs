@@ -1638,7 +1638,7 @@ fn overlaid(specs: Vec<ActionSpec>, statuses: &[EffectStatus]) -> Vec<ActionSpec
 /// requirements is something `lacks` gives the host's reason for lacking.
 fn require_host(spec: &mut ActionSpec, lacks: impl Fn(&str) -> Option<&'static str>) {
     if let Some(reason) = spec.contract.tags.iter().find_map(|tag| lacks(tag)) {
-        spec.contract.availability = Availability::Unavailable {
+        spec.type_mut().contract.availability = Availability::Unavailable {
             code: tilo_actions::HOST_UNSUPPORTED_CODE.to_owned(),
             reason: reason.to_owned(),
         };
