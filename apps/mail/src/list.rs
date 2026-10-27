@@ -1,4 +1,6 @@
-//! The message list: one [`ListRowFace`] per conversation, newest first.
+//! The message list: one [`ListRowFace`] per conversation, newest first —
+//! or, while an account's outbox is open, one per message still to leave,
+//! with why it has not.
 //!
 //! Rows are the toolkit's; this widget lays them out under the header row,
 //! scrolls them, and turns a click, a hover action, a swipe or a right click
@@ -80,6 +82,24 @@ fn row_actions(starred: bool) -> [(CtxAction, RowAction<'static>); 3] {
             },
         ),
     ]
+}
+
+/// The row action an outbox row carries: take the message out unsent.
+const CANCEL_SEND: RowAction<'static> = RowAction {
+    icon: Icon::RotateCcw,
+    label: "Cancel sending",
+};
+
+/// One queued message's row as last painted, with where its cancel sits.
+#[derive(Clone, Debug)]
+struct QueuedSlot {
+    id: String,
+    /// The row's whole band, gaps included: the height a press lands on.
+    band: Rect,
+    /// The painted row inside it.
+    rect: Rect,
+    /// The cancel action's button.
+    cancel: Rect,
 }
 
 /// How many rows before the end of the list the older mail is asked for.
@@ -211,6 +231,8 @@ pub struct MessageList {
     theme: Theme,
     row_h: f64,
     slots: Vec<Slot>,
+    /// The outbox rows as last painted, while the outbox is open.
+    queued: Vec<QueuedSlot>,
     pointer: Option<Point>,
     press: Option<Press>,
     /// The selection the list last scrolled into view.
@@ -236,6 +258,7 @@ impl MessageList {
             theme: Theme::dark(),
             row_h: 0.0,
             slots: Vec::new(),
+            queued: Vec::new(),
             pointer: None,
             press: None,
             revealed: None,
@@ -419,6 +442,158 @@ struct RowState {
 }
 
 impl MessageList {
+    /// Paint the open account's outbox: one row per message still to leave,
+    /// its recipients and subject, and under them why it has not gone — the
+    /// server's own refusal, or that it waits its turn.
+    fn paint_outbox(&mut self, ctx: &mut PaintCtx<'_>, state: &MailState) {
+        let r = self.rect;
+        let theme = ctx.theme;
+        let queued = state.queued();
+        self.queued.clear();
+        if queued.is_empty() {
+            self.region.set_content_size(r.width(), 0.0);
+            EmptyState::paint(
+                ctx,
+                r,
+                &EmptyStateContent {
+                    icon: Some(Icon::Send),
+                    message: Some("Messages wait here until they are sent."),
+                    ..EmptyStateContent::new("Nothing is waiting to be sent")
+                },
+                Point::new(-1.0, -1.0),
+            );
+            return;
+        }
+        self.row_h = ListRowFace::new("Ag")
+            .subtitle("Ag")
+            .secondary("Ag")
+            .height(ctx.text, theme);
+        let unscrolled = RowFrame::new(r, self.row_h, false, theme);
+        self.region
+            .set_content_size(r.width(), unscrolled.content_height(queued.len(), theme));
+        let frame = RowFrame::new(r, self.row_h, self.region.overflows_vertically(), theme);
+        let scroll = self.region.offset().y;
+        ctx.scene
+            .push_layer(Fill::NonZero, BlendMode::default(), 1.0, ctx.transform, &r);
+        for (index, message) in queued.iter().enumerate() {
+            let band = frame.band(index, scroll);
+            let rect = frame.row(index, scroll);
+            if band.y1 < r.y0 || band.y0 > r.y1 {
+                self.queued.push(QueuedSlot {
+                    id: message.id.clone(),
+                    band,
+                    rect,
+                    cancel: Rect::ZERO,
+                });
+                continue;
+            }
+            let selected = state.outbox_selected.as_deref() == Some(message.id.as_str());
+            let hovered = self
+                .pointer
+                .filter(|point| r.contains(*point) && rect.contains(*point));
+            let actions = [CANCEL_SEND];
+            let recipient = format!("To {}", message.to);
+            let mut face = ListRowFace::new(&recipient)
+                .leading(RowLeading::Icon(Icon::Send))
+                .subtitle(&message.subject)
+                .secondary(message.state_line())
+                .selected(selected)
+                .actions(&actions)
+                .interaction(Interaction {
+                    hovered: hovered.is_some(),
+                    ..Interaction::default()
+                });
+            // A refused message says so with the mark as well as the words:
+            // the row a person must look at is the one that never left.
+            if message.reason.is_some() {
+                face = face.mark(Icon::CircleAlert);
+            }
+            let actions_at = face.action_rects(rect, theme);
+            let under = hovered
+                .and_then(|point| actions_at.iter().position(|action| action.contains(point)));
+            if let Some(position) = under {
+                face = face.hovered_action(Some(position));
+            }
+            face.paint(ctx, rect);
+            let cancel = actions_at
+                .get(under.unwrap_or(0))
+                .copied()
+                .unwrap_or(Rect::ZERO);
+            self.queued.push(QueuedSlot {
+                id: message.id.clone(),
+                band,
+                rect,
+                cancel,
+            });
+        }
+        ctx.scene.pop_layer();
+        self.region.note_shown(ctx.transform, theme);
+        self.region.paint_bars(ctx.scene, ctx.transform, theme);
+        self.hovered_drawing = self
+            .pointer
+            .filter(|point| r.contains(*point))
+            .and_then(|point| self.queued.iter().find(|slot| slot.rect.contains(point)))
+            .map(|slot| slot.rect.inflate(2.0, 2.0));
+    }
+
+    /// The outbox row at `point`, and whether `point` is on its cancel.
+    fn queued_at(&self, point: Point) -> Option<(&QueuedSlot, bool)> {
+        if !self.rect.contains(point) {
+            return None;
+        }
+        self.queued
+            .iter()
+            .find(|slot| slot.band.y0 <= point.y && point.y < slot.band.y1)
+            .map(|slot| (slot, slot.cancel.contains(point)))
+    }
+
+    /// The outbox page's own pointer: a press opens a queued message, and a
+    /// press on its cancel takes it out unsent. There is no swipe and no
+    /// context menu here — a message that has not left has nothing to file.
+    fn handle_outbox_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let point = ctx.logical(position);
+                let before = self
+                    .queued_at(self.pointer.unwrap_or(Point::ZERO))
+                    .map(|(slot, cancel)| (slot.id.clone(), cancel));
+                self.pointer = Some(point);
+                if self
+                    .queued_at(point)
+                    .map(|(slot, cancel)| (slot.id.clone(), cancel))
+                    != before
+                {
+                    self.dirty = true;
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.pointer = None;
+                self.dirty = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(point) = self.pointer else {
+                    return;
+                };
+                let Some((slot, cancel)) = self.queued_at(point) else {
+                    return;
+                };
+                let id = slot.id.clone();
+                if cancel {
+                    self.shared.borrow_mut().cancel_send(&mut ctx.state, &id);
+                } else {
+                    self.shared.borrow_mut().select_queued(&id);
+                }
+                *ctx.handled = true;
+                self.dirty = true;
+            }
+            _ => {}
+        }
+    }
+
     /// Paint one conversation's row.
     fn paint_row(&self, ctx: &mut PaintCtx<'_>, state: &MailState, slot: &Slot, row: RowState) {
         let hovered = self
@@ -554,10 +729,19 @@ impl Widget for MessageList {
         let r = self.rect;
         let shared = self.shared.clone();
         let state = shared.borrow();
-        let rows = state.list_rows();
         self.theme = theme.clone();
         self.region.set_viewport(r, theme);
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
+        if state.outbox_open {
+            // The outbox is a place of its own: what waits to leave, and why
+            // what has not left has not. It is not a folder of the mailbox,
+            // so none of a folder's rows or gestures are here.
+            self.slots.clear();
+            self.paint_outbox(&mut ctx, &state);
+            return;
+        }
+        self.queued.clear();
+        let rows = state.list_rows();
         if rows.is_empty()
             && let Some(clock) = &state.first_fetch
         {
@@ -672,6 +856,10 @@ impl Widget for MessageList {
             }
         }
         if *ctx.handled {
+            return;
+        }
+        if self.shared.borrow().outbox_open {
+            self.handle_outbox_event(event, ctx);
             return;
         }
         match event {

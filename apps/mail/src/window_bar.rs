@@ -36,6 +36,11 @@ impl BarItem {
         self.action = self.action.in_menu();
         self
     }
+
+    fn destructive(mut self) -> Self {
+        self.action = self.action.destructive();
+        self
+    }
 }
 
 /// What can be done to the selected messages: Done, triage, then read
@@ -186,6 +191,29 @@ pub(crate) fn bar_items(state: &MailState, first_run: bool, composing: bool) -> 
         "Add account",
         Command::AccountSettings,
     );
+    // The outbox: what waits to leave has one thing to be done with it here,
+    // and New message beside it, since the person is plainly about to write.
+    if state.outbox_open && !composing {
+        let mut items = vec![BarItem::new(
+            "new-message",
+            "pencil",
+            "New message",
+            Command::Compose,
+        )];
+        if let Some(queued) = state.open_queued() {
+            items.push(
+                BarItem::new(
+                    "cancel-send",
+                    "rotate-ccw",
+                    "Cancel sending",
+                    Command::CancelSend(queued.id.clone()),
+                )
+                .destructive(),
+            );
+        }
+        items.push(add_account.in_menu());
+        return items;
+    }
     // Before any account the empty window's own Add account is the one
     // place to start.
     // The message being written: Discard draft, and Close, which keeps
@@ -276,6 +304,9 @@ pub(crate) fn location(state: &MailState, composing: Option<&str>) -> String {
             message.subject.clone()
         };
     }
+    if state.outbox_open {
+        return "Outbox".to_owned();
+    }
     if state.all_inboxes {
         "All inboxes".to_owned()
     } else {
@@ -363,6 +394,34 @@ mod tests {
         assert!(
             bar_items(&state, true, false).is_empty(),
             "before any account the empty window's Add account is the one"
+        );
+    }
+
+    #[test]
+    fn the_outbox_offers_taking_the_open_message_back_unsent() {
+        let mut state = state();
+        state.outbox = vec![crate::state::QueuedMessage {
+            id: "queued".into(),
+            account: state.accounts.active_config().email.clone(),
+            to: "ada@analytical.example".into(),
+            subject: "Notes on the second engine".into(),
+            body: "Sent from the platform on the train.".into(),
+            reason: Some("550 5.7.1 refused as spam".into()),
+        }];
+        state.open_outbox(state.accounts.active);
+        state.outbox_selected = Some("queued".into());
+        let items = bar_items(&state, false, false);
+        assert_eq!(names(&items, false), ["New message", "Cancel sending"]);
+        assert_eq!(location(&state, None), "Outbox");
+        let cancel = items
+            .iter()
+            .find(|item| item.action.name == "Cancel sending")
+            .expect("the verb is in the bar");
+        assert_eq!(cancel.command, Command::CancelSend("queued".into()));
+        assert!(cancel.action.destructive, "it ends something");
+        assert!(
+            items.iter().all(|item| item.action.icon != "x"),
+            "nothing the outbox offers wears the window's own close"
         );
     }
 

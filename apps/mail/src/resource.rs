@@ -1262,6 +1262,7 @@ const SCENARIOS: &[&str] = &[
     "preview",
     "bulk",
     "bulk_purge_confirmation",
+    "outbox",
     "reply",
     "context_menu",
     "loading",
