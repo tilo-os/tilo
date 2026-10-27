@@ -38,12 +38,12 @@ pub struct SettingsActionBindings {
     /// The resource's dispatcher; `None` leaves the preference controls
     /// inert (a pane nobody can edit through).
     pub edits: Option<ui::framework::Dispatcher<Browser>>,
-    pub clear_history: Option<tilo_actions::ActionBinding<()>>,
-    pub clear_site_data: Option<tilo_actions::ActionBinding<()>>,
+    pub clear_history: Option<ui::tilo_actions::ActionBinding<()>>,
+    pub clear_site_data: Option<ui::tilo_actions::ActionBinding<()>>,
     /// Close is presentation-only, but it is still a canonical Browser view
     /// action.  Keeping it here means keyboard and assistive-tech activation
     /// have the same route as the Library's Done button.
-    pub close: Option<tilo_actions::ActionBinding<()>>,
+    pub close: Option<ui::tilo_actions::ActionBinding<()>>,
 }
 
 /// Process-local mirrors used only to present the action-applied settings.
@@ -515,7 +515,10 @@ fn preference_toggle(
     }
 }
 
-fn button_with_action(button: Button, action: Option<tilo_actions::ActionBinding<()>>) -> Button {
+fn button_with_action(
+    button: Button,
+    action: Option<ui::tilo_actions::ActionBinding<()>>,
+) -> Button {
     match action {
         Some(binding) => button.on_action(binding),
         None => button,

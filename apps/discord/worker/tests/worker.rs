@@ -93,58 +93,7 @@ impl Host {
             TOKEN.to_owned(),
         );
         let seen = Arc::new(Mutex::new(Vec::new()));
-        {
-            let (store, seen, to_worker) = (store.clone(), seen.clone(), to_worker.clone());
-            tokio::spawn(async move {
-                let mut input = tokio::io::BufReader::new(host_read);
-                while let Ok(Some(message)) = read_frame_async::<_, FromWorker>(&mut input).await {
-                    let entry = match message {
-                        FromWorker::NeedSecret { purpose, item } => {
-                            let held = store
-                                .lock()
-                                .unwrap()
-                                .get(&(purpose.clone(), item.clone()))
-                                .cloned();
-                            let _ = to_worker.send(ToWorker::Secret {
-                                purpose: purpose.clone(),
-                                item: item.clone(),
-                                bytes: held.map(|s| Bytes(s.into_bytes())),
-                            });
-                            Seen::NeedSecret(purpose, item)
-                        }
-                        FromWorker::StoreSecret {
-                            purpose,
-                            item,
-                            bytes,
-                        } => {
-                            store.lock().unwrap().insert(
-                                (purpose.clone(), item.clone()),
-                                String::from_utf8(bytes.0.clone()).unwrap(),
-                            );
-                            Seen::StoreSecret(purpose, item)
-                        }
-                        FromWorker::Result { request, outcome } => Seen::Result(request, outcome),
-                        FromWorker::Event {
-                            source,
-                            id,
-                            payload,
-                            ..
-                        } => Seen::Event(source, id, payload),
-                        FromWorker::Blob { bytes } => Seen::Blob(bytes.0.clone()),
-                        FromWorker::Status { healthy, message } => Seen::Status(healthy, message),
-                        FromWorker::Checkpoint { state } => Seen::Checkpoint(state),
-                        FromWorker::Metrics {
-                            queue_depth,
-                            rate_limited_total,
-                            ..
-                        } => Seen::Metrics(queue_depth, rate_limited_total),
-                        // Ready, and the voice side, which tests/voice.rs covers.
-                        _ => continue,
-                    };
-                    seen.lock().unwrap().push(entry);
-                }
-            });
-        }
+        record_from_worker(host_read, store.clone(), seen.clone(), to_worker.clone());
         to_worker
             .send(ToWorker::Start {
                 version: tilo_connector::protocol::PROTOCOL_VERSION,
@@ -277,6 +226,65 @@ impl Host {
     }
 }
 
+/// Read what the worker reports into `seen`, answering its secret questions
+/// from `store` and handing the rest to `to_worker`, until the worker ends.
+fn record_from_worker(
+    host_read: tokio::io::ReadHalf<tokio::io::DuplexStream>,
+    store: Store,
+    seen: Arc<Mutex<Vec<Seen>>>,
+    to_worker: mpsc::UnboundedSender<ToWorker>,
+) {
+    tokio::spawn(async move {
+        let mut input = tokio::io::BufReader::new(host_read);
+        while let Ok(Some(message)) = read_frame_async::<_, FromWorker>(&mut input).await {
+            let entry = match message {
+                FromWorker::NeedSecret { purpose, item } => {
+                    let held = store
+                        .lock()
+                        .unwrap()
+                        .get(&(purpose.clone(), item.clone()))
+                        .cloned();
+                    let _ = to_worker.send(ToWorker::Secret {
+                        purpose: purpose.clone(),
+                        item: item.clone(),
+                        bytes: held.map(|s| Bytes(s.into_bytes())),
+                    });
+                    Seen::NeedSecret(purpose, item)
+                }
+                FromWorker::StoreSecret {
+                    purpose,
+                    item,
+                    bytes,
+                } => {
+                    store.lock().unwrap().insert(
+                        (purpose.clone(), item.clone()),
+                        String::from_utf8(bytes.0.clone()).unwrap(),
+                    );
+                    Seen::StoreSecret(purpose, item)
+                }
+                FromWorker::Result { request, outcome } => Seen::Result(request, outcome),
+                FromWorker::Event {
+                    source,
+                    id,
+                    payload,
+                    ..
+                } => Seen::Event(source, id, payload),
+                FromWorker::Blob { bytes } => Seen::Blob(bytes.0.clone()),
+                FromWorker::Status { healthy, message } => Seen::Status(healthy, message),
+                FromWorker::Checkpoint { state } => Seen::Checkpoint(state),
+                FromWorker::Metrics {
+                    queue_depth,
+                    rate_limited_total,
+                    ..
+                } => Seen::Metrics(queue_depth, rate_limited_total),
+                // Ready, and the voice side, which tests/voice.rs covers.
+                _ => continue,
+            };
+            seen.lock().unwrap().push(entry);
+        }
+    });
+}
+
 fn send(webhook: &str, content: &str) -> DiscordOp {
     DiscordOp::Send(SendOp {
         channel: CHANNEL_GENERAL.to_owned(),
@@ -347,8 +355,15 @@ async fn identifies_with_the_bridge_intents_and_reports_messages() {
 
 /// The one-time token a `/link` reply's button carries.
 fn button_token(reply: &Value) -> String {
-    let url = reply["reply"]["data"]["components"][0]["components"][0]["url"]
-        .as_str()
+    let url = reply
+        .get("reply")
+        .and_then(|reply| reply.get("data"))
+        .and_then(|data| data.get("components"))
+        .and_then(|components| components.get(0))
+        .and_then(|row| row.get("components"))
+        .and_then(|components| components.get(0))
+        .and_then(|button| button.get("url"))
+        .and_then(Value::as_str)
         .expect("a link button");
     url.strip_prefix("https://tilo.example/#?link=")
         .expect("the room's web entry")

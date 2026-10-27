@@ -56,6 +56,35 @@ pub enum NativeFieldId {
     Lock,
 }
 
+/// Whether the session is locked, and the lock screen's own field when it
+/// has one to serve.
+#[derive(Clone, Copy, Debug)]
+pub enum SessionState {
+    Unlocked,
+    Locked {
+        lock_field: Option<ui::ime::ImeWindowState>,
+    },
+}
+
+/// Who holds the seat's keyboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyboardHolder {
+    Shell,
+    Client,
+}
+
+/// What is true of the desktop when the input method's field is chosen.
+#[derive(Clone, Copy, Debug)]
+pub struct FieldSituation {
+    pub session: SessionState,
+    pub keyboard: KeyboardHolder,
+    pub shell_prompt_up: bool,
+    pub palette_visible: bool,
+    /// A receipts-only surface has the focus and no dictation needs its
+    /// original field, so no field is served.
+    pub fields_withheld: bool,
+}
+
 /// Which field the seat's input method serves, and as what.
 ///
 /// While the session is locked the only answer is the lock screen's field, and
@@ -66,26 +95,27 @@ pub enum NativeFieldId {
 /// unchanged.
 #[must_use]
 pub fn field_owner(
-    locked: bool,
-    client_holds_keyboard: bool,
-    lock_field: Option<ui::ime::ImeWindowState>,
-    shell_prompt_up: bool,
-    receipts_only: bool,
-    speech_field_needed: bool,
+    situation: FieldSituation,
     focused_field: Option<ui::ime::ImeWindowState>,
     focus: Option<u64>,
-    palette_visible: bool,
 ) -> Option<(ui::ime::ImeWindowState, NativeFieldId)> {
-    if locked {
-        return (!client_holds_keyboard)
-            .then_some(lock_field)
-            .flatten()
-            .map(|field| (field, NativeFieldId::Lock));
+    let FieldSituation {
+        session,
+        keyboard,
+        shell_prompt_up,
+        palette_visible,
+        fields_withheld,
+    } = situation;
+    if let SessionState::Locked { lock_field } = session {
+        return match keyboard {
+            KeyboardHolder::Shell => lock_field.map(|field| (field, NativeFieldId::Lock)),
+            KeyboardHolder::Client => None,
+        };
     }
-    if client_holds_keyboard && !shell_prompt_up {
+    if keyboard == KeyboardHolder::Client && !shell_prompt_up {
         return None;
     }
-    if receipts_only && !speech_field_needed {
+    if fields_withheld {
         return None;
     }
     if palette_visible {
@@ -554,7 +584,8 @@ mod tests {
     #[test]
     fn only_the_lock_field_is_served_while_locked() {
         use ui::ime::{ImeWindowState, InputContent};
-        let field = || ImeWindowState::from_rect(InputContent::PASSWORD, Default::default());
+        let field =
+            || ImeWindowState::from_rect(InputContent::PASSWORD, vello::kurbo::Rect::default());
         let owner = |locked,
                      client_keyboard,
                      lock_field,
@@ -562,15 +593,23 @@ mod tests {
                      palette,
                      focused: Option<ImeWindowState>| {
             super::field_owner(
-                locked,
-                client_keyboard,
-                lock_field,
-                prompt,
-                false,
-                false,
+                FieldSituation {
+                    session: if locked {
+                        SessionState::Locked { lock_field }
+                    } else {
+                        SessionState::Unlocked
+                    },
+                    keyboard: if client_keyboard {
+                        KeyboardHolder::Client
+                    } else {
+                        KeyboardHolder::Shell
+                    },
+                    shell_prompt_up: prompt,
+                    palette_visible: palette,
+                    fields_withheld: false,
+                },
                 focused,
                 Some(7),
-                palette,
             )
         };
 

@@ -1840,14 +1840,23 @@ impl SearchRegistry {
                 (heading, row)
             })
             .collect();
-        system::group_by_kind(ranked, |(heading, _)| heading, row_budget)
+        let groups = system::group_by_kind(ranked, |(heading, _)| heading, row_budget)
             .into_iter()
             .map(|group| KindGroup {
                 kind: group.kind,
                 total: group.total,
                 results: group.results.into_iter().map(|(_, row)| row).collect(),
-            })
-            .collect()
+            });
+        if args.scope != SearchScope::ActiveApp {
+            return groups.collect();
+        }
+        // An app's search is about what the app holds: its resources lead,
+        // and what can be done follows them, however well an action's name
+        // matched.
+        let (actions, mut held): (Vec<KindGroup>, Vec<KindGroup>) =
+            groups.partition(|group| group.kind == ResourceKind::Action);
+        held.extend(actions);
+        held
     }
 }
 
@@ -2970,6 +2979,50 @@ mod tests {
             });
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].provider_id, "notes");
+        }
+
+        // Phase `an_apps_search_lists_what_it_holds_before_what_it_does`.
+        // Scoped to an app, the app's resources lead and its actions follow,
+        // even where an action's name matched better; over the workspace
+        // the best match leads.
+        {
+            let mut reg = SearchRegistry::new();
+            reg.register(Rc::new(FakeProvider {
+                id: "notes".into(),
+                kinds: vec![ResourceKind::Note, ResourceKind::Action],
+                results: vec![
+                    mk_result(ResourceKind::Action, "notes", "new", "Note", 100),
+                    mk_result(ResourceKind::Note, "notes", "n1", "Trains, a note", 5),
+                ],
+                max_score: Some(100),
+            }));
+            let chrome = mk_chrome();
+            let (doc, root) = mk_doc();
+            let kinds = |scope| -> Vec<ResourceKind> {
+                reg.query_grouped(
+                    &QueryArgs {
+                        needle: "note",
+                        scope,
+                        active_provider_id: Some("notes"),
+                        wanted_kinds: &[],
+                        chrome: &chrome.borrow(),
+                        doc: &doc,
+                        doc_root: &root,
+                    },
+                    0,
+                )
+                .into_iter()
+                .map(|group| group.kind)
+                .collect()
+            };
+            assert_eq!(
+                kinds(SearchScope::ActiveApp),
+                [ResourceKind::Note, ResourceKind::Action]
+            );
+            assert_eq!(
+                kinds(SearchScope::Workspace),
+                [ResourceKind::Action, ResourceKind::Note]
+            );
         }
 
         // Phase `active_app_scope_leaves_out_the_systems_actions`.

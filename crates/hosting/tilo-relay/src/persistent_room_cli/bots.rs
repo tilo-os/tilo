@@ -218,9 +218,8 @@ pub(super) async fn hand_to_discord(
         link_check,
     };
     let id = discord::event::event_id::authorized(&event.link_check);
-    let payload = match serde_json::to_value(&event) {
-        Ok(serde_json::Value::Object(payload)) => payload,
-        _ => return,
+    let Ok(serde_json::Value::Object(payload)) = serde_json::to_value(&event) else {
+        return;
     };
     if let Err(error) = discord
         .emit(discord::event::source::AUTHORIZED, &id, payload)

@@ -494,7 +494,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "notifications.dnd.toggle"
         | "appearance.theme.dark"
         | "appearance.theme.light"
-        | "appearance.language" => {
+        | "appearance.language"
+        | BLUETOOTH_PAIRING_DECLINE_ID => {
             contract.kind = ActionKind::Undoable;
             contract.retry = RetryPolicy::AtMostOnce;
         }
@@ -509,10 +510,6 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | DISPLAY_KEEP_ID
         | DISPLAY_REVERT_ID
         | shared_display_actions::INCLUDE_ID => contract = display_layout_contract(),
-        BLUETOOTH_PAIRING_DECLINE_ID => {
-            contract.kind = ActionKind::Undoable;
-            contract.retry = RetryPolicy::AtMostOnce;
-        }
         // Navigation and focus each advance one step when repeated.
         id if id.starts_with("navigation.axis.") || WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
             contract = ActionContract::view();
