@@ -33,6 +33,8 @@ mod startup;
 mod support;
 #[cfg(target_os = "linux")]
 mod vm;
+#[cfg(target_os = "linux")]
+mod vm_share;
 
 #[cfg(not(target_os = "linux"))]
 #[test]
