@@ -271,3 +271,55 @@ fn model_change_during_an_animation_is_published() {
     let after = with_monotonic_time(at(3), || native_frame(&mut app));
     assert_eq!(after.publications, 0, "and only that frame");
 }
+
+/// A row opening its body grows on the disclose motion: each frame of it
+/// lays the window out again, at the row's height for that frame, without
+/// rebuilding the tree.
+#[test]
+fn disclosure_row_opening_is_laid_out_on_every_frame() {
+    use crate::widget::{DisclosureRow, DisclosureState, Spacer};
+    let state = DisclosureState::new();
+    let root = Column::new()
+        .push(Box::new(
+            DisclosureRow::new("Details", Box::new(Spacer::fixed(40.0))).with_state(&state),
+        ))
+        .push(Box::new(Text::new("Below the row")));
+    let mut app = shown(Box::new(root));
+    let height = |app: &App| {
+        let mut height = 0.0;
+        let mut first = true;
+        app.root_widget.for_each_child(&mut |child| {
+            if std::mem::take(&mut first) {
+                height = child.get_rect().height();
+            }
+        });
+        height
+    };
+    let closed = height(&app);
+    let start = crate::time::now();
+    let at = |tick: u64| start + std::time::Duration::from_nanos(tick * FRAME_NS);
+    with_monotonic_time(at(0), || {
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        state.set_open(true);
+    });
+    let rebuilds = app.layout.rebuilds;
+    let mut heights = Vec::new();
+    let mut frames = Vec::new();
+    for tick in 1..=40 {
+        frames.push(with_monotonic_time(at(tick), || native_frame(&mut app)));
+        heights.push(height(&app));
+    }
+    report("disclosure", &frames);
+    eprintln!("disclosure heights: closed={closed} {heights:?}");
+    let open = *heights.last().unwrap();
+    assert!(
+        open >= closed + 40.0,
+        "the body is shown: {closed} -> {open}"
+    );
+    assert!(
+        heights.iter().any(|h| *h > closed && *h < open),
+        "it grows through heights in between: {heights:?}"
+    );
+    assert_eq!(app.layout.rebuilds, rebuilds, "the tree is not rebuilt");
+    assert_eq!(frames.iter().map(|f| f.publications).sum::<usize>(), 0);
+}
