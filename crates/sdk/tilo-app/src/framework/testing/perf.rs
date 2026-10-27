@@ -795,7 +795,7 @@ impl ui_core::app::AppSurface for SweepSurface {
     fn set_cursor(&self, _: ui_core::winit::window::CursorIcon) {}
 }
 
-/// Sweep the pointer over the sidebar rows ([`Role::TreeItem`]) of the
+/// Sweep the pointer over the sidebar rows (`TreeItem`s) of the
 /// window `A`'s live launch opens, row to row and back, `rounds` times
 /// after one unmeasured round, as a person moves the pointer down the list
 /// and up again. Each step is one motion and the frames the window runs
@@ -805,6 +805,27 @@ pub fn sidebar_sweep<A: ResourceApp>(rounds: usize) -> Result<Sweep, LaunchError
     super::drive_live_window::<A, _>(|app| {
         sweep_rows(&format!("{} sidebar hover", A::ID), app, rounds)
     })
+}
+
+/// The sidebar rows (`TreeItem`s) the window shows inside [`YOGA`],
+/// by name, with their bounds.
+#[cfg(feature = "native")]
+fn sidebar_rows(app: &ui_core::App) -> Vec<(String, ui_core::vello::kurbo::Rect)> {
+    let (width, height) = (f64::from(YOGA.0), f64::from(YOGA.1));
+    app.semantic_tree()
+        .iter()
+        .filter(|node| node.role == ui_core::a11y::Role::TreeItem)
+        .filter_map(|node| {
+            let bounds = node.bounds?;
+            let inside = bounds.x0 >= 0.0
+                && bounds.y0 >= 0.0
+                && bounds.x1 <= width
+                && bounds.y1 <= height
+                && bounds.width() > 0.0
+                && bounds.height() > 0.0;
+            inside.then(|| (node.name.clone().unwrap_or_default(), bounds))
+        })
+        .collect()
 }
 
 #[cfg(feature = "native")]
@@ -834,35 +855,25 @@ fn sweep_rows(label: &str, app: &mut ui_core::App, rounds: usize) -> Sweep {
         frame(app, &mut damage);
     }
     let _ = app.refresh_semantic_tree();
-    let (width, height) = (f64::from(YOGA.0), f64::from(YOGA.1));
-    let rows: Vec<(String, ui_core::vello::kurbo::Rect)> = app
-        .semantic_tree()
-        .iter()
-        .filter(|node| node.role == ui_core::a11y::Role::TreeItem)
-        .filter_map(|node| {
-            let bounds = node.bounds?;
-            let inside = bounds.x0 >= 0.0
-                && bounds.y0 >= 0.0
-                && bounds.x1 <= width
-                && bounds.y1 <= height
-                && bounds.width() > 0.0
-                && bounds.height() > 0.0;
-            inside.then(|| (node.name.clone().unwrap_or_default(), bounds))
-        })
-        .collect();
+    let rows = sidebar_rows(app);
     assert!(
         rows.len() >= 2,
         "{label}: a sweep needs two sidebar rows, found {rows:?}"
     );
     // Down the rows and back up, each round from the row after the last
     // round's end.
-    let path: Vec<usize> = (0..rows.len())
-        .chain((1..rows.len().saturating_sub(1)).rev())
+    let path: Vec<&(String, ui_core::vello::kurbo::Rect)> = rows
+        .iter()
+        .chain(rows.iter().rev().skip(1).take(rows.len().saturating_sub(2)))
         .collect();
-    let mut at = path.first().copied().unwrap_or_default();
-    let mut motion = |app: &mut ui_core::App, damage: &mut SurfaceDamage, to: usize| {
-        let (_, rect) = &rows[to];
-        let centre = rect.center();
+    let Some((&first, rest)) = path.split_first() else {
+        panic!("{label}: a sweep needs two sidebar rows");
+    };
+    let mut at = first;
+    let mut motion = |app: &mut ui_core::App,
+                      damage: &mut SurfaceDamage,
+                      to: &(String, ui_core::vello::kurbo::Rect)| {
+        let centre = to.1.center();
         app.surface_input(
             &surface,
             ui_core::synthetic_input::cursor_moved(centre.x, centre.y),
@@ -874,7 +885,7 @@ fn sweep_rows(label: &str, app: &mut ui_core::App, rounds: usize) -> Sweep {
     };
     let _ = motion(app, &mut damage, at);
     let _ = damage.take();
-    for &to in path.iter().skip(1) {
+    for &to in rest {
         let _ = motion(app, &mut damage, to);
         let _ = damage.take();
         at = to;
@@ -903,9 +914,9 @@ fn sweep_rows(label: &str, app: &mut ui_core::App, rounds: usize) -> Sweep {
                 .take()
                 .ok_or_else(|| damage.repainted().unwrap_or("no reason given"));
             steps.push(SweepStep {
-                from: rows[at].0.clone(),
-                to: rows[to].0.clone(),
-                rows: [rows[at].1, rows[to].1],
+                from: at.0.clone(),
+                to: to.0.clone(),
+                rows: [at.1, to.1],
                 damage: repainted,
                 unsettled,
             });

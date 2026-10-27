@@ -48,7 +48,7 @@ fn sidebar_hover() {
     sweep.print();
     for step in &sweep.steps {
         let rows = step.rows.map(|row| row.inflate(2.0, 2.0));
-        let allowed: f64 = rows.iter().map(|row| row.area()).sum();
+        let allowed: f64 = rows.iter().map(vello::kurbo::Rect::area).sum();
         assert!(
             step.damaged_area() <= allowed,
             "hovering from {:?} to {:?} repainted {:.0}px, more than its two rows' {allowed:.0}px: {:?}",
