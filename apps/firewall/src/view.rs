@@ -219,7 +219,7 @@ pub(crate) fn zone_list(config: &FirewallConfig, selected: ZoneKind, intents: &I
     NavList::new(vec![NavSection::untitled("zones", zones)])
         .selected(&zone_id(selected))
         .with_accessible_name("Firewall zones")
-        .on_select(move |id| {
+        .on_view("firewall.zones", move |id| {
             if let Some(zone) = id.strip_prefix("zone:").and_then(ZoneKind::from_name) {
                 intents.push(Intent::SelectZone(zone));
             }

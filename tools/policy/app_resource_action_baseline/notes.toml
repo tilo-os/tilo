@@ -1,5 +1,3 @@
 [ratchets.closure_control]
 "apps/notes/src/note_header.rs" = 1
-"apps/notes/src/outline.rs" = 1
-"apps/notes/src/shortcuts_overlay.rs" = 1
 "apps/notes/src/sidebar.rs" = 5

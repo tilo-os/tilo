@@ -868,9 +868,8 @@ impl TubeApp {
                 item(&Route::Settings, &t("tube-nav-settings"), Icon::Settings),
             ],
         )])
-        .with_id("tube_rail")
         .with_accessible_name(t("tube-nav-name"))
-        .on_select({
+        .on_view("tube_rail", {
             let bus = self.bus.clone();
             move |id| action::push(&bus, Action::Effect(TubeEffect::ShowScreen { screen: id }))
         });

@@ -752,9 +752,8 @@ fn sidebar(core: &Shared, requests: &Requests) -> NavList {
     let requests = Rc::clone(requests);
     let core = Rc::clone(core);
     NavList::new(Vec::new())
-        .with_id("snippets.sidebar")
         .with_accessible_name(tr("snippets-library"))
-        .on_select(move |id| {
+        .on_view("snippets.sidebar", move |id| {
             if let Some(selection) = selection_of(&id) {
                 requests.borrow_mut().push(Action::Select(selection));
             }
