@@ -160,6 +160,31 @@ fn offered(resources: &[tilo_actions::Resource]) -> Vec<String> {
         .collect()
 }
 
+/// Each action the session's broker lists in `room`, by app, for a failure
+/// to say what the session offered.
+fn session_listing(
+    listed: &crate::shell::collab_broker::AppActionBroker,
+    room: &str,
+) -> Vec<String> {
+    listed
+        .surfaces()
+        .into_iter()
+        .filter(|surface| surface.route.cluster_id == room)
+        .map(|surface| {
+            format!(
+                "{} (live {}): {:?}",
+                surface.app_id,
+                surface.live,
+                surface
+                    .actions
+                    .iter()
+                    .map(|action| format!("{} {}", action.resource, action.action))
+                    .collect::<Vec<_>>()
+            )
+        })
+        .collect()
+}
+
 /// A person's desktop hosting a fresh workspace, and their laptop holding
 /// it: the devices, the room and the person's id.
 struct NewWorkspace {
@@ -177,13 +202,21 @@ fn new_workspace(
 ) -> NewWorkspace {
     let wakes = Arc::new(Wakes::default());
     let ada = Person::new(seed);
-    home.env().set("TILO_USER_ID", ada.id());
-    let desktop = Device::start(
-        &ada,
+    // The desktop is set up as Ada's device on this machine, as a device
+    // its person set up is: its session acts as that device, and its broker
+    // signs what it admits as it.
+    let identity_root = dir.join("desktop-identity");
+    home.env()
+        .set("TILO_USER_ID", ada.id())
+        .set("TILO_IDENTITY_ROOT", &identity_root)
+        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+    let identity_dir = runtime_identity::identity_dir_from_env().expect("the identity directory");
+    ada.set_up_device(&identity_root, &identity_dir, "Ada's desktop");
+    let desktop = Device::start_as_this_host(
+        &identity_root,
         "Ada's desktop",
         &dir.join("desktop"),
         ports,
-        DeviceCapabilities::primary(),
         &wakes,
     );
     let laptop = Device::start(
@@ -223,20 +256,29 @@ fn broker_scratch() -> tempfile::TempDir {
 impl NewWorkspace {
     /// The desktop's Chat in the new workspace, launched as the session
     /// launches a window of it: nothing of the room's chat exists yet, so
-    /// the app makes it. Its broker, then `step` [`drive`]n on it.
-    fn launch_on_desktop<T: Send + 'static>(
+    /// the app makes it. Its broker, then the step `step` makes from the
+    /// actions the broker lists [`drive`]n on it.
+    fn launch_on_desktop<T: Send + 'static, S>(
         &mut self,
         dir: &std::path::Path,
         what: &str,
-        step: impl FnMut(&mut ui::App, &ui::record::RecordOwners) -> Step<T> + Send + 'static,
+        step: impl FnOnce(crate::shell::collab_broker::AppActionBroker) -> S,
     ) -> (
         crate::shell::collab_broker::BrokerHandle,
         Result<T, String>,
         Running,
-    ) {
+    )
+    where
+        S: FnMut(&mut ui::App, &ui::record::RecordOwners) -> Step<T> + Send + 'static,
+    {
         self.desktop.open_app_first(self.room, CHAT);
         let socket = dir.join("desktop-collab.sock");
         let broker = self.desktop.start_broker(&socket);
+        let step = step(
+            broker
+                .app_action_broker()
+                .expect("the session's broker lists its apps' actions"),
+        );
         let launch = self.desktop.app_launch(&socket, CHAT, self.room);
         let profile = dir.join("desktop-chat");
         let (room, person) = (self.room, self.person.clone());
@@ -315,7 +357,7 @@ fn a_new_workspaces_chat_lists_chat_and_voice_on_the_device_that_made_it_and_on_
     let (desktop_broker, made, desktop_app) = workspace.launch_on_desktop(
         dir.path(),
         "the new chat's first channels in the app that made it",
-        listing_first_channels(room),
+        |_| listing_first_channels(room),
     );
     let made = made.unwrap_or_else(|failure| {
         panic!("the chat the desktop made has no #chat and #voice: {failure}")
@@ -365,51 +407,70 @@ fn a_message_posted_in_a_new_workspaces_chat_reaches_the_persons_other_device() 
     let (desktop_broker, sent, desktop_app) = workspace.launch_on_desktop(
         dir.path(),
         "the message posted in the new chat",
-        move |app, owners| {
-            let channels = chat_channels(owners, room);
-            if !channels.as_deref().is_some_and(seeded) {
-                return Step::Waiting(format!("the channels {channels:?}"));
-            }
-            if posted.is_none() {
-                let resources = app.collect_resources();
-                let Some(post) = offering(&resources, "post") else {
-                    return Step::Waiting(format!(
-                        "no post offered; the app offers {:?}",
-                        offered(&resources)
-                    ));
-                };
-                let address = tilo_actions::ActionAddress::new(post.id.as_str(), "post");
-                let arguments = serde_json::json!({
-                    "channel": chat::record::CHAT_CHANNEL,
-                    "text": TEXT,
-                });
-                match app.invoke_local_resource_action(
-                    &address,
-                    arguments.as_object().expect("the arguments are an object"),
-                ) {
-                    Ok(started) => {
-                        posted = Some(format!("post on {} started {started:?}", post.id.as_str()));
-                    }
-                    Err(refused) => {
-                        return Step::Failed(format!(
-                            "post on {} was refused: {refused:?}",
-                            post.id.as_str()
+        move |listed| {
+            move |app, owners| {
+                let channels = chat_channels(owners, room);
+                if !channels.as_deref().is_some_and(seeded) {
+                    return Step::Waiting(format!("the channels {channels:?}"));
+                }
+                if posted.is_none() {
+                    let resources = app.collect_resources();
+                    let Some(post) = offering(&resources, "post") else {
+                        return Step::Waiting(format!(
+                            "no post offered; the app offers {:?}",
+                            offered(&resources)
+                        ));
+                    };
+                    // The session lists it among Chat's actions in the room,
+                    // where a person or an agent finds it.
+                    let in_room = room.to_string();
+                    let session_lists = listed.surfaces().into_iter().any(|surface| {
+                        surface.route.cluster_id == in_room
+                            && surface.actions.iter().any(|action| action.action == "post")
+                    });
+                    if !session_lists {
+                        return Step::Waiting(format!(
+                            "the app offers post on {}, but the session lists {:?}",
+                            post.id.as_str(),
+                            session_listing(&listed, &in_room)
                         ));
                     }
+                    let address = tilo_actions::ActionAddress::new(post.id.as_str(), "post");
+                    let arguments = serde_json::json!({
+                        "channel": chat::record::CHAT_CHANNEL,
+                        "text": TEXT,
+                    });
+                    match app.invoke_local_resource_action(
+                        &address,
+                        arguments.as_object().expect("the arguments are an object"),
+                    ) {
+                        Ok(started) => {
+                            posted =
+                                Some(format!("post on {} started {started:?}", post.id.as_str()));
+                        }
+                        Err(refused) => {
+                            return Step::Failed(format!(
+                                "post on {} was refused: {refused:?}",
+                                post.id.as_str()
+                            ));
+                        }
+                    }
                 }
-            }
-            if let Some(refused) = app.controlled_refused_action_for_test() {
-                return Step::Failed(format!(
-                    "{}; the session's action host refused it: {refused}",
-                    posted.as_deref().unwrap_or_default()
-                ));
-            }
-            match first_part_messages(owners, room) {
-                Some(messages) if messages.iter().any(|text| text == TEXT) => Step::Done(messages),
-                messages => Step::Waiting(format!(
-                    "{}; the messages {messages:?}",
-                    posted.as_deref().unwrap_or_default()
-                )),
+                if let Some(refused) = app.controlled_refused_action_for_test() {
+                    return Step::Failed(format!(
+                        "{}; the session's action host refused it: {refused}",
+                        posted.as_deref().unwrap_or_default()
+                    ));
+                }
+                match first_part_messages(owners, room) {
+                    Some(messages) if messages.iter().any(|text| text == TEXT) => {
+                        Step::Done(messages)
+                    }
+                    messages => Step::Waiting(format!(
+                        "{}; the messages {messages:?}",
+                        posted.as_deref().unwrap_or_default()
+                    )),
+                }
             }
         },
     );
