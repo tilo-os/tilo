@@ -477,7 +477,11 @@ impl ShellOverlayHost {
             desktop,
             |scene| {
                 self.draw_control_hints(scene, transform, text_renderer, theme);
-                None
+                // A hint's picture loops while it shows: each frame repaints
+                // what the hint painted, not the whole desktop.
+                self.control_hints
+                    .painted_rect()
+                    .map(|painted| vec![transform.transform_rect_bbox(painted)])
             },
         );
         overlay_part(above_quick_settings, "shell.tour", desktop, |scene| {
