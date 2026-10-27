@@ -68,9 +68,7 @@ const SCOPE_PREFIX: &str = "\u{1}scope\u{1f}";
 /// The group "Search in" rows are listed under.
 const SCOPES_KIND: &str = "Search in";
 
-mod rank;
 mod window_place;
-use rank::rank_and_group;
 pub use window_place::placement;
 
 /// The window a palette was asked for from, when a host lays several app
