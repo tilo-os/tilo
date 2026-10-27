@@ -215,7 +215,7 @@ pub fn stream(player: &Value, wanted: Option<u32>) -> Result<Stream, String> {
             let wanted = u64::from(wanted);
             formats.iter().rev().find(|(rank, ..)| *rank <= wanted)
         })
-        .or_else(|| wanted.and(formats.first()))
+        .or_else(|| wanted.and_then(|_| formats.first()))
         .or_else(|| formats.last());
     chosen
         .map(|(_, url, quality)| Stream {

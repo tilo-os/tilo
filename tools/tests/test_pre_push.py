@@ -189,14 +189,32 @@ class UnpassedTests(unittest.TestCase):
                   result("c", "cancelled"), result("d", "skipped"), result("e", "later"),
                   {"type": "error", "message": "503 from the server", "hint": "t status"}]
         self.assertEqual(pre_push.unpassed(events, ["a", "b", "c", "d", "e", "f"]), [
-            "t failed, not a check: 503 from the server (t status)",
-            "a: fails (main fails it too, as a whole: it found nothing it names, so it can't be compared "
-            "finding by finding): boom",
-            "b: fails: bang",
-            "c: cancelled before it finished",
-            "d: not run, since a check it is gated on failed",
-            "e: later, which this hook can't tell apart from a failure",
-            "f: no result; the run ended before t reported one, a failure of t, not of the change"])
+            "refused by:",
+            "  t failed, not a check: 503 from the server (t status)",
+            "  b: fails: bang",
+            "  c: cancelled before it finished",
+            "  d: not run, since a check it is gated on failed",
+            "  e: later, which this hook can't tell apart from a failure",
+            "  f: no result; the run ended before t reported one, a failure of t, not of the change",
+            "fails on main too, or flaky, not blocking:",
+            "  a: fails (main fails it too, as a whole: it found nothing it names, so it can't be compared "
+            "finding by finding): boom"])
+
+    def test_what_refuses_the_push_is_listed_apart_from_what_main_fails_too(self):
+        events = [result("clippy/agent", "fail", "not checked: shell did not compile", blame={"kind": "inherited"}),
+                  result("clippy/chat", "fail", "error: this function has too many lines",
+                         blame={"kind": "uncompared"}),
+                  result("test/notes", "fail", "timed out", blame={"kind": "flaky"})]
+        lines = pre_push.unpassed(events, ["clippy/agent", "clippy/chat", "test/notes"])
+        self.assertEqual(lines[0], "refused by:")
+        self.assertTrue(lines[1].startswith("  clippy/chat: fails (it failed as a whole"))
+        self.assertEqual(lines[2], "fails on main too, or flaky, not blocking:")
+        self.assertTrue(lines[3].startswith("  clippy/agent: fails (main fails it too"))
+        self.assertEqual(lines[4], "  test/notes: fails (flaky): timed out")
+        # Only what main fails too, as when the push passes: no headings.
+        self.assertEqual(pre_push.unpassed(events[:1], ["clippy/agent"]), [
+            "clippy/agent: fails (main fails it too, as a whole: it found nothing it names, so it can't be "
+            "compared finding by finding): not checked: shell did not compile"])
 
     def test_what_fails_on_main_too_says_how_it_was_compared(self):
         def finding(test: str, kind: str) -> dict:

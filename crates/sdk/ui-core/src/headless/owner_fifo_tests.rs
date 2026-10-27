@@ -244,6 +244,29 @@ fn close(frame: &mut FrameHarness, expected: usize) {
             && r.teardown_error.is_none())
     );
 }
+// Land every owner's first write and take up every wake its store calls.
+//
+// A store resolves a write on its own thread and only then calls the wake that
+// tells the owner to show it saved, so a sample can read the record as saved
+// while that wake is still on its way, and a wake that arrives while a test is
+// setting up the batch under test joins it. A flush returns only once every
+// queued write has had its wake called, so flushing, then servicing, and
+// repeating until the store has called nothing more leaves a queue that is
+// empty of store work rather than one that merely looks empty.
+fn settle_first_writes(host: &ProbeHost, frame: &mut FrameHarness, seen: &[Seen]) {
+    let deadline = crate::time::now() + tilo_test_env::hang_bound();
+    loop {
+        host.records.try_flush().unwrap();
+        frame.service_pending_owner_models().unwrap();
+        if !frame.has_pending_owner_models() && seen.iter().all(|owner| owner.saved.get()) {
+            return;
+        }
+        assert!(
+            crate::time::now() < deadline,
+            "every owner hears its first write saved"
+        );
+    }
+}
 #[test]
 fn one_dirty_hidden_owner_of_110_enters_only_its_actual_model_and_save_service_without_paint() {
     let host = ProbeHost::new();
@@ -259,24 +282,7 @@ fn one_dirty_hidden_owner_of_110_enters_only_its_actual_model_and_save_service_w
         &queue,
         owners.into_iter().map(|(owner, _, _)| owner).collect(),
     );
-    // Every owner's first write lands on the store's thread, which then wakes
-    // that owner to show it saved. Land them all and take those wakes up
-    // before the one wake under test, however slowly the writer runs: a
-    // write the store made durable on its own thread wakes its owner from
-    // there after the flush returns, so wait until every owner has heard
-    // its write saved.
-    host.records.try_flush().unwrap();
-    let deadline = crate::time::now() + tilo_test_env::hang_bound();
-    loop {
-        frame.service_pending_owner_models().unwrap();
-        if seen.iter().all(|s| s.saved.get()) && !frame.has_pending_owner_models() {
-            break;
-        }
-        assert!(
-            frame.park_until(deadline),
-            "every owner hears its first write saved"
-        );
-    }
+    settle_first_writes(&host, &mut frame, &seen);
     let counts = seen
         .iter()
         .map(|s| (s.syncs.get(), s.saves.get()))
@@ -523,6 +529,14 @@ fn failed_and_unvisited_snapshot_owners_precede_callback_late_owner() {
     let (c, sc, _) = prepared(&host, &queue, 5222, false);
     let (d, sd, _) = prepared(&host, &queue, 5223, false);
     let (mut frame, _, _) = frame(&queue, vec![a, b, c, d]);
+    // Each owner's first write settles on its own, and the store wakes that
+    // owner from its thread when it does. Take those wakes up first, or one
+    // can land in the batch under test and appear as an extra owner.
+    settle_first_writes(
+        &host,
+        &mut frame,
+        &[sa.clone(), sb.clone(), sc.clone(), sd.clone()],
+    );
     *sa.late.borrow_mut() = Some(sd.wake.borrow().as_ref().unwrap().clone());
     sb.panic.set(true);
     for seen in [&sa, &sb, &sc] {

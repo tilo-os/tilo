@@ -97,7 +97,7 @@ impl PlaybackPreferences {
 const OPEN_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 mod opening;
 
-use opening::*;
+use opening::{PendingMediaOpen, PendingPortalOpen, Picked, PickerChannel, PortalOpenOutcome};
 /// A file-backed local record. The source is deliberately kept only in this
 /// process; public resources expose the opaque `id` and friendly basename.
 #[derive(Clone)]
@@ -246,7 +246,10 @@ fn configure_player_settings(player: &mut VideoPlayer, preferences: PlaybackPref
 pub(crate) mod source;
 
 pub(crate) use source::demo_media_ref;
-use source::*;
+use source::{
+    DEMO_POSITION_MS, DEMO_TITLE, demo_source, local_source_token, resume_key, source_for_argument,
+    source_for_path, source_title, video_open_request,
+};
 
 #[allow(
     clippy::unwrap_used,

@@ -125,6 +125,10 @@ pub(crate) fn tile_rect(widget: &dyn Widget) -> Option<Rect> {
 mod confirm;
 use confirm::{ConfirmState, confirmation_evidence};
 
+#[path = "action_palette_ranking.rs"]
+mod ranking;
+use ranking::rank_and_group;
+
 const FIELD_SIZE: crate::widget::ControlSize = crate::widget::ControlSize::Large;
 const GAP: f64 = 10.0;
 /// One row of facet chips, a small control's height.

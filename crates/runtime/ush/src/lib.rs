@@ -77,6 +77,7 @@ pub mod relay;
 pub mod runs;
 mod runtime_import;
 pub mod seccomp;
+pub mod setup;
 pub mod shell_start;
 pub mod store;
 pub mod supervisor;

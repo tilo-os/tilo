@@ -1072,7 +1072,7 @@ fn a_snippet_is_filed_tagged_and_described_after_it_is_made() {
     ));
     view.request_for_test(Action::AddTag(id.clone(), " k8s ".into()));
     view.request_for_test(Action::AddTag(id.clone(), "k8s".into()));
-    view.request_for_test(Action::AddTag(id.clone(), "   ".into()));
+    view.request_for_test(Action::AddTag(id, "   ".into()));
     app.settle();
 
     let (_, stored) = by_title(&app, "Deploy");
@@ -1100,7 +1100,7 @@ fn a_snippet_is_filed_tagged_and_described_after_it_is_made() {
     // Taking the tag off leaves the snippet without it.
     let id = by_title(&app, "Deploy").0;
     app.surface_mut::<SnippetsApp>()
-        .request_for_test(Action::RemoveTag(id.clone(), "k8s".into()));
+        .request_for_test(Action::RemoveTag(id, "k8s".into()));
     app.settle();
     assert!(by_title(&app, "Deploy").1.tags.is_empty());
 }
@@ -1122,4 +1122,14 @@ fn a_snippet_holding_a_credential_is_treated_as_one() {
     assert!(looks_like_a_credential(&key_header));
     assert!(!looks_like_a_credential("kubectl apply -f deployment.yaml"));
     assert!(!looks_like_a_credential("SELECT * FROM tracks;"));
+}
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<SnippetsShell>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
 }

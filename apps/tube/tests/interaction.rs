@@ -1034,6 +1034,38 @@ fn a_worker_result_between_press_and_release_still_shares() {
     );
 }
 
+/// The library changes while Share is held down, by this person's own
+/// committed edit or a collaborator's: the page is rebuilt from the new
+/// library, and the release still shares.
+#[test]
+fn a_library_update_between_press_and_release_still_shares() {
+    use ui::tilo_resource::Invoke;
+    for collaborator in [false, true] {
+        let (mut app, _results, button) = hovering_copy_link();
+        let rect = app.harness().targets()["watch_copy_link"];
+        press(&mut app, winit::event::ElementState::Pressed);
+        let liked = tube::resource::Library::like(WATCH_ID, true);
+        if collaborator {
+            app.merge_peer_edit(|doc| liked.apply_local(doc).unwrap());
+        } else {
+            app.invoke(Invoke::edit(&liked).unwrap()).unwrap();
+        }
+        app.harness().relayout();
+        assert!(app.state().likes.contains(&WATCH_ID.to_owned()));
+        assert_ne!(
+            copy_link_identity(&mut app),
+            button,
+            "the library update rebuilt the page with a fresh Copy link button"
+        );
+        assert_eq!(app.harness().targets()["watch_copy_link"], rect);
+        press(&mut app, winit::event::ElementState::Released);
+        assert!(
+            link_copied(&mut app),
+            "a press, library update, release sequence submits Share (collaborator: {collaborator})"
+        );
+    }
+}
+
 // The play/pause and scrub transport now live in the shared `VideoPlayer`'s
 // controls overlay (driven by the `media::MediaEngine`), and SponsorBlock
 // auto-skip runs against the engine playhead each frame. Those paths are proven
@@ -1546,4 +1578,14 @@ fn unfetched_media_paints_shared_placeholders() {
             "actual fallback cards paint"
         );
     }
+}
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<tube::TubeShell>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
 }

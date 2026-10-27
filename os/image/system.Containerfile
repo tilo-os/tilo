@@ -16,6 +16,10 @@ COPY os/usr/share/flatpak/remotes.d/flathub.flatpakrepo /usr/share/flatpak/remot
 # remains reviewable and the initramfs does not depend on a desktop image
 # stack; a theme edit changes only this small layer.
 COPY --from=plymouth-assets /out/tilo/ /usr/share/plymouth/themes/tilo/
+# Points Plymouth's two text faces at the login screen's face, which the theme
+# carries cut to its two weights (boot-face.ttf, boot-face-strong.ttf).
+COPY --chmod=0755 os/usr/lib/dracut/modules.d/93tilo-boot-face/module-setup.sh \
+    /usr/lib/dracut/modules.d/93tilo-boot-face/module-setup.sh
 # The desktop's wallpapers (os-wallpapers) and their credits.
 COPY --from=os-wallpapers /out/backgrounds/tilo/ /usr/share/backgrounds/tilo/
 COPY --from=os-wallpapers /out/licenses/tilo-wallpapers/ /usr/share/licenses/tilo-wallpapers/
@@ -327,14 +331,16 @@ COPY \
 # offers it only while the person's key is held. A custom authselect
 # profile over the configured one, with its features, so authselect keeps
 # owning the files; an image whose base has no authselect configuration fails
-# here rather than shipping a stack that skips the daemon.
+# here rather than shipping a stack that skips the daemon. No backup of the
+# files it replaces: the base image has them, and a backup is named by the time
+# the build ran, which made the layer differ in every build.
 RUN --mount=type=bind,source=os/scripts/authselect-tilo.py,target=/run/authselect-tilo.py,ro \
     current="$(authselect current --raw)" \
     && base="${current%% *}" \
     && features="$(printf '%s' "$current" | cut -s -d' ' -f2-)" \
     && authselect create-profile tilo --base-on="$base" \
     && python3 /run/authselect-tilo.py /etc/authselect/custom/tilo \
-    && authselect select custom/tilo $features --force \
+    && authselect select custom/tilo $features --force --nobackup \
     && grep -q pam_tilo.so /etc/pam.d/system-auth \
     && grep -q pam_tilo.so /etc/pam.d/password-auth \
     && ! grep -q pam_fprintd /etc/pam.d/system-auth /etc/pam.d/password-auth

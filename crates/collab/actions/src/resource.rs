@@ -1799,10 +1799,10 @@ impl ActionSpec {
     /// What one invocation with these bound arguments is: the classifier's
     /// verdict, else the declared contract's.
     pub fn need_for_args(&self, args: &ActionArgs) -> ActionNeed {
-        let mut need = self
-            .need_of
-            .as_ref()
-            .map_or_else(|| self.contract.need(), |classify| classify(args));
+        let mut need = self.need_of.as_ref().map_or_else(
+            || self.contract.need(),
+            |classify| self.contract.scoped(classify(args)),
+        );
         need.privileged |= self.risk_for(args) == RiskLevel::Privileged;
         need
     }

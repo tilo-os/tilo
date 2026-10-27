@@ -32,6 +32,8 @@ workspace-deleted-undo = Undo
 workspace-left-toast = Left { $name }
 # The name of a workspace joined before its host told its name.
 workspace-joined-name = Shared workspace
+# The workspace made for Personal Settings when the person had no workspace only they are in.
+workspace-personal-name = Personal
 # A workspace whose host no longer lets this person in.
 workspace-needs-join-again = Join again to take part
 # A workspace that was being joined when Tilo last closed.
@@ -1128,6 +1130,9 @@ launch-error-no-display = The desktop is still starting. Try again in a moment.
 launch-error-no-workspace = Choose a workspace, then try again.
 launch-error-shell-owned-intent = Open this destination from the desktop controls.
 launch-error-identity-unavailable = The workspace identity could not be loaded. Try again.
+launch-error-app-not-in-workspace = This workspace doesn't include { $app }. An administrator can add it.
+launch-error-device-not-admitted = This device is no longer in this workspace. Join it again from the invitation.
+launch-error-app-authorship-refused = This workspace's host did not let you add { $app }.
 launch-error-registry-unreadable = The app list could not be read. Try again.
 launch-error-sandbox-supervision = The app's file permissions could not be supervised. Try again.
 launch-error-host-app-refused = This app's desktop entry cannot be started.
@@ -2345,6 +2350,7 @@ window-move-hosted-workspace = That workspace is run by its owner, and this devi
 window-move-not-permitted = That workspace doesn't let you open this app there.
 window-move-already-moving = This window is already being moved.
 window-move-nobody-to-confirm = Moving a window needs the person at this desktop to agree to what crosses, and nobody is here to ask.
+window-move-personal = Settings is yours alone, so it stays in your personal workspace.
 window-transfer-title = Move “{ $window }” to { $to }?
 window-transfer-carries = The document in “{ $window }” goes to { $to } with its full edit history, and the window reopens there where you left it.
 window-transfer-move-detail = Move: it leaves { $from }, whose history keeps a note that it moved to { $to }.

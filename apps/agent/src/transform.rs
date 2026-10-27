@@ -1,6 +1,7 @@
 //! Typed AI transforms any caller can invoke: summarise, extract, classify,
-//! a free-form prompt, and a person's request to their agent ([`Transform::Respond`]),
-//! published as the actions of one programmatic resource, [`RESOURCE_ID`].
+//! a free-form prompt, a whole task ([`Transform::Task`]), and a person's
+//! request to their agent ([`Transform::Respond`]), published as the actions
+//! of one programmatic resource, [`RESOURCE_ID`].
 //!
 //! A shortcut's `Ai` step and an app that wants a summary reach these the way
 //! they reach any other app's actions — through the session's action host,
@@ -32,6 +33,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use ui::time::Duration;
 
 use serde_json::{Map, Value, json};
+use tilo_action_policy::Rule;
 use tilo_actions::contract::{
     ActionContract, ActionKind, Audience, ConfirmationPolicy, ExecutionMode, ResultSpec,
     RetryPolicy, RiskLevel,
@@ -42,7 +44,7 @@ use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, Param
 use tilo_actions::{ActionContext, ExecutionLocus, OperationKind};
 use tilo_automation::{
     AGENT_APP_ID, AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION,
-    AGENT_RESPOND_ACTION, AGENT_SUMMARISE_ACTION, AGENT_TRANSFORM_KIND,
+    AGENT_RESPOND_ACTION, AGENT_SUMMARISE_ACTION, AGENT_TASK_ACTION, AGENT_TRANSFORM_KIND,
 };
 use ui::collaboration::{CollabRequest, ExportedAction, ExportedInput};
 
@@ -231,9 +233,34 @@ fn params_of(action: &str) -> Vec<ActionParam> {
                 "A JSON Schema the answer must satisfy. Without one the answer is text.",
             ));
         }
+        AGENT_TASK_ACTION => params = task_params(),
         _ => {}
     }
     params
+}
+
+/// A task's parameters: what to do, what it may use, and the summary's shape.
+/// It reads no caller input — it acts.
+fn task_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "instruction",
+            ParamType::Text,
+            "What the task should achieve, in the person's words; at most 4 KiB.",
+        ),
+        ActionParam::optional(
+            "allow",
+            ParamType::Array,
+            "The actions the task may use, one grant tree node each. The task can never do \
+             more than this: an action outside it is refused, and the list is never widened \
+             by the caller.",
+        )
+        .with_schema(json!({"type": "array", "items": {"type": "object"}})),
+        schema_param(
+            false,
+            "A JSON Schema the task's summary must satisfy. Without one the summary is text.",
+        ),
+    ]
 }
 
 fn result_schema_of(action: &str) -> Value {
@@ -248,13 +275,17 @@ fn result_schema_of(action: &str) -> Value {
             "description": "A value satisfying the caller's `schema`, validated before it is returned."
         }),
         AGENT_RESPOND_ACTION => respond_schema(),
+        AGENT_TASK_ACTION => json!({
+            "description": "The task's summary: text, or with `schema` a value satisfying it, \
+             validated before it is returned."
+        }),
         _ => json!({
             "description": "Text, or with `schema` a value satisfying it, validated before it is returned."
         }),
     }
 }
 
-const ACTIONS: [(&str, &str, &str); 5] = [
+const ACTIONS: [(&str, &str, &str); 6] = [
     (
         AGENT_SUMMARISE_ACTION,
         "Summarise",
@@ -274,6 +305,12 @@ const ACTIONS: [(&str, &str, &str); 5] = [
         AGENT_FREEFORM_ACTION,
         "Ask",
         "Answer a prompt about text, as text or as a value of a given schema.",
+    ),
+    (
+        AGENT_TASK_ACTION,
+        "Start a task",
+        "Work an instruction through the actions the caller allows, and answer with a \
+         typed summary of what it did.",
     ),
     (
         AGENT_RESPOND_ACTION,
@@ -404,6 +441,15 @@ pub enum Transform {
         prompt: String,
         schema: Option<Value>,
     },
+    /// A whole task: an instruction worked through the actions the caller
+    /// allows, answered with a summary in the shape it asked for.
+    Task {
+        instruction: String,
+        /// The task's authority. It is the caller's own grant, narrowed: an
+        /// action outside it is refused, and nothing the run does widens it.
+        allow: Vec<Rule>,
+        schema: Option<Value>,
+    },
     /// A person's request to their agent, with the conversation before it.
     Respond {
         request: String,
@@ -420,6 +466,10 @@ impl Transform {
                 json!({"type": "string", "minLength": 1, "maxLength": max_chars})
             }
             Self::Extract { schema }
+            | Self::Task {
+                schema: Some(schema),
+                ..
+            }
             | Self::Freeform {
                 schema: Some(schema),
                 ..
@@ -436,7 +486,9 @@ impl Transform {
                 "items": {"type": "string", "enum": choices},
                 "uniqueItems": true
             }),
-            Self::Freeform { schema: None, .. } => json!({"type": "string", "minLength": 1}),
+            Self::Freeform { schema: None, .. } | Self::Task { schema: None, .. } => {
+                json!({"type": "string", "minLength": 1})
+            }
             Self::Respond { .. } => respond_schema(),
         }
     }
@@ -468,6 +520,9 @@ impl Transform {
             Self::Freeform { prompt, .. } => format!(
                 "Do what the person who set up this transform asked, using the input:\n\n{prompt}"
             ),
+            Self::Task {
+                instruction, allow, ..
+            } => task_instruction(instruction, allow),
             Self::Respond {
                 request,
                 conversation,
@@ -499,6 +554,35 @@ impl Transform {
             self.expected()
         )
     }
+}
+
+/// What a task is asked to do, naming the authority it works within so the
+/// model plans inside it rather than at it.
+fn task_instruction(instruction: &str, allow: &[Rule]) -> String {
+    let mut task = String::from(
+        "Carry out the instruction below as a task, then answer with a short summary of what \
+         you did, in the person's language. You may use only the actions its authority \
+         allows; when the instruction asks for anything else, do the part you may and say \
+         in the summary what you could not do. Never say you did something you did not.",
+    );
+    let _ = write!(task, "\n\nThe instruction:\n<<<\n{instruction}\n>>>");
+    if allow.is_empty() {
+        task.push_str(
+            "\n\nThe task may use no actions: answer with what the instruction asks \
+                       that you cannot do.",
+        );
+    } else {
+        let rules = allow
+            .iter()
+            .map(|rule| serde_json::to_string(rule).unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let _ = write!(
+            task,
+            "\n\nThe actions it may use, one grant node each:\n{rules}"
+        );
+    }
+    task
 }
 
 /// How a request is decided, with the conversation before it and the request
@@ -632,6 +716,8 @@ struct Arguments {
     prompt: Option<String>,
     request: Option<String>,
     conversation: Option<Vec<Value>>,
+    instruction: Option<String>,
+    allow: Option<Vec<Value>>,
 }
 
 fn respond(args: &Arguments) -> Result<Transform, Failure> {
@@ -721,6 +807,7 @@ pub fn bind(
             schema: schema()?.ok_or_else(|| invalid("`extract` needs a `schema`"))?,
         },
         AGENT_CLASSIFY_ACTION => classify(&args)?,
+        AGENT_TASK_ACTION => task(&args)?,
         AGENT_RESPOND_ACTION => respond(&args)?,
         _ => {
             let prompt = args
@@ -747,7 +834,7 @@ pub fn bind(
     };
     let needs_input = !matches!(
         transform,
-        Transform::Freeform { .. } | Transform::Respond { .. }
+        Transform::Freeform { .. } | Transform::Respond { .. } | Transform::Task { .. }
     );
     if needs_input && input.as_deref().is_none_or(|text| text.trim().is_empty()) {
         return Err(invalid(
@@ -755,6 +842,46 @@ pub fn bind(
         ));
     }
     Ok(Call { transform, input })
+}
+
+/// The `task` transform: its instruction, the authority it works within, and
+/// the shape of the summary it answers with.
+fn task(args: &Arguments) -> Result<Transform, Failure> {
+    let instruction = args
+        .instruction
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if instruction.is_empty() {
+        return Err(invalid("`task` needs the `instruction`"));
+    }
+    if instruction.len() > MAX_REQUEST_BYTES {
+        return Err(failure(
+            code::TOO_LARGE,
+            "the instruction exceeds the 4 KiB limit",
+            false,
+        ));
+    }
+    let allow = args
+        .allow
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|rule| serde_json::from_value(rule.clone()).ok())
+        .collect::<Option<Vec<Rule>>>()
+        .ok_or_else(|| invalid("each `allow` entry is a grant rule"))?;
+    Ok(Transform::Task {
+        instruction,
+        allow,
+        schema: match &args.schema {
+            Some(schema) => {
+                let schema = Value::Object(schema.clone());
+                check_schema(&schema).map(|()| Some(schema))?
+            }
+            None => None,
+        },
+    })
 }
 
 /// The `classify` transform: its choices, each text of 1 to 200 characters
@@ -1197,7 +1324,7 @@ mod tests {
     #[test]
     fn the_published_surface_is_valid_programmatic_and_low_risk() {
         let descriptors = descriptors();
-        assert_eq!(descriptors.len(), 5);
+        assert_eq!(descriptors.len(), 6);
         for descriptor in &descriptors {
             assert!(descriptor.contract.validate_declaration().is_empty());
             // The audience is the contract's own declaration, not a stray tag:

@@ -36,13 +36,13 @@ use tilo_actions::{
     ActionFailure, ActionOutput, ActionSpec, Availability, InvocationId, InvocationUpdate,
 };
 use tilo_resource::{ActionRef, Effect, Id, Outbox, Path, Resource, Settled};
-use ui_core::WakeHandle;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 use ui_core::invocation_scope::{ResourceEffectScope, ResourceInvocationScope};
 use ui_core::portal::{
     ContentsOutcome, DestinationOutcome, PickRequest, PickedContents, PortalOutcome,
     SaveDestination, SaveOutcome,
 };
+use ui_core::{Arrival, WakeHandle};
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
@@ -625,6 +625,11 @@ struct Answering {
     heads: Vec<ui_core::automerge::ChangeHash>,
     custody: Option<ResourceInvocationScope>,
     worker_custody: Option<ResourceEffectScope>,
+    /// The invocation the host delivered for someone that this answers:
+    /// what another resource's action this effect calls continues
+    /// ([`EffectCx::call`]). `None` for the person at this device acting
+    /// here, and for a view's own job.
+    delivered: Option<InvocationId>,
     target: Option<ui_core::host_operation::OperationTarget>,
     /// Where the invoker asked the effect to act (`#[param(place)]`).
     place: Option<tilo_resource::Place>,
@@ -641,6 +646,7 @@ impl Answering {
             heads: Vec::new(),
             custody: None,
             worker_custody: None,
+            delivered: None,
             target: None,
             place: None,
         }
@@ -945,6 +951,59 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         Ok(move |progress: Progress| attach_approved_check_reporter(checked, progress))
     }
 
+    /// Call another resource's published action, as part of this effect,
+    /// then `then` with what it answered (or why it did not go ahead) on the
+    /// UI thread.
+    ///
+    /// The host decides the call as this effect's caller: when it delivered
+    /// this invocation for someone (a person at its palette, an agent,
+    /// another member), the call continues it and is theirs, with their
+    /// grants, in the other resource's history and their undo there. The
+    /// person at this device acting here asks as this app, which needs the
+    /// workspace's grant to it (or their answer). What the effect then
+    /// submits to its own resource continues it the same way, so the whole
+    /// composition is the caller's, each part recorded once where it
+    /// changed something.
+    ///
+    /// ```ignore
+    /// let note = Call::on("so.tilo.notes", None, &notebook, "create-page")
+    ///     .with(json!({ "title": title }));
+    /// Ok(cx.call(&note, move |_, created, cx| {
+    ///     let created = created?;
+    ///     cx.submit(Tracker::LINK.with(..));
+    ///     cx.when_landed(|_, _, _| Ok(Effected::done()))
+    /// }))
+    /// ```
+    pub fn call(
+        &mut self,
+        call: &super::Call,
+        then: impl FnOnce(&mut H, Result<ActionOutput, String>, &mut Self) -> EffectAnswer + 'static,
+    ) -> Effected {
+        let action = call.action().to_owned();
+        let answer = self.env.dispatch.call_published(self.inv.delivered, call);
+        let mut answer = Some(answer);
+        self.wait_on(
+            move || match answer.take() {
+                Some(Ok(called)) => {
+                    if let Some(outcome) = called_outcome(&called, &action) {
+                        return Ok(outcome);
+                    }
+                    answer = Some(Ok(called));
+                    Err(TryRecvError::Empty)
+                }
+                Some(Err(refused)) => Ok(Err(refused)),
+                None => Err(TryRecvError::Disconnected),
+            },
+            move |host, outcome, cx| {
+                then(
+                    host,
+                    outcome.unwrap_or_else(|| Err("the call was dropped unanswered".into())),
+                    cx,
+                )
+            },
+        )
+    }
+
     /// Wakes the app from another thread, to draw what a worker changed.
     pub fn waker(&self) -> WakeHandle {
         self.env.wake.clone()
@@ -964,11 +1023,18 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         )
     }
 
+    /// `then` as a job's completion, which continues the invocation this
+    /// effect continues for whoever the host delivered it for.
     fn then<T: Send + 'static>(
+        &self,
         then: impl FnOnce(&mut H, T, &mut Self) -> EffectAnswer + 'static,
     ) -> Box<dyn Any> {
+        let delivered = self.inv.delivered;
         let then: Then<R, H> = Box::new(move |host, value, cx| match value.downcast::<T>() {
-            Ok(value) => then(host, *value, cx),
+            Ok(value) => {
+                cx.inv.delivered = cx.inv.delivered.or(delivered);
+                then(host, *value, cx)
+            }
             Err(_) => Err("a job finished with a value of another type".into()),
         });
         Box::new(then)
@@ -986,7 +1052,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         T: Send + 'static,
         F: std::future::Future<Output = T> + Send + 'static,
     {
-        let progress = self.track(Some(Self::then(then)));
+        let progress = self.track(Some(self.then(then)));
         let future = work(progress.clone());
         let task = spawn_future(
             progress,
@@ -1009,7 +1075,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     where
         T: Send + 'static,
     {
-        let progress = self.track(Some(Self::then(then)));
+        let progress = self.track(Some(self.then(then)));
         let task = spawn_work(
             progress,
             Box::new(move |progress| Box::new(work(progress)) as Box<dyn Any + Send>),
@@ -1038,7 +1104,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         &mut self,
         then: impl FnOnce(&mut H, ActionOutput, &mut Self) -> EffectAnswer + 'static,
     ) -> EffectReply {
-        let progress = self.track(Some(Self::then(then)));
+        let progress = self.track(Some(self.then(then)));
         EffectReply {
             progress,
             completion: true,
@@ -1101,7 +1167,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         mut poll: impl FnMut() -> Result<T, TryRecvError> + 'static,
         then: impl FnOnce(&mut H, Option<T>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
-        let progress = self.track(Some(Self::then(then)));
+        let progress = self.track(Some(self.then(then)));
         if let Some(started) = self.inv.started.as_mut() {
             started.core.source = Some(Box::new(move || {
                 // The job's own channel stays open while it waits here.
@@ -1261,7 +1327,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             }
         }
         let asked = Asked(opener.open(arguments));
-        let progress = self.track(Some(Self::then(then)));
+        let progress = self.track(Some(self.then(then)));
         if let Some(started) = self.inv.started.as_mut() {
             started.core.source = Some(Box::new(move || {
                 // The job's own channel stays open while it waits here.
@@ -1756,6 +1822,30 @@ impl Drop for ActingFor {
     }
 }
 
+/// What `called`, a call of another resource's `action`, came to once it
+/// ended: its output, or why it did not go ahead. `None` while it runs.
+fn called_outcome(
+    called: &ui_core::InvocationCall,
+    action: &str,
+) -> Option<Result<ActionOutput, String>> {
+    called.with(|arrival| match arrival {
+        Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => Some(Ok(output.clone())),
+        Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
+            Some(Err(format!("{action}: {}", error.message)))
+        }
+        Arrival::Ready(InvocationUpdate::Cancelled { .. }) => {
+            Some(Err(format!("{action} was cancelled")))
+        }
+        Arrival::Failed(error) => Some(Err(format!("{action}: {error}"))),
+        Arrival::Pending { .. }
+        | Arrival::Ready(
+            InvocationUpdate::Accepted { .. }
+            | InvocationUpdate::Progress { .. }
+            | InvocationUpdate::Item { .. },
+        ) => None,
+    })
+}
+
 /// An effect's failure told only by its message.
 fn failure(message: String) -> ActionFailure {
     ActionFailure {
@@ -2009,6 +2099,11 @@ fn invocation_parts(
     let (request, custody) = op.with_custody();
     let custody = owned_scope(custody);
     let (worker_custody, lent) = custody_scopes(custody.as_ref())?;
+    let delivered = custody
+        .as_ref()
+        .map(ResourceInvocationScope::invocation)
+        .or_else(ui_core::invocation_scope::delivered_invocation)
+        .filter(|delivered| *delivered == request.invocation);
     // Keep an immutable snapshot for this effect invocation, including any
     // pending edits. The effect may also read a historical version; neither
     // read borrows the author's document mutably.
@@ -2021,6 +2116,7 @@ fn invocation_parts(
             heads,
             custody,
             worker_custody,
+            delivered,
             target: op.target().cloned(),
             place,
         },

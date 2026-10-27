@@ -69,17 +69,37 @@ pub(crate) fn control_height(tr: &mut TextRenderer, theme: &Theme) -> f64 {
         .max(f64::from(line) + 2.0 * f64::from(theme.tokens.spacing.s2))
 }
 
+/// Which of the editor's side panels are open.
+#[derive(Clone, Copy, Default)]
+pub struct Panels {
+    pub problems: bool,
+    pub outline: bool,
+}
+
+/// The one pane a narrow window shows.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum Pane {
+    #[default]
+    Editor,
+    Preview,
+}
+
+/// What the editor holds, as the bar shows it: the document's name, whether
+/// the source is not what was last written, the problem count, which panels
+/// are open, and the pane a narrow window shows.
+#[derive(Clone, Default)]
+pub struct Held {
+    pub name: String,
+    pub edited: bool,
+    pub problems: usize,
+    pub panels: Panels,
+    pub pane: Pane,
+}
+
 pub struct Chrome {
     queue: Queue,
     close_problems: Button,
-    /// The window's document, as the bar shows it: its name, and whether the
-    /// source is not what was last written.
-    name: String,
-    edited: bool,
-    problems: usize,
-    problems_shown: bool,
-    outline_shown: bool,
-    preview_shown: bool,
+    held: Held,
     /// The Problems panel's close button is laid out and in the tree.
     close: bool,
     structure_dirty: bool,
@@ -114,12 +134,7 @@ impl Chrome {
                 move || queue.borrow_mut().push(Command::ToggleProblems)
             }),
             queue,
-            name: String::new(),
-            edited: false,
-            problems: 0,
-            problems_shown: false,
-            outline_shown: false,
-            preview_shown: false,
+            held: Held::default(),
             close: false,
             structure_dirty: true,
         }
@@ -149,21 +164,8 @@ impl Chrome {
     /// Make the bar say what the editor holds: the document's name and
     /// whether it is unsaved, the problem count and which panels are open,
     /// and the pane a narrow window shows.
-    pub fn sync(
-        &mut self,
-        name: &str,
-        edited: bool,
-        problems: usize,
-        problems_shown: bool,
-        outline_shown: bool,
-        preview_shown: bool,
-    ) {
-        self.name = name.to_owned();
-        self.edited = edited;
-        self.problems = problems;
-        self.problems_shown = problems_shown;
-        self.outline_shown = outline_shown;
-        self.preview_shown = preview_shown;
+    pub fn sync(&mut self, held: Held) {
+        self.held = held;
     }
 
     /// The window bar's slots for what the editor holds now.
@@ -179,22 +181,22 @@ impl Chrome {
         };
         WindowToolbar {
             location: Some(ToolbarLocation {
-                label: self.name.clone(),
+                label: self.held.name.clone(),
                 // The file's name is the location's value too: the bar edits
                 // it in place, and a committed name renames the file.
-                value: self.name.clone(),
+                value: self.held.name.clone(),
                 editable: true,
                 name: lookup("typst-document-name"),
                 go_name: lookup("typst-rename"),
                 // A document with changes not yet written says so, the one
                 // way every editor does.
-                edited: self.edited,
+                edited: self.held.edited,
                 ..ToolbarLocation::default()
             }),
             views: Some(ToolbarViews {
                 name: lookup("typst-view"),
                 choices: vec![editor, preview],
-                chosen: if self.preview_shown {
+                chosen: if self.held.pane == Pane::Preview {
                     PREVIEW_PANE.to_owned()
                 } else {
                     EDITOR_PANE.to_owned()
@@ -205,11 +207,11 @@ impl Chrome {
                 ToolbarAction::new(
                     PROBLEMS,
                     Icon::TriangleAlert.name(),
-                    problems_name(self.problems),
+                    problems_name(self.held.problems),
                 )
-                .on(self.problems_shown),
+                .on(self.held.panels.problems),
                 ToolbarAction::new(OUTLINE, Icon::List.name(), lookup("typst-outline"))
-                    .on(self.outline_shown),
+                    .on(self.held.panels.outline),
                 ToolbarAction::new(ZOOM_OUT, Icon::Minus.name(), lookup("typst-zoom-out")),
                 ToolbarAction::new(ZOOM_IN, Icon::Plus.name(), lookup("typst-zoom-in")),
                 ToolbarAction::new(FIT, Icon::Maximize.name(), lookup("typst-fit-width")),
@@ -240,7 +242,7 @@ impl Chrome {
     }
 
     /// What one thing done in the bar asks the editor to do.
-    fn handle(&mut self, event: &ToolbarEvent) -> bool {
+    fn handle(&self, event: &ToolbarEvent) -> bool {
         let command = match event {
             ToolbarEvent::Action { id } => match id.as_str() {
                 COMPILE => Some(Command::Compile),

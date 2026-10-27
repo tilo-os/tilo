@@ -1631,14 +1631,11 @@ impl CallerInvocation {
 }
 
 impl CapnpBrokerState {
-    /// The caller of the invocation `running` that this broker delivered to
-    /// the connection `peer_id` and that still runs: who an edit its effect
-    /// submits is admitted for. `None` when the connection runs no such
-    /// invocation, or its caller was known only by certificate.
-    /// Who an invoke continuing a running invocation is admitted for: that
-    /// invocation's own caller, with their grants. `None` for any other
-    /// request; the refusal to answer with when the connection runs no such
-    /// invocation.
+    /// Who an invoke an agent's connection makes continuing a running
+    /// invocation is admitted for: that invocation's own caller, with their
+    /// grants. `None` for any other request; the refusal to answer with when
+    /// the connection runs no such invocation. An application's connection
+    /// is decided by [`Self::app_request_caller`].
     fn continued_caller(
         &self,
         peer_id: u64,
@@ -1661,6 +1658,10 @@ impl CapnpBrokerState {
         }))
     }
 
+    /// The caller of the invocation `running` that this broker delivered to
+    /// the connection `peer_id` and that still runs. `None` when the
+    /// connection runs no such invocation, two callers share its id, or its
+    /// caller no longer stands.
     pub(crate) fn continuing_caller(
         &self,
         peer_id: u64,
@@ -5563,7 +5564,7 @@ impl CapnpBrokerState {
             && (!matches!(
                 offered.1.operation_kind,
                 tilo_actions::OperationKind::Document | tilo_actions::OperationKind::View
-            ) && offered.1.contract.kind != tilo_actions::ActionKind::Read
+            ) && offered.1.contract.need().kind != tilo_actions::ActionKind::Read
                 || (offered.1.operation_kind != tilo_actions::OperationKind::Document
                     && local_report.is_some_and(|report| !report.mutation_hashes.is_empty()))
                 || provenance.durable.is_some()
@@ -9194,25 +9195,28 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let route = self.route();
         let person = current.caller(&route.cluster_id);
-        // An app's open of an application is decided as the caller of the
-        // invocation it continues, under that invocation's custody, else as
-        // the person whose press it follows; an edit an effect submits while
-        // running for someone is theirs.
-        let (decided, continued_origin) = match current
-            .agent_id
-            .is_none()
-            .then(|| {
-                self.state
-                    .app_open_caller(self.peer_id, &route.app_id, &person, &request.message)
-            })
-            .flatten()
-        {
-            Some(Ok((caller, origin))) => (Some(Ok(caller)), origin),
-            Some(Err(refused)) => (Some(Err(refused)), None),
-            None => (
+        // An app's request continuing an invocation someone asked of it (an
+        // edit its effect submits, another app's action its effect calls) is
+        // decided as that invocation's caller, under its custody; its open
+        // of an application, else as the person whose press it follows.
+        // Anything else, including what continues an invocation the app made
+        // of itself, is the app's own door's to decide.
+        let (decided, continued_origin) = if current.agent_id.is_none() {
+            match self.state.app_request_caller(
+                self.peer_id,
+                &route.app_id,
+                &person,
+                &request.message,
+            ) {
+                Some(Ok((caller, origin))) => (Some(Ok(caller)), origin),
+                Some(Err(refused)) => (Some(Err(refused)), None),
+                None => (None, None),
+            }
+        } else {
+            (
                 self.state.continued_caller(self.peer_id, &request.message),
                 None,
-            ),
+            )
         };
         let caller = match decided {
             Some(Ok(caller)) => caller,
@@ -12059,7 +12063,7 @@ impl<'a> DirectoryQuestion<'a> {
             resource,
             action,
             field: contract.field.as_deref(),
-            kind: contract.kind,
+            kind: contract.need().kind,
             // Read kind alone does not make a private UI view public.
             // A declared document read, however, discloses document state
             // under the caller's ordinary resource policy, not owner UI.

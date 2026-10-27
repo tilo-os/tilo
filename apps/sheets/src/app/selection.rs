@@ -1,6 +1,9 @@
 //! What is selected: the declarations presence publishes for it, and the sentence the status bar reads off the selection.
 
-use super::*;
+use super::{
+    CellFormat, CellValue, ChartKind, SelectionKey, SelectionSummary, SheetsApp, Workbook, actions,
+    format_value, formula, verbs,
+};
 
 impl SheetsApp {
     /// The edits bound to where the user is — the selection, the active cell
@@ -218,7 +221,11 @@ impl SheetsApp {
 
     /// Select `from`..`to` as a drag over the grid would.
     #[cfg(test)]
-    pub(crate) fn select_range_for_test(&mut self, from: Addr, to: Addr) {
+    pub(crate) fn select_range_for_test(
+        &mut self,
+        from: crate::model::Addr,
+        to: crate::model::Addr,
+    ) {
         self.grid.select_range_public(from, to);
     }
 
