@@ -398,6 +398,12 @@ fn a_message_posted_in_a_new_workspaces_chat_reaches_the_persons_other_device() 
                     }
                 }
             }
+            if let Some(refused) = app.controlled_refused_action_for_test() {
+                return Step::Failed(format!(
+                    "{}; the session's action host refused it: {refused}",
+                    posted.as_deref().unwrap_or_default()
+                ));
+            }
             match first_part_messages(owners, room) {
                 Some(messages) if messages.iter().any(|text| text == TEXT) => Step::Done(messages),
                 messages => Step::Waiting(format!(
