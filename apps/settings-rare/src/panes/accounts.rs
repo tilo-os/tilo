@@ -630,6 +630,11 @@ impl AccountsArea {
         self.read.is_finished()
     }
 
+    /// What waits off the UI thread for the started read to end.
+    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
+        self.read.wait()
+    }
+
     pub(crate) fn with_account_root(mut self, root: AccountRoot) -> Self {
         self.account_root = Some(root);
         self
