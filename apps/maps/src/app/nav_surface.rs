@@ -177,24 +177,7 @@ impl MapsApp {
         let (s1, s2, s4) = (f64::from(sp.s1), f64::from(sp.s2), f64::from(sp.s4));
         let pad = s4;
 
-        // The facts OpenStreetMap has for this place.
-        let address_label = failure::t("maps-address");
-        let hours_label = failure::t("maps-hours");
-        let phone_label = failure::t("maps-phone");
-        let website_label = failure::t("maps-website");
-        let mut facts: Vec<PropertyRow<'_>> = Vec::new();
-        if !poi.address.is_empty() {
-            facts.push(PropertyRow::new(&address_label, &poi.address));
-        }
-        if let Some(hours) = &poi.opening_hours {
-            facts.push(PropertyRow::new(&hours_label, hours));
-        }
-        if let Some(phone) = &poi.phone {
-            facts.push(PropertyRow::new(&phone_label, phone).with_kind(TextKind::Numeric));
-        }
-        if let Some(web) = &poi.website {
-            facts.push(PropertyRow::new(&website_label, web).with_kind(TextKind::Identifier));
-        }
+        let facts = poi_facts(&poi);
         let properties = PropertyListFace::new(&facts);
 
         let area = self.visible_map_area();
@@ -274,4 +257,27 @@ impl MapsApp {
             Some(Hit::PoiDirections),
         );
     }
+}
+
+/// The facts OpenStreetMap has for `poi`, in the order the card lists them,
+/// each labelled with the name a person reads it by.
+fn poi_facts(poi: &crate::model::Poi) -> Vec<PropertyRow<'_>> {
+    let address_label = failure::t("maps-address");
+    let hours_label = failure::t("maps-hours");
+    let phone_label = failure::t("maps-phone");
+    let website_label = failure::t("maps-website");
+    let mut facts: Vec<PropertyRow<'_>> = Vec::new();
+    if !poi.address.is_empty() {
+        facts.push(PropertyRow::new(&address_label, &poi.address));
+    }
+    if let Some(hours) = &poi.opening_hours {
+        facts.push(PropertyRow::new(&hours_label, hours));
+    }
+    if let Some(phone) = &poi.phone {
+        facts.push(PropertyRow::new(&phone_label, phone).with_kind(TextKind::Numeric));
+    }
+    if let Some(web) = &poi.website {
+        facts.push(PropertyRow::new(&website_label, web).with_kind(TextKind::Identifier));
+    }
+    facts
 }
