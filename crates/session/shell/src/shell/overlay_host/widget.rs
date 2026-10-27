@@ -263,6 +263,7 @@ impl Widget for ShellOverlayHost {
         // Before the resync, so what an action moved is spliced this frame.
         self.run_requested_shortcut_actions();
         self.run_device_local_actions();
+        self.run_window_controls();
         self.latch_overview_transition();
         steps.mark("launchpad-and-shortcut-actions");
         // Workspace switch before anything walking `group_row_ptrs` (it

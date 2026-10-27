@@ -2740,6 +2740,12 @@ impl SearchProvider for LiveAppActionsProvider {
         true
     }
 
+    /// Its rows of the focused app are the broker's copy of what the app's
+    /// window publishes: a window the shell reads itself answers instead.
+    fn gives_way_to_window(&self) -> bool {
+        true
+    }
+
     fn owns_tab(&self, tab_id: u64, chrome: &crate::shell::chrome_state::ChromeState) -> bool {
         chrome.active_tab_id() == Some(tab_id)
             && chrome.active_app_id().is_some_and(|active| {

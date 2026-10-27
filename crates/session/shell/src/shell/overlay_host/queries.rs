@@ -1019,6 +1019,18 @@ impl ShellOverlayHost {
         );
     }
 
+    /// Hand `invocation` to the app of tab `tab`'s window, as a row chosen
+    /// in its search does: how a scene makes what the app holds through
+    /// the app's own actions. `false` when no window here shows the tab.
+    pub fn run_in_window_for_shots(
+        &mut self,
+        tab: crate::shell::state::TabId,
+        invocation: tilo_actions::ControlInvocation,
+    ) -> bool {
+        self.desktop_surface_mut()
+            .is_some_and(|surface| surface.queue_window_control(tab, invocation).is_ok())
+    }
+
     /// Single-frame settle for the palette's entry animation, so a
     /// one-frame headless scene doesn't land at alpha 0 — which is
     /// indistinguishable from no overlay at all. Test-only.

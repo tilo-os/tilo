@@ -1472,6 +1472,7 @@ search-action-shortcut-help-toggle-subtitle = F1 öffnet sie überall; Super+/ i
 search-action-desktop-tour-open = Desktop-Tour starten
 search-action-desktop-tour-open-subtitle = Die dreiminütige Einführung in Navigation, Organisation und Zusammenarbeit noch einmal ansehen
 search-provider-device-local = Private Fenster
+search-provider-focused-window = Dieses Fenster
 search-action-feedback-open = Feedback geben
 search-action-feedback-open-subtitle = Ein Problem oder eine Idee zum Fenster im Vordergrund melden; du prüfst, was gesendet wird
 search-action-feedback-point = Feedback zu einem Teil geben

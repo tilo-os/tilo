@@ -986,6 +986,8 @@ pub struct ChromeState {
     /// Invocations of those actions waiting for the overlay host.
     pub(crate) device_local_invocations:
         Vec<crate::shell::device_local_actions::DeviceLocalInvocation>,
+    /// Rows chosen in the focused window's search, for the overlay host.
+    pub(crate) window_controls: Vec<crate::shell::search::providers::focused_window::WindowControl>,
     cancel_tab_drag_requested: bool,
     axis_navigation_enabled: bool,
     axis_gather_requested: bool,
@@ -1212,6 +1214,7 @@ impl ChromeState {
             device_local_windows: Vec::new(),
             device_local_revision: 0,
             device_local_invocations: Vec::new(),
+            window_controls: Vec::new(),
             cancel_tab_drag_requested: false,
             axis_navigation_enabled: false,
             axis_gather_requested: false,
