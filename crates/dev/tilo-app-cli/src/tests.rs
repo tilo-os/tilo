@@ -2126,15 +2126,17 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         assert_eq!(std::fs::read_to_string(library_path).unwrap(), before);
     }
 
-    // Phase: a_message_is_one_key_and_a_plural_form_is_not.
+    // Phase: a_message_is_one_key_and_a_term_is_no_key.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
         create_app(request(app.clone())).unwrap();
         let source = app.join("locales/en-US.ftl");
         let mut catalog = std::fs::read_to_string(&source).unwrap();
+        // A plural message is one message: its categories are selectors
+        // inside it, not ids of their own.
         catalog.push_str(
-            "\nstarter-books =\n    { $count ->\n        [one] One book\n       *[other] { $count } books\n    }\n-item-term = a term, not a message\n",
+            "\nstarter-books =\n    { $count ->\n        [one] One book\n       *[other] { $count } books\n    }\nstarter-add-one = +1\n-item-term = a term, not a message\n",
         );
         std::fs::write(&source, &catalog).unwrap();
         sync_locale_catalogs(&LocaleSyncRequest {
@@ -2149,7 +2151,11 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         let keys = declared_key_names(&registry).unwrap();
         assert!(
             keys.contains(&"STARTER_BOOKS".to_owned()),
-            "a message with plural forms is one key: {keys:?}"
+            "a message with plural categories is one key: {keys:?}"
+        );
+        assert!(
+            keys.contains(&"STARTER_ADD_ONE".to_owned()),
+            "a message whose id ends in `-one` is still a message: {keys:?}"
         );
         assert!(
             !keys
@@ -2158,7 +2164,7 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
             "a term is no control's label: {keys:?}"
         );
         assert_eq!(label_key_name("starter-books"), "STARTER_BOOKS");
-        assert_eq!(label_key_name("starter-books-one"), "");
+        assert_eq!(label_key_name("starter-add-one"), "STARTER_ADD_ONE");
         assert_eq!(label_key_name("-brand"), "");
     }
 

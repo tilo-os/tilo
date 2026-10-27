@@ -9,6 +9,7 @@ ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
 
 pub mod keys {
     pub const COUNTER_ADD: ui::i18n::LabelKey = ui::i18n::LabelKey::new("counter-add");
+    pub const COUNTER_ADD_ONE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("counter-add-one");
     pub const COUNTER_ADD_TEN: ui::i18n::LabelKey = ui::i18n::LabelKey::new("counter-add-ten");
     pub const COUNTER_COUNTER_COUNT: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("counter-counter-count");
@@ -17,4 +18,6 @@ pub mod keys {
     pub const COUNTER_RESET: ui::i18n::LabelKey = ui::i18n::LabelKey::new("counter-reset");
     pub const COUNTER_RESET_BUTTON: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("counter-reset-button");
+    pub const COUNTER_SUBTRACT_ONE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("counter-subtract-one");
 }
