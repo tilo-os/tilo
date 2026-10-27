@@ -37,6 +37,7 @@ pub mod profile_card;
 pub mod records;
 pub mod resolver;
 pub mod search;
+pub mod secrets;
 pub mod session_commands;
 pub mod shortcuts;
 pub mod strip_indicators;

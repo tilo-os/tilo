@@ -11,6 +11,7 @@ pub use tilo_app::feedback::{Control, Destination, FeedbackHost, ShownRecord, Su
 use tilo_app::feedback_composer::{self, FeedbackServices};
 use ui::{application::AppComponent, launch::LaunchError};
 
+pub mod recorder;
 pub mod transport;
 
 pub const PACKAGE: &str = "so.tilo.feedback-composer";
@@ -125,6 +126,17 @@ pub fn focused(tree: &DesktopTree, name: impl Fn(&str) -> Option<String>) -> Foc
         Some(tile) if is_composer(tile) => Focused::Composer,
         Some(tile) => subject(tile, name).map_or(Focused::Nothing, Focused::App),
     }
+}
+
+/// What a report about the parts picked in `draft` is about, for a
+/// recording of its window: the window in front (`front`), when every pick
+/// is in its app; otherwise no window, so none is recorded.
+pub fn picked_subject(draft: &tilo_app::feedback::ReportDraft, front: Focused) -> Option<Subject> {
+    let Focused::App(subject) = front else {
+        return None;
+    };
+    (!draft.picks.is_empty() && draft.picks.iter().all(|pick| pick.app == subject.app))
+        .then_some(subject)
 }
 
 /// The window in front of `tree`, by its tab.
@@ -282,6 +294,44 @@ mod focus_tests {
         assert_eq!(
             composer_tab(&desktop),
             Some((WorkspaceId(1), StripId(2), 11, 11))
+        );
+    }
+
+    /// Picked parts are about the window in front only when every one is
+    /// in its app: a recording never records a window nothing was picked in.
+    #[test]
+    fn picked_parts_are_about_the_window_in_front_only_when_all_are_in_it() {
+        use tilo_app::feedback::report::{Pick, ReportDraft};
+        let notes = Subject {
+            record: Some(ShownRecord {
+                workspace: "w".into(),
+                record: "note-1".into(),
+            }),
+            ..Subject::of_app("so.tilo.notes", "Notes")
+        };
+        let draft = |apps: &[&str]| ReportDraft {
+            picks: apps
+                .iter()
+                .map(|app| Pick {
+                    app: (*app).into(),
+                    ..Pick::default()
+                })
+                .collect(),
+            ..ReportDraft::default()
+        };
+        let front = || Focused::App(notes.clone());
+        assert_eq!(
+            picked_subject(&draft(&["so.tilo.notes", "so.tilo.notes"]), front()),
+            Some(notes.clone())
+        );
+        assert_eq!(
+            picked_subject(&draft(&["so.tilo.notes", "so.tilo.chat"]), front()),
+            None
+        );
+        assert_eq!(picked_subject(&draft(&[]), front()), None);
+        assert_eq!(
+            picked_subject(&draft(&["so.tilo.notes"]), Focused::Composer),
+            None
         );
     }
 }

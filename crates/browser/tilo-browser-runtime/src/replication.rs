@@ -383,6 +383,29 @@ fn room(id: u32) -> Option<Rc<RefCell<Room>>> {
     ROOMS.with_borrow(|rooms| rooms.get(&id).cloned())
 }
 
+/// The room peer `id` replicates, by its uuid.
+pub(crate) fn room_uuid(id: u32) -> Option<String> {
+    Some(room(id)?.borrow().uuid.clone())
+}
+
+/// Wire record `record` of `app` in peer `id`'s room `workspace`, saved as
+/// the room committed it: without edits still being typed.
+pub(crate) fn committed_record(
+    id: u32,
+    workspace: &str,
+    app: &str,
+    record: &str,
+) -> Option<Vec<u8>> {
+    if room_uuid(id)? != workspace {
+        return None;
+    }
+    let mut doc = record_document(id, app, record)?;
+    if doc.pending_ops() > 0 {
+        doc.rollback();
+    }
+    Some(doc.save())
+}
+
 /// Ask peer `id`'s room `request` through the host's rooms door; `done`
 /// gets its answer.
 ///
