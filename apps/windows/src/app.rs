@@ -1574,8 +1574,7 @@ impl WindowsApp {
                         .collect(),
                     selected,
                 )
-                .with_id("windows-route")
-                .on_change(move |index| {
+                .on_view("windows-route", move |index| {
                     if let Some(route) = Route::ALL.get(index) {
                         intents.push(Intent::Route(*route));
                     }
