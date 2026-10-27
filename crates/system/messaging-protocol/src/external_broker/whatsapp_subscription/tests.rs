@@ -20,7 +20,12 @@ async fn subscribed_handler_drains_exact_receipts_into_private_history_without_n
     assert_eq!(subscription.next().await, Ok(1));
     let history = broker.client().history();
     assert_eq!(
-        history.read(fixture.route.clone()).await.unwrap().messages[0].delivery,
+        history
+            .read(fixture.route.clone(), None)
+            .await
+            .unwrap()
+            .messages[0]
+            .delivery,
         Some(Delivery::RecipientDelivered)
     );
     subscription
@@ -31,7 +36,12 @@ async fn subscribed_handler_drains_exact_receipts_into_private_history_without_n
         ))));
     assert_eq!(subscription.next().await, Ok(1));
     assert_eq!(
-        history.read(fixture.route.clone()).await.unwrap().messages[0].delivery,
+        history
+            .read(fixture.route.clone(), None)
+            .await
+            .unwrap()
+            .messages[0]
+            .delivery,
         Some(Delivery::RecipientRead)
     );
     fixture.revoked.store(true, Ordering::SeqCst);
@@ -72,7 +82,7 @@ async fn subscriptions_refuse_foreign_sources_and_supervisor_loss() {
             .broker
             .client()
             .history()
-            .read(fixture.route.clone())
+            .read(fixture.route.clone(), None)
             .await
             .unwrap()
             .messages[0]
@@ -109,7 +119,7 @@ async fn overflow_or_oversized_metadata_fails_without_promoting_queued_evidence(
         broker
             .client()
             .history()
-            .read(fixture.route.clone())
+            .read(fixture.route.clone(), None)
             .await
             .unwrap()
             .messages[0]
@@ -139,7 +149,7 @@ async fn wrong_recipient_and_persistence_failure_stop_subscription_without_false
         broker
             .client()
             .history()
-            .read(fixture.route.clone())
+            .read(fixture.route.clone(), None)
             .await
             .unwrap()
             .messages[0]
@@ -160,7 +170,11 @@ async fn wrong_recipient_and_persistence_failure_stop_subscription_without_false
     assert!(fresh.next().await.is_err());
     assert_eq!(fresh.next().await, Err(SendError::Unavailable));
     assert_eq!(
-        broker.client().history().read(fixture.route.clone()).await,
+        broker
+            .client()
+            .history()
+            .read(fixture.route.clone(), None)
+            .await,
         Err(tilo_messaging::HistoryError::Unavailable)
     );
     assert_eq!(

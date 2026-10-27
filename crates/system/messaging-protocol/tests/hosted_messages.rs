@@ -295,7 +295,7 @@ async fn revoked_signal_authority_after_native_send_retains_uncertainty_without_
     revoked.store(false, Ordering::SeqCst);
     let history = client
         .history()
-        .read(route())
+        .read(route(), None)
         .await
         .expect("restored access");
     assert_eq!(history.messages.len(), 1);
@@ -328,7 +328,7 @@ async fn revoked_signal_authority_after_native_send_retains_uncertainty_without_
     let client = service.client();
     let history = client
         .history()
-        .read(route())
+        .read(route(), None)
         .await
         .expect("durable uncertain state");
     assert_eq!(
