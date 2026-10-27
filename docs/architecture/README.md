@@ -113,6 +113,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `search.md` | providers and per-resource-type rendering |
 | `tasks.md` | the workspace's issues: nested issues, the board, threads, agent runs as issue actions |
 | `agents.md` | agent identity, access, tasks, providers, local models and MCP |
+| `external-services.md` | services outside Tilo (mail, code hosts, banks, MCP servers) as typed resources: connectors, the typed/untyped boundary, credentials, sync versus live calls, attribution |
 | `agent-host.md` | agent MCP beside a local enrolled relay on a foreign Linux host (no desktop/OS) |
 | `bots.md` | bots and connectors: headless Shortcuts with identity, derived grants, the trigger dispatcher, the runner, appearance, the bot directory |
 | `discord-bridge.md` | the Discord connector and bridge bot, layout and role ownership, moderation mapping, and the persistent public room it bridges |
