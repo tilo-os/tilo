@@ -202,11 +202,12 @@ def policy_checks(root: Path = ROOT) -> str:
 
 
 # What `t-toml` reads besides the files below, all of which t_toml_reads adds: t.toml, the
-# generators and their data, the workspace's manifests (cargo metadata), the apps and collections
-# the size checks are made from and the runtime's budget.
+# generators and their data, the workspace's manifests (cargo metadata), its Rust sources (which
+# packages differ between architectures, package_sets.per_arch), the apps and collections the size
+# checks are made from and the runtime's budget.
 T_TOML_READS = ["t.toml", "tools/ci/suites.toml", "tools/ci/products.toml", "tools/ci/publish/**",
                 "tools/policy/steps.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image",
-                "Cargo.toml", "**/Cargo.toml", "Cargo.lock", "apps/*/tilo-app.toml", "examples/apps/*/tilo-app.toml",
+                "Cargo.toml", "**/Cargo.toml", "Cargo.lock", "**/*.rs", "apps/*/tilo-app.toml", "examples/apps/*/tilo-app.toml",
                 "dist/apps/app-collections.toml", "tools/apps/app_release.py",
                 "tools/perf/runtime-size-budget/budget.toml", suites.SECURITY_MANIFEST]
 
@@ -225,7 +226,8 @@ def t_toml_reads(manifest: suites.Manifest, root: Path = ROOT) -> str:
     for step in policy_steps.load(root):
         if step.covered_by is None:
             reads |= set(policy_steps.own_files(step, root))
-    return f"inputs = {array([*T_TOML_READS, *sorted(reads - set(T_TOML_READS))])}\n"
+    reads = {path for path in reads - set(T_TOML_READS) if not path.endswith(".rs")}
+    return f"inputs = {array([*T_TOML_READS, *sorted(reads)])}\n"
 
 
 def array(values: list[str]) -> str:
@@ -903,10 +905,6 @@ def cargo_check(name: str, spec: dict, manifest: suites.Manifest, packages: dict
     ]) + "\n"
 
 
-# The packages the test family runs on x86_64 only, as `test-x86_64`.
-X86_64_ONLY_TESTS = ["launcher", "shell", "store", "tilo-sandbox", "tilo-vmd"]
-
-
 def untested(packages: dict[str, dict]) -> list[str]:
     """Packages with no test target of their own (`test = false` and no integration tests):
     another package's tests compile their code in, and nextest refuses to run them alone."""
@@ -930,13 +928,41 @@ IDLE_TESTS = ["canvas", "music", "pdf-viewer", "tilo-ui"]
 IDLE_LINTS = ["music", "tilo-messaging-protocol"]
 
 
+# The architectures a package whose code differs between them (package_sets.per_arch) is tested
+# and linted on, each by a family of its own (`test-<arch>`, `clippy-<arch>`): a result on one
+# says nothing about the other, which `arch=any` would let it stand for.
+ARCHES = ("x86_64", "aarch64")
+
+
+def nested_sandboxes() -> list[str]:
+    """The packages the `test` family runs with nested sandboxes, which t.toml names by hand."""
+    for family in tomllib.loads(T_TOML.read_text(encoding="utf-8")).get("cargo", []):
+        if family["name"] == "test":
+            return family["nested_sandboxes"]
+    raise ValueError("t.toml has no `test` family")
+
+
 def test_families(packages: dict[str, dict]) -> dict[str, str]:
-    excluded = {*X86_64_ONLY_TESTS, *IDLE_TESTS, *untested(packages), *micro_vm_tested()}
-    return {"test-exclude": f"exclude = {array(sorted(excluded))}\n",
-            "test-x86_64-packages": f"packages = {array(X86_64_ONLY_TESTS)}\n",
-            "test-idle-packages": f"packages = {array(IDLE_TESTS)}\n",
-            "clippy-exclude": f"exclude = {array(['workspace-unify', *IDLE_LINTS])}\n",
-            "clippy-idle-packages": f"packages = {array(IDLE_LINTS)}\n"}
+    per_arch = package_sets.per_arch(packages)
+    for kind, idle in (("tests", IDLE_TESTS), ("lints", IDLE_LINTS)):
+        both = sorted(per_arch & set(idle))
+        if both:
+            raise ValueError(f"{', '.join(both)}: idle {kind} of a package whose code differs between "
+                             "architectures would stand for both; give the idle family per-arch variants")
+    tested = sorted(per_arch - {*untested(packages), *micro_vm_tested()})
+    linted = sorted(per_arch - {"workspace-unify"})
+    nested = sorted(set(nested_sandboxes()) & set(tested))
+    excluded = {*per_arch, *IDLE_TESTS, *untested(packages), *micro_vm_tested()}
+    blocks = {"test-exclude": f"exclude = {array(sorted(excluded))}\n",
+              "test-idle-packages": f"packages = {array(IDLE_TESTS)}\n",
+              "clippy-exclude": f"exclude = {array(['workspace-unify', *IDLE_LINTS, *sorted(per_arch)])}\n",
+              "clippy-idle-packages": f"packages = {array(IDLE_LINTS)}\n",
+              "check-exclude": f"exclude = {array(['workspace-unify', *sorted(per_arch)])}\n"}
+    for arch in ARCHES:
+        blocks[f"test-{arch}-packages"] = (f"packages = {array(tested)}\n"
+                                           f"nested_sandboxes = {array(nested)}\n")
+        blocks[f"clippy-{arch}-packages"] = f"packages = {array(linted)}\n"
+    return blocks
 
 
 def cargo_checks(manifest: suites.Manifest, metadata: dict | None = None) -> dict[str, str]:
@@ -970,8 +996,10 @@ def generated(manifest: suites.Manifest) -> dict[str, str]:
     metadata = workspace_graph.cargo_metadata(ROOT)
     manifest = with_dependency_inputs(manifest, {p["name"]: p for p in metadata["packages"]}, ROOT)
     inputs = package_inputs(manifest)
-    return {"test-package-inputs": inputs, "test-x86_64-package-inputs": inputs, "test-idle-package-inputs": inputs,
-            "clippy-package-inputs": inputs, "clippy-idle-package-inputs": inputs, "check-package-inputs": inputs, "suites": suite_checks(manifest),
+    return {"test-package-inputs": inputs, "test-idle-package-inputs": inputs,
+            "clippy-package-inputs": inputs, "clippy-idle-package-inputs": inputs, "check-package-inputs": inputs,
+            **{f"{family}-{arch}-package-inputs": inputs for family in ("test", "clippy") for arch in ARCHES},
+            "suites": suite_checks(manifest),
             "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
             "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
             "security-reads": security_reads(), "policy-steps": policy_checks(),
