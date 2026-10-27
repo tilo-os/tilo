@@ -16,7 +16,6 @@ mod display_input_tests;
 mod display_observation_refresh_tests;
 mod display_observations;
 mod governance_requests;
-mod governed_layout;
 mod governor_actions;
 mod hosted_sites;
 mod room_rosters;
@@ -60,6 +59,7 @@ pub(crate) mod presence_visibility;
 mod private_chat;
 #[cfg(test)]
 mod surface_update_tests;
+mod viewer_hosts;
 pub(crate) use private_chat::PrivateChatRoute;
 #[cfg(test)]
 mod reachability_tests;
@@ -1398,7 +1398,6 @@ pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
     native_admission: native_admission::State,
     peer_sync_worker: peer_sync_worker::State,
-    governed_layout: governed_layout::State,
     /// Members viewing this device's windows, and what this device views
     /// of theirs ([`room_window_views`]).
     room_window_views: room_window_views::State,
@@ -2361,7 +2360,6 @@ impl ShellNetwork {
             native_enrollment: native_enrollment::State::default(),
             native_admission: native_admission::State::default(),
             peer_sync_worker: peer_sync_worker::State::default(),
-            governed_layout: governed_layout::State::default(),
             room_window_views: room_window_views::State::default(),
             room_window_carriers: room_window_carriers::State::default(),
             relay_rooms: relay_rooms::State::default(),
@@ -8362,7 +8360,6 @@ pub(crate) fn shell_network_for_test(
         native_enrollment: native_enrollment::State::default(),
         native_admission: native_admission::State::default(),
         peer_sync_worker: peer_sync_worker::State::default(),
-        governed_layout: governed_layout::State::default(),
         room_window_views: room_window_views::State::default(),
         room_window_carriers: room_window_carriers::State::default(),
         relay_rooms: relay_rooms::State::default(),

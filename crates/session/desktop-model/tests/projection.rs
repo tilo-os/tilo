@@ -57,6 +57,7 @@ fn write_as(doc: &mut AutoCommit, workspace: &Workspace, person: &str, salt: u16
             person: Some(person),
             mine: &mine,
             retained: &|_| false,
+            carried: tilo_desktop_model::shared_record::device::Writer::NOTHING_CARRIED,
         },
     )
     .unwrap();

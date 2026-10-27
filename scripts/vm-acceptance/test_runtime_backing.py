@@ -15,15 +15,32 @@ sys.path.insert(0, str(Path(__file__).parent))
 from acceptance import runtime_backing as probe
 
 PATH = "/run/tilo-runtime/exact-sdk/lib/libruntime_dylib.so"
-SUBJECT_UID = os.getuid() or 1002
+# The app's account: never root, which the probe refuses as a subject.
+SUBJECT_UID = 1002
+
+
+def proc_view(root: Path) -> Path:
+    """`root` as the probe's /proc, its process directories owned by SUBJECT_UID.
+
+    Giving the fixture that owner for real takes CAP_CHOWN, which a test sandbox that
+    runs as root without capabilities lacks; only the owner the directory reports matters
+    to the probe."""
+    class View(type(Path())):
+        def stat(self, *, follow_symlinks=True):
+            status = super().stat(follow_symlinks=follow_symlinks)
+            if self.parent == root and self.name.isdigit():
+                status = os.stat_result(
+                    (*status[:4], SUBJECT_UID, *status[5:10]),
+                    {name: getattr(status, name) for name in
+                     ("st_atime", "st_mtime", "st_ctime", "st_atime_ns", "st_mtime_ns", "st_ctime_ns")})
+            return status
+    return View(root)
 
 
 class Backing(unittest.TestCase):
     def fixture(self, root):
         process = root / "123"
         (process / "map_files").mkdir(parents=True)
-        if os.getuid() == 0:
-            os.chown(process, SUBJECT_UID, -1)  # Only our owned temporary fixture, never /proc.
         (process / "comm").write_text("store\n")
         (process / "stat").write_text("123 (store) " + " ".join(["1"] * 19 + ["12345"]))
         (process / "maps").write_text(f"1000-2000 r-xp 0000 00:116 456 {PATH}\n")
@@ -39,7 +56,7 @@ class Backing(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             process, resident, namespace = self.fixture(root)
-            value = probe.probe(SUBJECT_UID, "store", root)
+            value = probe.probe(SUBJECT_UID, "store", proc_view(root))
             row = value["processes"][0]["runtime"][0]
             self.assertEqual(row["sha256"], hashlib.sha256(resident.read_bytes()).hexdigest())
             self.assertNotEqual(row["sha256"], hashlib.sha256(namespace.read_bytes()).hexdigest())
@@ -53,8 +70,8 @@ class Backing(unittest.TestCase):
             self.fixture(root)
             for selection in [(123, "12346"), (456, "12345")]:
                 with self.assertRaises(RuntimeError):
-                    probe.probe(SUBJECT_UID, "store", root, selection)
-            value = probe.probe(SUBJECT_UID, "store", root, (123, "12345"))
+                    probe.probe(SUBJECT_UID, "store", proc_view(root), selection)
+            value = probe.probe(SUBJECT_UID, "store", proc_view(root), (123, "12345"))
             self.assertEqual([row["pid"] for row in value["processes"]], [123])
 
     def test_old_unrelated_worker_does_not_replace_selected_fd_subject(self):
@@ -63,10 +80,9 @@ class Backing(unittest.TestCase):
             self.fixture(root)
             old = root / "456"
             old.mkdir()
-            if os.getuid() == 0: os.chown(old, SUBJECT_UID, -1)
             (old / "comm").write_text("store")
             (old / "stat").write_text("456 (store) " + " ".join(["1"] * 19 + ["987"]))
-            value = probe.probe(SUBJECT_UID, "store", root, (123, "12345"))
+            value = probe.probe(SUBJECT_UID, "store", proc_view(root), (123, "12345"))
             self.assertEqual([row["pid"] for row in value["processes"]], [123])
             self.assertEqual(value["unrelated_processes"], [{"pid": 456, "start_time_ticks": "987",
                 "status": "unrelated_not_verified_against_selected_offer"}])
@@ -78,7 +94,7 @@ class Backing(unittest.TestCase):
             process, resident, _ = self.fixture(root)
             (process / "comm").write_text("calculator\n")
             (process / "exe").symlink_to(resident)
-            value = probe.probe(SUBJECT_UID, "calculator", root)
+            value = probe.probe(SUBJECT_UID, "calculator", proc_view(root))
             self.assertEqual(value["processes"][0]["runtime"][0]["sha256"],
                              hashlib.sha256(resident.read_bytes()).hexdigest())
 
@@ -99,7 +115,7 @@ class Backing(unittest.TestCase):
                 return result
             with patch.object(probe, "hash_backing", side_effect=changed):
                 with self.assertRaisesRegex(RuntimeError, "executable changed"):
-                    probe.probe(SUBJECT_UID, "calculator", root)
+                    probe.probe(SUBJECT_UID, "calculator", proc_view(root))
 
     def test_inaccessible_backing_never_falls_back_to_available_namespace_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -107,7 +123,7 @@ class Backing(unittest.TestCase):
             self.fixture(root)
             with patch.object(probe, "hash_backing", side_effect=PermissionError("map_files refused")):
                 with self.assertRaises(PermissionError):
-                    probe.probe(SUBJECT_UID, "store", root)
+                    probe.probe(SUBJECT_UID, "store", proc_view(root))
 
     def test_pid_or_map_change_during_hashing_refuses(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -116,11 +132,11 @@ class Backing(unittest.TestCase):
             for times in (["old", "new"],):
                 with patch.object(probe, "start_time", side_effect=times):
                     with self.assertRaises(RuntimeError):
-                        probe.probe(SUBJECT_UID, "store", root)
+                        probe.probe(SUBJECT_UID, "store", proc_view(root))
             real = probe.mappings(root / "123")
             with patch.object(probe, "mappings", side_effect=[real, {}]):
                 with self.assertRaises(RuntimeError):
-                    probe.probe(SUBJECT_UID, "store", root)
+                    probe.probe(SUBJECT_UID, "store", proc_view(root))
 
     def test_changed_duplicate_map_identity_refuses(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -129,19 +145,19 @@ class Backing(unittest.TestCase):
             with (process / "maps").open("a") as output:
                 output.write(f"3000-4000 r--p 0000 00:116 999 {PATH}\n")
             with self.assertRaises(RuntimeError):
-                probe.probe(SUBJECT_UID, "store", root)
+                probe.probe(SUBJECT_UID, "store", proc_view(root))
 
     def test_unknown_subject_deleted_mapping_and_empty_observation_refuse(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with self.assertRaises(RuntimeError):
-                probe.probe(SUBJECT_UID, "private-app", root)
+                probe.probe(SUBJECT_UID, "private-app", proc_view(root))
             with self.assertRaises(RuntimeError):
-                probe.probe(SUBJECT_UID, "store", root)
+                probe.probe(SUBJECT_UID, "store", proc_view(root))
             process, _, _ = self.fixture(root)
             (process / "maps").write_text(f"1000-2000 r-xp 0000 00:116 456 {PATH} (deleted)\n")
             with self.assertRaises(RuntimeError):
-                probe.probe(SUBJECT_UID, "store", root)
+                probe.probe(SUBJECT_UID, "store", proc_view(root))
 
     def test_bounded_actual_fd_hash_and_changed_metadata_refuse(self):
         with tempfile.TemporaryDirectory() as directory:

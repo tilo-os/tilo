@@ -147,10 +147,10 @@ impl RecordRouteParticipant {
         // A windowless holder dispatches no actions; its document never
         // changes generation.
         self.manager.set_document_owner_routes(routes, 0);
-        for route in joins {
+        for join in joins {
             // The primary route was joined with the manager.
-            if Some(&route) != primary.as_ref() {
-                self.manager.join_route(route);
+            if Some(&join.route) != primary.as_ref() {
+                self.manager.join_route(join.route, join.record_kind);
             }
         }
     }
@@ -167,9 +167,10 @@ impl RecordRouteParticipant {
 /// holders write comes back in, each write once, with its author, for the
 /// holder to decide before it is merged ([`RouteDocument::pump`]); what a
 /// room's governor already decided (its committed history) is merged as
-/// it comes. Nothing here waits on a timer: a write the route did not take
-/// is offered again when the route takes writes again, and the whole
-/// document again once the connection was lost.
+/// it comes. A write that arrives before the changes it builds on waits
+/// until they are here. Nothing here waits on a timer: a write the route
+/// did not take is offered again when the route takes writes again, and
+/// the whole document again once the connection was lost.
 pub struct RouteDocument {
     manager: CollaborationManager,
     route: RouteSpec,
@@ -179,6 +180,9 @@ pub struct RouteDocument {
     /// Committed history the route delivered before the document could
     /// take it.
     committed: Vec<crate::collaboration::CommittedDocument>,
+    /// Writes that arrived before the changes they build on, oldest first,
+    /// with who signed each: offered again after anything else merged.
+    waiting: std::collections::VecDeque<([u8; 32], collab_types::DocumentMutation)>,
     _wake: crate::WakeScope,
     /// What this holder published, in order.
     #[cfg(test)]
@@ -194,15 +198,36 @@ pub struct Arrival<'a> {
 
 impl Arrival<'_> {
     /// Merge the write into `doc`, whole or not at all, as a holder that
-    /// takes every write does. Whether `doc` changed.
+    /// takes every write does.
     ///
     /// # Errors
     /// The write is not changes `doc` can take.
-    pub fn merge_into(&self, doc: &mut AutoCommit) -> Result<bool, String> {
+    pub fn merge_into(&self, doc: &mut AutoCommit) -> Result<Admission, String> {
         crate::history_mode::routes::merge_committed(doc, self.mutation)
+            .map(Admission::Merged)
             .map_err(|error| error.to_string())
     }
 }
+
+/// What a holder did with a write another holder made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admission {
+    /// Taken in; whether it changed the document.
+    Merged(bool),
+    /// It builds on changes the document does not hold yet: nothing of it
+    /// was taken in, and it is offered again once something else merged.
+    Waiting,
+}
+
+/// How many writes wait for the changes they build on, at most. Past this
+/// the oldest is let go: the route delivers the record whole to a holder
+/// that lacks so much.
+const MAX_WAITING: usize = 256;
+
+/// Decides a write another holder made: merges it into the document it is
+/// given, waits for what it builds on, or refuses it and leaves the
+/// document as it was.
+pub type Admit<'a> = dyn FnMut(&mut AutoCommit, Arrival<'_>) -> Result<Admission, String> + 'a;
 
 /// What one [`RouteDocument::pump`] did to the document.
 #[derive(Debug, Default)]
@@ -246,6 +271,7 @@ impl RouteDocument {
             route,
             sent: None,
             committed: Vec::new(),
+            waiting: std::collections::VecDeque::new(),
             _wake: wake,
             #[cfg(test)]
             published: Vec::new(),
@@ -272,11 +298,7 @@ impl RouteDocument {
     /// document it is given, or refuses it and leaves that as it was), and
     /// publish what `doc` holds that the route does not. Call it whenever
     /// `doc` changed here and whenever the broker woke the holder.
-    pub fn pump(
-        &mut self,
-        doc: &mut AutoCommit,
-        admit: &mut dyn FnMut(&mut AutoCommit, Arrival<'_>) -> Result<bool, String>,
-    ) -> Pumped {
+    pub fn pump(&mut self, doc: &mut AutoCommit, admit: &mut Admit<'_>) -> Pumped {
         let mut pumped = Pumped::default();
         let events = self.manager.poll();
         if self.manager.document_publication_failed() {
@@ -318,17 +340,73 @@ impl RouteDocument {
         }
         self.manager.finish_event_batch();
         pumped.merged |= self.apply_committed(doc);
+        if pumped.merged {
+            self.offer_waiting(doc, admit, &mut pumped);
+        }
         self.publish(doc);
         pumped
     }
 
-    /// Take in one write another holder made, as `admit` decides.
+    /// Offer the writes that waited for the changes they build on again,
+    /// oldest first, for as long as one of them merges.
+    fn offer_waiting(&mut self, doc: &mut AutoCommit, admit: &mut Admit<'_>, pumped: &mut Pumped) {
+        loop {
+            let mut progressed = false;
+            for (author, mutation) in std::mem::take(&mut self.waiting) {
+                progressed |= self.offer(doc, author, mutation, admit, pumped);
+            }
+            if !progressed || self.waiting.is_empty() {
+                return;
+            }
+        }
+    }
+
+    /// Offer one write `author` made to `admit`: merged, kept waiting, or
+    /// refused. Whether it merged.
+    fn offer(
+        &mut self,
+        doc: &mut AutoCommit,
+        author: [u8; 32],
+        mutation: collab_types::DocumentMutation,
+        admit: &mut Admit<'_>,
+        pumped: &mut Pumped,
+    ) -> bool {
+        let before = doc.get_heads();
+        match admit(
+            doc,
+            Arrival {
+                author,
+                mutation: &mutation,
+            },
+        ) {
+            Ok(Admission::Merged(changed)) => {
+                pumped.merged |= changed;
+                self.echoed(&before, doc);
+                true
+            }
+            Ok(Admission::Waiting) => {
+                if self.waiting.len() >= MAX_WAITING {
+                    self.waiting.pop_front();
+                    tracing::warn!("a held route let go of a write that waited too long");
+                }
+                self.waiting.push_back((author, mutation));
+                false
+            }
+            Err(reason) => {
+                pumped.refused.push(reason);
+                false
+            }
+        }
+    }
+
+    /// Take in one write another holder made, as `admit` decides; when it
+    /// merged, what waited for it may merge now too.
     fn arrived(
         &mut self,
         doc: &mut AutoCommit,
         envelope: &collab_types::SignedOp,
         decrypted: Option<&[u8]>,
-        admit: &mut dyn FnMut(&mut AutoCommit, Arrival<'_>) -> Result<bool, String>,
+        admit: &mut Admit<'_>,
         pumped: &mut Pumped,
     ) {
         let Some(payload) =
@@ -344,19 +422,8 @@ impl RouteDocument {
                     return;
                 }
             };
-        let before = doc.get_heads();
-        match admit(
-            doc,
-            Arrival {
-                author: *envelope.author.as_bytes(),
-                mutation: &mutation,
-            },
-        ) {
-            Ok(changed) => {
-                pumped.merged |= changed;
-                self.echoed(&before, doc);
-            }
-            Err(reason) => pumped.refused.push(reason),
+        if self.offer(doc, *envelope.author.as_bytes(), mutation, admit, pumped) {
+            self.offer_waiting(doc, admit, pumped);
         }
     }
 
@@ -620,7 +687,7 @@ mod tests {
     /// A holder of `route` whose route takes writes.
     fn holding_route(route: &RouteSpec) -> RouteDocument {
         let mut manager = CollaborationManager::connected_for_lifecycle_test();
-        manager.join_route(route.clone());
+        manager.join_route(route.clone(), crate::record::RecordKind::new(""));
         let held = RouteDocument::with_manager(manager, route.clone(), crate::WakeScope::new());
         let deadline = tilo_test_env::hang_deadline();
         while !held.publishable() {
@@ -641,7 +708,7 @@ mod tests {
             .map(|(value, _)| value.to_string())
     }
 
-    fn take_everything(doc: &mut AutoCommit, arrival: Arrival<'_>) -> Result<bool, String> {
+    fn take_everything(doc: &mut AutoCommit, arrival: Arrival<'_>) -> Result<Admission, String> {
         arrival.merge_into(doc)
     }
 
@@ -755,5 +822,60 @@ mod tests {
             &mut pumped,
         );
         assert_eq!(get(&doc, "kept").as_deref(), Some("\"no\""));
+    }
+
+    /// Takes a write only once the document holds every change it builds on.
+    fn complete_writes_only(
+        doc: &mut AutoCommit,
+        arrival: Arrival<'_>,
+    ) -> Result<Admission, String> {
+        let mut next = doc.clone();
+        let collab_types::DocumentMutation::Incremental(bytes) = arrival.mutation else {
+            return arrival.merge_into(doc);
+        };
+        tilo_automerge::ApplyIncoming::load_incoming(&mut next, bytes)
+            .map_err(|error| error.to_string())?;
+        if !next.get_missing_deps(&[]).is_empty() {
+            return Ok(Admission::Waiting);
+        }
+        let changed = next.get_heads() != doc.get_heads();
+        *doc = next;
+        Ok(Admission::Merged(changed))
+    }
+
+    /// A write that arrives before the one it builds on waits, and is
+    /// taken in once that one is.
+    #[test]
+    fn a_write_ahead_of_what_it_builds_on_waits_for_it() {
+        let route = RouteSpec::record("so.tilo.test-held", uuid::Uuid::new_v4(), "desktop");
+        let mut held = holding_route(&route);
+        let mut doc = AutoCommit::new();
+        let mut other = AutoCommit::new();
+        set(&mut other, "first", "1");
+        let first = collab_types::DocumentMutation::Incremental(other.save_after(&[]));
+        let heads = other.get_heads();
+        set(&mut other, "second", "2");
+        let second = collab_types::DocumentMutation::Incremental(other.save_after(&heads));
+
+        let mut pumped = Pumped::default();
+        held.arrived(
+            &mut doc,
+            &write_from(&route, 1, &second),
+            None,
+            &mut complete_writes_only,
+            &mut pumped,
+        );
+        assert_eq!(get(&doc, "second"), None, "it waits");
+        assert_eq!(held.waiting.len(), 1);
+        held.arrived(
+            &mut doc,
+            &write_from(&route, 1, &first),
+            None,
+            &mut complete_writes_only,
+            &mut pumped,
+        );
+        assert_eq!(get(&doc, "first").as_deref(), Some("\"1\""));
+        assert_eq!(get(&doc, "second").as_deref(), Some("\"2\""), "and follows");
+        assert!(held.waiting.is_empty());
     }
 }

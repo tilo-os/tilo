@@ -39,6 +39,28 @@ impl ApplicationRecord {
             record: record.into(),
         })
     }
+
+    /// A record the host keeps itself, which no installed package declares:
+    /// a workspace's shared desktop. Only host code names one; nothing an
+    /// app sends reaches this.
+    ///
+    /// # Errors
+    /// The route is not a valid record route.
+    pub fn host(app: &str, record: &str) -> Result<Self, String> {
+        if app.is_empty()
+            || app.len() > 256
+            || record.len() > 4096
+            || [app, record]
+                .iter()
+                .any(|value| value.chars().any(char::is_control))
+        {
+            return Err("host record has no valid route".into());
+        }
+        Ok(Self {
+            app: app.into(),
+            record: record.into(),
+        })
+    }
 }
 
 impl NativeWorkspaceOwner {

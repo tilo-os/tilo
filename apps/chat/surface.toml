@@ -37,12 +37,27 @@ fields = [
   { path = "feedback.*.submission.feedback.screenshot.hash", type = "String" },
   { path = "feedback.*.submission.feedback.screenshot.width", type = "u32" },
   { path = "feedback.*.submission.feedback.screenshot.height", type = "u32" },
+  { path = "feedback.*.submission.feedback.selections", type = "Vec<ReviewedSelection>" },
+  { path = "feedback.*.submission.feedback.interactions", type = "Vec<Interaction>" },
+  { path = "feedback.*.submission.feedback.timings", type = "Option<FrameTimings>", stored = "record" },
+  { path = "feedback.*.submission.feedback.timings.frames", type = "Vec<u32>" },
+  { path = "feedback.*.submission.feedback.timings.budget", type = "u32" },
+  { path = "feedback.*.submission.feedback.recording", type = "Option<RecordingRef>", stored = "record" },
+  { path = "feedback.*.submission.feedback.recording.hash", type = "String" },
+  { path = "feedback.*.submission.feedback.recording.app", type = "String" },
+  { path = "feedback.*.submission.feedback.recording.app_name", type = "String" },
+  { path = "feedback.*.submission.feedback.recording.kind", type = "String" },
+  { path = "feedback.*.submission.feedback.recording.from_ms", type = "i64" },
+  { path = "feedback.*.submission.feedback.recording.to_ms", type = "i64" },
+  { path = "feedback.*.submission.feedback.recording.steps", type = "u32" },
+  { path = "feedback.*.submission.feedback.recording.bytes", type = "u32" },
   { path = "feedback.*.author", type = "Atom", readonly = true },
   { path = "feedback.*.ts", type = "i64", readonly = true },
   { path = "feedback.*.triage", type = "Collection<Triage>", readonly = true, stored = "collection" },
   { path = "feedback.*.triage.*.author", type = "Atom", readonly = true },
   { path = "feedback.*.triage.*.ts", type = "i64", readonly = true },
   { path = "feedback.*.triage.*.update", type = "Option<crate::feedback::TriageUpdate>", readonly = true },
+  { path = "feedback.*.reactions", type = "ui::tilo_resource::Reactions", readonly = true },
   { path = "moderation", type = "moderation_model::Moderation", stored = "record" },
   { path = "moderation.reports", type = "Keyed<Report>", stored = "keyed" },
   { path = "moderation.reports.*.id", type = "String", readonly = true },
@@ -146,6 +161,24 @@ kind = "undoable"
 params = [
   { name = "channel", required = true, schema = { type = "string" } },
   { name = "up", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "move-category"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "category", required = true, schema = { type = "string" } },
+  { name = "up", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "arrange-channels"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "categories", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "channels", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { category = { type = ["string", "null"] }, channel = { type = "string" } }, required = ["channel"] } } },
 ]
 
 [[resources.verbs]]
@@ -323,6 +356,7 @@ fields = [
   { path = "messages.*.share.access", type = "ShareAccess" },
   { path = "messages.*.share.open", type = "bool" },
   { path = "messages.*.share.ended", type = "bool" },
+  { path = "earlier", type = "BTreeMap<String, BTreeMap<String, i64>>", readonly = true },
 ]
 
 [[resources.verbs]]
@@ -453,6 +487,13 @@ params = [
   { name = "message", required = true, schema = { type = "string" } },
   { name = "work", required = true, schema = { type = "object", additionalProperties = false, properties = { about = { type = ["string", "null"] }, app = { type = ["string", "null"] }, did = { type = ["string", "null"] }, route = { type = ["string", "null"] }, state = { type = "string" }, trace = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, label = { type = "string" }, outcome = { type = "string" }, resource = { type = "string" }, sequence = { type = "integer", minimum = 0 }, why = { type = ["string", "null"] } }, required = ["id", "resource", "label", "outcome"] } }, why = { type = ["string", "null"] } }, required = ["state"] } },
   { name = "say", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "carry-counts"
+kind = "undoable"
+params = [
+  { name = "earlier", required = true, schema = { type = "object" } },
 ]
 
 [[resources.verbs]]

@@ -1033,26 +1033,6 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         peer.set_peer_salt(PEER_SALT);
         let peer_workspace = peer.desktop.active;
         assert!(peer.stand_in_room(peer_workspace, room));
-        // What the room's admitted document carries of the peer's layout,
-        // as the native owner projects it into this device's workspace.
-        let projected = |peer: &WorkspaceTree, local: &mut WorkspaceTree| {
-            let strips = peer
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.id == peer_workspace)
-                .expect("peer workspace")
-                .strips
-                .clone();
-            local
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.id == local_workspace)
-                .expect("local workspace")
-                .strips = strips;
-            local.desktop.room_epoch = local.desktop.room_epoch.wrapping_add(1);
-        };
         let remote_strip = StripId::from(remote_id(1));
         let remote_group = remote_id(2);
         let tab = |id, title: &str, kind| Tab {
@@ -1090,13 +1070,31 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
             ],
         }];
 
-        projected(&peer, &mut local);
+        // The peer's layout reaches this device over the room's layout
+        // record, signed by a device it knows by its hub alone.
+        let device = [1; 32];
+        local
+            .hear_layout(&mut peer, room, device)
+            .expect("legitimate remote layout merges");
+        let stale = collab_types::DocumentMutation::Snapshot(
+            peer.layout_docs
+                .get_mut(&room)
+                .expect("a layout record")
+                .save(),
+        );
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&local);
         assert!(peer.reorder_group_for_tests(remote_strip, remote_id(4), 0));
         assert!(peer.reorder_tab_for_tests(remote_group, 2, 0));
         {
             let mut state = chrome.borrow_mut();
-            projected(&peer, &mut state.tree_mut());
+            state
+                .tree_mut()
+                .hear_layout(&mut peer, room, device)
+                .expect("the reorder merges");
+            state
+                .tree_mut()
+                .receive_layout(room, device, &stale)
+                .expect("an older copy of the layout is no news");
             state.bump();
         }
         assert!(host.take_structure_dirty());

@@ -209,12 +209,14 @@ impl MenuAction {
         [MenuAction::NewChannelHere, MenuAction::NewCategory]
     }
     /// Menu items for a category row.
-    pub fn for_category() -> [MenuAction; 5] {
+    pub fn for_category() -> [MenuAction; 7] {
         [
             MenuAction::NewChannelHere,
             MenuAction::NewVoiceChannelHere,
             MenuAction::Rename,
             MenuAction::ToggleCollapse,
+            MenuAction::MoveUp,
+            MenuAction::MoveDown,
             MenuAction::Delete,
         ]
     }

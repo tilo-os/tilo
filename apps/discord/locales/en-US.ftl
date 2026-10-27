@@ -72,6 +72,7 @@ discord-start-thread = Started a thread on Discord
 discord-create-webhook = Created a webhook on Discord
 discord-apply-channel = Updated a channel on Discord
 discord-delete-channel = Deleted a channel on Discord
+discord-arrange-channels = Rearranged channels on Discord
 discord-apply-role = Updated a role on Discord
 discord-delete-role = Deleted a role on Discord
 discord-set-member-roles = Changed a member's roles on Discord

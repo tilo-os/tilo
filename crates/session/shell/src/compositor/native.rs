@@ -10215,6 +10215,8 @@ pub fn run() {
     // What the broker asks of the person's records the session holds
     // wakes the loop, which runs it.
     crate::shell::settings_records::wake_with(Arc::clone(&session_wake));
+    // So does what a room's other devices write to its layout record.
+    crate::shell::workspace_layouts::wake_with(Arc::clone(&session_wake));
     // So do the reads and writes apps ask of the workspace activity model.
     crate::shell::activity_provider::wake_with(Arc::clone(&session_wake));
     frame_builder.with_chrome(|chrome| {
@@ -13281,6 +13283,15 @@ pub fn run() {
             && !force_first_paint
             && !session_changed
             && !session.is_locked();
+        // Each workspace's layout record: this device's changes written into
+        // it, the room's taken in, and the room's layout folded into the tree.
+        if !cadence_only_tick {
+            let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+            pump_phase!(
+                "workspace-layouts",
+                crate::shell::workspace_layouts::pump(&tree_handle)
+            );
+        }
         if let Some(net) = peer_sync.as_ref().filter(|_| !cadence_only_tick) {
             if loop_timing {
                 let steps = pump_phase!("network-tick", net.timed_frame_tick());
@@ -13494,8 +13505,6 @@ pub fn run() {
                     (*surface, crate::shell::network::room_topic_id(*room))
                 }));
             }
-            // This device's layout of the rooms its native owner holds,
-            // written as its own changes and sent to their governors.
             if hosted_legacy_checked.elapsed() >= std::time::Duration::from_millis(500) {
                 hosted_legacy_checked = Instant::now();
                 let rooms = tree_handle
@@ -13506,7 +13515,6 @@ pub fn run() {
                     .map(crate::shell::state::Workspace::room)
                     .collect::<Vec<_>>();
                 for room in rooms {
-                    net.publish_governed_layout(room, &tree_handle);
                     net.follow_room_app_versions(room);
                 }
                 let generation = tree_handle.generation();

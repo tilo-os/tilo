@@ -831,6 +831,8 @@ fn the_partition_is_never_replicated() {
         "there is a partition to leak"
     );
     tree.seed_doc_from_cache();
+    let room = RoomId::parse(ROOM).expect("room");
+    tree.capture_workspace_layout(room);
     let forbidden = [
         "outputs",
         "home",
@@ -841,17 +843,31 @@ fn the_partition_is_never_replicated() {
     ];
     let mut desktop_keys = BTreeSet::new();
     keys(&tree.doc, &ROOT, &mut desktop_keys);
+    let mut layout_keys = BTreeSet::new();
+    keys(
+        tree.layout_docs
+            .get(&room)
+            .expect("the room's layout was written"),
+        &ROOT,
+        &mut layout_keys,
+    );
     drop(tree);
     drop(chrome);
     assert!(
         desktop_keys.contains("window_groups"),
         "the desktop document carries the strip's windows: {desktop_keys:?}"
     );
-    for key in forbidden {
-        assert!(
-            !desktop_keys.contains(key),
-            "the desktop document carries `{key}`: {desktop_keys:?}"
-        );
+    assert!(
+        layout_keys.contains(&ON_PRIMARY[0].to_string()),
+        "the room's layout record carries the strip's windows: {layout_keys:?}"
+    );
+    for (name, found) in [("desktop", &desktop_keys), ("layout", &layout_keys)] {
+        for key in forbidden {
+            assert!(
+                !found.contains(key),
+                "the {name} document carries `{key}`: {found:?}"
+            );
+        }
     }
 }
 

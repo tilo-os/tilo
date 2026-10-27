@@ -577,8 +577,23 @@ impl VideoPlayer {
     pub fn set_now_playing(&mut self, np: NowPlaying) {
         if self.now_playing != np {
             self.now_playing = np;
+            self.describe_now_playing();
             self.publish_mpris();
         }
+    }
+
+    /// Tell the engine what plays, for the system's now-playing controls it
+    /// reaches itself (a page's Media Session).
+    fn describe_now_playing(&mut self) {
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+        engine.set_now_playing(&media::NowPlaying {
+            title: self.now_playing.title.clone(),
+            artist: self.now_playing.artist.clone(),
+            album: String::new(),
+            artwork_url: Some(self.now_playing.art_url.clone()).filter(|url| !url.is_empty()),
+        });
     }
 
     pub fn now_playing(&self) -> &NowPlaying {
@@ -602,6 +617,28 @@ impl VideoPlayer {
     pub fn pump_media_controls(&mut self) {
         for cmd in self.mpris.drain_commands() {
             self.apply_media_command(cmd);
+        }
+        // The engine's own system controls (a page's Media Session) already
+        // played, paused or moved the media; the player follows, so its
+        // controls say what the media does.
+        let pressed = self
+            .engine
+            .as_mut()
+            .map(media::MediaEngine::take_now_playing_actions)
+            .unwrap_or_default();
+        for action in pressed {
+            match action {
+                media::NowPlayingAction::Play if self.state != PlaybackState::Playing => {
+                    self.play()
+                }
+                media::NowPlayingAction::Pause | media::NowPlayingAction::Stop
+                    if self.state == PlaybackState::Playing =>
+                {
+                    self.pause();
+                }
+                // One clip has no next or previous; a seek is applied already.
+                _ => {}
+            }
         }
     }
 
@@ -680,6 +717,7 @@ impl VideoPlayer {
     pub fn set_engine(&mut self, engine: media::MediaEngine) {
         self.volume = engine.volume();
         self.engine = Some(engine);
+        self.describe_now_playing();
         self.dirty = true;
     }
 

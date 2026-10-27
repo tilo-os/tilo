@@ -389,13 +389,6 @@ pub enum NetCmd {
     PrivateMessages(tokio::sync::oneshot::Sender<super::private_messages::Transport>),
     /// What this device has received from its peers, by kind.
     WireTally(tokio::sync::oneshot::Sender<Arc<WireTally>>),
-    /// This device's own topology entries (`SyncResp`) for a room another
-    /// device governs, to its workspace hosts as a retained delta: the
-    /// governor admits them within this device's registered namespace.
-    PublishHostedTopology {
-        ws: u64,
-        msg: NeighbourMsg,
-    },
     /// A message for `ws`'s workspace hosts only, held until a host session
     /// is up, never gossiped: what only the hosts of the person's own
     /// continuity topic may keep for their other devices.
@@ -2023,26 +2016,6 @@ impl ActorState {
                     false,
                     true,
                 );
-            }
-            Some(NetCmd::PublishHostedTopology { ws, msg }) => {
-                if !self.host_sessions.keys().any(|(topic, _)| *topic == ws) {
-                    tracing::debug!(
-                        ws,
-                        "no host session to publish this session's windows on yet"
-                    );
-                }
-                if matches!(msg, NeighbourMsg::SyncResp { .. }) {
-                    publish(
-                        &self.topics,
-                        &self.host_sessions,
-                        &mut self.lanes,
-                        ws,
-                        &msg,
-                        false,
-                        false,
-                        true,
-                    );
-                }
             }
             Some(NetCmd::PublishWorkspaceControl { ws, msg, route }) => {
                 self.publish_workspace_control(ws, msg, route);

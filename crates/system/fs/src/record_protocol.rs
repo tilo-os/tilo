@@ -1403,8 +1403,10 @@ mod tests {
 
     pub(super) async fn party() -> Party {
         let n = NEXT_PARTY.fetch_add(1, Ordering::Relaxed);
-        let device_seed = *blake3::hash(&n.to_le_bytes()).as_bytes();
-        let root_seed = *blake3::hash(&n.wrapping_add(99_999).to_le_bytes()).as_bytes();
+        // Fresh keys: a counter restarts in every test process, and equal
+        // endpoint ids in two processes reach each other through the relay.
+        let device_seed = iroh::SecretKey::generate().to_bytes();
+        let root_seed = iroh::SecretKey::generate().to_bytes();
         let device = SigningKey::from_bytes(&device_seed);
         let root = SigningKey::from_bytes(&root_seed);
         let now = unix_now_ns();

@@ -732,6 +732,19 @@ fn bind_history(transport: &GatewayHttp, request: &mut CompletionRequest) -> boo
     api_responses
 }
 
+/// `responses` with only the first system message as `instructions`: a
+/// caller's stable instructions, kept apart from the system context that
+/// follows them (a planner's apps), so a change there leaves the
+/// instructions and tools in `OpenAI`'s prompt cache.
+fn first_instructions<T>(
+    mut responses: rig_core::Model<openai::responses_api::wire::Responses, T>,
+) -> rig_core::Model<openai::responses_api::wire::Responses, T> {
+    responses.wire = responses.wire.with_system_instructions_placement(
+        openai::responses_api::SystemInstructionsPlacement::FirstInstructions,
+    );
+    responses
+}
+
 async fn execute(
     mut transport: GatewayHttp,
     secret: Option<&str>,
@@ -779,7 +792,7 @@ async fn execute(
             ProviderProtocol::OpenAiCompatible if api_responses => {
                 let provider = openai::OpenAIConfig::new(secret.unwrap_or_default());
                 run(
-                    provider.connect(transport.clone()).responses(model),
+                    first_instructions(provider.connect(transport.clone()).responses(model)),
                     request,
                     streaming,
                     transport.body.is_none(),

@@ -7,9 +7,10 @@ use std::collections::BTreeMap;
 use discord_wire::event::{ChannelInfo, EmojiInfo, OverwriteInfo, RoleInfo};
 use discord_wire::event::{LINK_TTL_MS, link_check};
 use discord_wire::op::{
-    AnswerInteractionOp, ChannelKind, ChannelSpec, CreateWebhookOp, DeleteChannelOp, DeleteEmojiOp,
-    DeleteOp, DeleteRoleOp, DiscordOp, DiscordResult, EditOp, EmojiSpec, FetchAssetOp, MemberOp,
-    MemberRolesOp, OverwriteKind, OverwriteOp, Queued, ReactOp, RoleSpec, SendOp, StartThreadOp,
+    AnswerInteractionOp, ArrangeOp, ChannelKind, ChannelSpec, CreateWebhookOp, DeleteChannelOp,
+    DeleteEmojiOp, DeleteOp, DeleteRoleOp, DiscordOp, DiscordResult, EditOp, EmojiSpec,
+    FetchAssetOp, MemberOp, MemberRolesOp, OverwriteKind, OverwriteOp, Queued, ReactOp, RoleSpec,
+    SendOp, StartThreadOp,
 };
 use ui::tilo_resource::{
     self, ActionCx, Id, Identified, JsonSchema, Keyed, Model, Outbox, Refusal, Set, Settled,
@@ -447,7 +448,7 @@ impl Guild {
         for id in &answered {
             self.outbox.forget(id);
         }
-        self.channels = channels
+        let channels: Keyed<DChannel> = channels
             .into_iter()
             .map(|c| DChannel {
                 id: c.id,
@@ -459,6 +460,12 @@ impl Guild {
                 overwrites: c.overwrites,
             })
             .collect();
+        // An arrangement the bridge asked for and Discord showed whole (or
+        // refused) is no longer laid over what Discord shows.
+        for id in crate::order::finished(self, &channels) {
+            self.outbox.forget(&id);
+        }
+        self.channels = channels;
         self.roles = roles
             .into_iter()
             .map(|r| DRole {
@@ -839,6 +846,46 @@ impl Guild {
         self.mirroring()?;
         self.made_by_bridge(&op.channel)?;
         queue(cx, outbox, self.admit(DiscordOp::DeleteChannel(op))?);
+        Ok(())
+    }
+
+    /// Put channels in their places.
+    ///
+    /// Moves bridged channels and categories so Discord lists them in
+    /// Tilo's order. A channel the bridge does not carry only takes a new
+    /// number within its own list, never another category.
+    #[action]
+    pub fn arrange_channels(
+        &mut self,
+        cx: &mut ActionCx,
+        outbox: &mut Outbox<Queued, DiscordResult>,
+        op: ArrangeOp,
+    ) -> Result<(), Refusal> {
+        guard::bot(cx)?;
+        self.mirroring()?;
+        for place in &op.categories {
+            self.known(&place.category)?;
+        }
+        for place in &op.channels {
+            self.known(&place.channel)?;
+            if let Some(parent) = &place.parent {
+                self.known(parent)?;
+            }
+            let moves = self
+                .channels
+                .find(&Id::from_raw(place.channel.as_str()))
+                .is_some_and(|c| c.parent != place.parent);
+            if moves
+                && self
+                    .by_discord(MappedKind::Channel, &place.channel)
+                    .is_none()
+            {
+                return Err(Refusal::new(
+                    "the bridge moves only the channels it bridges to another category",
+                ));
+            }
+        }
+        queue(cx, outbox, self.admit(DiscordOp::ArrangeChannels(op))?);
         Ok(())
     }
 

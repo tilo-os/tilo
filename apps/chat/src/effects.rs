@@ -157,12 +157,15 @@ pub enum ChatEffect {
     ///
     /// Shares a file from this device in a conversation: its bytes go to
     /// this device's attachment store and the message carries them by
-    /// reference.
+    /// reference. Without a path, the conversation opens and the system's
+    /// file chooser asks which files.
     AttachFile {
         #[param("Id of the conversation")]
         channel: String,
-        #[param("Path of the file on this device")]
-        path: String,
+        #[param(
+            "Path of the file on this device; omit to choose files with the system file chooser"
+        )]
+        path: Option<String>,
     },
     /// Share live Chat context
     ///
@@ -291,7 +294,9 @@ impl ChatApp {
             ChatEffect::ReadMessage { message } => {
                 return self.read_message(&message).map(Effected::value);
             }
-            ChatEffect::AttachFile { channel, path } => self.attach_file_effect(&channel, &path)?,
+            ChatEffect::AttachFile { channel, path } => {
+                self.attach_file_effect(&channel, path.as_deref())?;
+            }
             ChatEffect::ShareLiveContext => self.set_live_context_sharing(true)?,
             ChatEffect::StopSharingLiveContext => self.set_live_context_sharing(false)?,
             ChatEffect::LiveContextStatus => {
@@ -393,16 +398,31 @@ impl ChatApp {
         Ok(())
     }
 
-    fn attach_file_effect(&mut self, channel: &str, path: &str) -> Result<(), String> {
-        if !self.external_services {
-            return Err("attachment import unsupported: no host asset transport".into());
-        }
-        let path = path.trim();
-        if path.is_empty() {
-            return Err("attachment path is empty".into());
-        }
+    pub(crate) fn attach_file_effect(
+        &mut self,
+        channel: &str,
+        path: Option<&str>,
+    ) -> Result<(), String> {
         if !self.channels.iter().any(|item| item.id == channel) {
             return Err("conversation no longer exists".into());
+        }
+        // No path: the person chooses the files, from their bytes, in the
+        // conversation they go to; a browser page has no paths but this.
+        let Some(path) = path.map(str::trim) else {
+            if !self.can_participate() {
+                return Err("you can't post in this conversation".into());
+            }
+            self.open_channel(channel)?;
+            self.choose_device_files();
+            return Ok(());
+        };
+        if !self.external_services {
+            return Err(
+                "this device has no file paths; leave out the path to choose the files".into(),
+            );
+        }
+        if path.is_empty() {
+            return Err("attachment path is empty".into());
         }
         if !self.begin_attachment_import_into(channel, std::path::Path::new(path)) {
             return Err("attachment import was not accepted".into());
@@ -526,13 +546,6 @@ impl ChatApp {
     /// The effects this window cannot run right now.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut unavailable = Vec::new();
-        if !self.external_services {
-            unavailable.push(EffectStatus::unavailable(
-                ChatEffect::ATTACH_FILE,
-                "no_services",
-                crate::i18n::t("chat-attachment-import-unavailable"),
-            ));
-        }
         if !self.voice_service_available() {
             let reason = crate::i18n::t("chat-voice-unavailable");
             let reason = reason.as_str();

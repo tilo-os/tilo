@@ -2920,3 +2920,24 @@ fn an_attachment_is_saved_where_a_pathless_host_keeps_it() {
         "no folder to show a copy the browser keeps in"
     );
 }
+
+/// The attach action on a page with no file paths: without a path it
+/// opens the conversation and asks the platform's chooser, whose bytes go
+/// to the page's content store; a path is refused with how to attach.
+#[test]
+fn the_attach_action_chooses_files_where_the_device_has_no_paths() {
+    let (mut app, _doc) = app_with_doc();
+    app.external_services = false;
+    app.active_channel = "c_chat".into();
+    let refused = app
+        .attach_file_effect("c_crit", Some("/home/ada/plan.pdf"))
+        .unwrap_err();
+    assert!(refused.contains("leave out the path"), "{refused}");
+    assert!(app.device_pick.is_none(), "a refused path asks nothing");
+    app.attach_file_effect("c_crit", None).unwrap();
+    assert_eq!(
+        app.active_channel, "c_crit",
+        "the files' conversation opens"
+    );
+    assert!(app.device_pick.is_some(), "the platform's chooser is asked");
+}

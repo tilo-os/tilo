@@ -586,6 +586,109 @@ fn channels_and_categories_are_made_moved_and_deleted() {
     );
 }
 
+/// Categories and channels are put in an order at once, each channel under
+/// the category named; what is not named keeps its place, and a category
+/// moves one place at a time.
+#[test]
+fn the_rooms_channels_are_arranged_in_one_go() {
+    let mut ada = room();
+    for name in ["A", "B"] {
+        ada.apply(Chat::CREATE_CATEGORY.with(chat::CreateCategory { name: name.into() }))
+            .unwrap();
+    }
+    let category = |replica: &Replica<Chat>, name: &str| {
+        replica
+            .state()
+            .unwrap()
+            .categories
+            .iter()
+            .find(|(_, c)| c.name == name)
+            .map(|(id, _)| id.as_str().to_owned())
+            .unwrap()
+    };
+    let (a, b) = (category(&ada, "A"), category(&ada, "B"));
+    for (channel, under) in [("c_x", &a), ("c_y", &a), ("c_z", &b)] {
+        ada.apply(
+            Chat::CREATE_CHANNEL_WITH_ID.with(chat::CreateChannelWithId {
+                id: channel.into(),
+                name: channel.trim_start_matches("c_").into(),
+                category: Some(id(under)),
+                kind: None,
+                topic: None,
+            }),
+        )
+        .unwrap();
+    }
+    let place = |channel: &str, category: Option<&String>| ChannelPlace {
+        channel: channel.into(),
+        category: category.cloned(),
+    };
+    ada.apply(Chat::ARRANGE_CHANNELS.with(chat::ArrangeChannels {
+        categories: vec![b.clone(), a.clone()],
+        channels: vec![
+            place("c_z", Some(&a)),
+            place("c_y", Some(&a)),
+            place("c_x", Some(&b)),
+        ],
+    }))
+    .unwrap();
+    let listed = |replica: &Replica<Chat>, under: &str| {
+        replica
+            .state()
+            .unwrap()
+            .channel_rows()
+            .into_iter()
+            .filter(|channel| channel.category == under)
+            .map(|channel| channel.name)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(listed(&ada, &a), ["z", "y"]);
+    assert_eq!(listed(&ada, &b), ["x"]);
+    let categories = |replica: &Replica<Chat>| {
+        replica
+            .state()
+            .unwrap()
+            .categories
+            .values()
+            .map(|c| c.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(categories(&ada), ["B", "A"]);
+    // The starter's channels, not named, are where they were.
+    let rows = ada.state().unwrap().channel_rows();
+    assert_eq!(rows.first().map(|c| c.id.as_str()), Some(CHAT_CHANNEL));
+
+    ada.apply(Chat::MOVE_CATEGORY.with(chat::MoveCategory {
+        category: id(&a),
+        up: true,
+    }))
+    .unwrap();
+    assert_eq!(categories(&ada), ["A", "B"]);
+    ada.apply(Chat::MOVE_CATEGORY.with(chat::MoveCategory {
+        category: id(&a),
+        up: true,
+    }))
+    .unwrap();
+    assert_eq!(categories(&ada), ["A", "B"], "the first stays first");
+
+    for refused in [
+        chat::ArrangeChannels {
+            categories: vec![a.clone(), a],
+            channels: Vec::new(),
+        },
+        chat::ArrangeChannels {
+            categories: Vec::new(),
+            channels: vec![place("c_gone", None)],
+        },
+        chat::ArrangeChannels {
+            categories: Vec::new(),
+            channels: vec![place("c_x", Some(&"cat_gone".to_owned()))],
+        },
+    ] {
+        assert!(ada.apply(Chat::ARRANGE_CHANNELS.with(refused)).is_err());
+    }
+}
+
 #[test]
 fn a_channel_is_filed_only_under_a_category_that_exists() {
     let mut ada = room();
@@ -1070,6 +1173,8 @@ fn the_rooms_layout_is_kept_by_its_moderators() {
         "archive-channel",
         "set-channel-topic",
         "move-channel",
+        "move-category",
+        "arrange-channels",
         "set-channel-category",
         "delete-channel",
         "delete-category",

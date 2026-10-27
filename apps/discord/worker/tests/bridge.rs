@@ -1453,6 +1453,215 @@ async fn a_bridge_of_one_channel_touches_nothing_else_in_the_server() {
     assert!(bridge.chat_message("elsewhere").await.is_none());
 }
 
+/// Names of the channels Discord lists under `parent` (none for the top),
+/// of `kind` (4 for the categories), as Discord sorts them: by position,
+/// then by id.
+fn discord_list(fake: &FakeDiscord, parent: Option<&str>, kind: u64) -> Vec<String> {
+    let mut listed: Vec<Value> = fake
+        .channels()
+        .into_iter()
+        .filter(|c| c["type"] == kind && (kind == 4 || c["parent_id"].as_str() == parent))
+        .collect();
+    listed.sort_by_key(|c| {
+        let id = c["id"].as_str().unwrap_or_default().to_owned();
+        (c["position"].as_i64().unwrap_or(0), id.len(), id)
+    });
+    listed
+        .into_iter()
+        .filter_map(|c| c.get("name")?.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// Names of what Chat lists: its categories, or the channels under
+/// `category` (by name; none for the top).
+async fn chat_list(room: &Room, category: Option<&str>) -> Vec<String> {
+    let chat = room.chat().await;
+    let id_of = |name: &str| {
+        chat.categories
+            .iter()
+            .find(|(_, c)| c.name == name)
+            .map(|(id, _)| id.clone())
+    };
+    let under = category.and_then(id_of);
+    chat.channels
+        .values()
+        .filter(|c| !c.archived && c.category == under)
+        .map(|c| c.name.clone())
+        .collect()
+}
+
+async fn chat_categories(room: &Room) -> Vec<String> {
+    room.chat()
+        .await
+        .categories
+        .values()
+        .map(|c| c.name.clone())
+        .collect()
+}
+
+/// The bridge's arrangements of Discord's channels so far.
+fn arrangements(fake: &FakeDiscord) -> usize {
+    changes(fake)
+        .into_iter()
+        .filter(|call| *call == format!("PATCH /guilds/{GUILD}/channels"))
+        .count()
+}
+
+/// Channels and categories moved in Discord move in Chat, a channel moved
+/// to another category included, and the bridge sends nothing back.
+#[tokio::test(flavor = "multi_thread")]
+async fn moving_channels_in_discord_rearranges_chat() {
+    let (bridge, mut runner) = Bridge::start_with(Setup {
+        existing: true,
+        mirror: true,
+        ..Setup::default()
+    })
+    .await;
+    quiet(&mut runner, &bridge, "adopted").await;
+    assert_eq!(
+        chat_list(&bridge.room, None).await,
+        ["goal", "roadmap", "progress"]
+    );
+    assert_eq!(chat_categories(&bridge.room).await, ["Channels", "chat"]);
+
+    // #progress dragged to the top, as Discord's client renumbers the list.
+    let fake = &bridge.fake;
+    fake.place_channel(CHANNEL_PROGRESS, None, 0);
+    fake.place_channel(fake_discord::CHANNEL_GOAL, None, 1);
+    fake.place_channel(CHANNEL_ROADMAP, None, 2);
+    // "chat" dragged above "Channels"; #roadmap into "Channels".
+    fake.place_channel(CATEGORY_EMPTY, None, 0);
+    fake.place_channel(CATEGORY_CHANNELS, None, 1);
+    fake.place_channel(CHANNEL_ROADMAP, Some(CATEGORY_CHANNELS), 1);
+    settle(&mut runner, "Chat in Discord's order", || async {
+        (chat_list(&bridge.room, None).await == ["progress", "goal"]
+            && chat_categories(&bridge.room).await == ["chat", "Channels"]
+            && chat_list(&bridge.room, Some("Channels"))
+                .await
+                .ends_with(&["roadmap".to_owned(), "voice".to_owned()]))
+        .then_some(())
+    })
+    .await;
+    quiet(&mut runner, &bridge, "settled").await;
+    assert_eq!(arrangements(fake), 0, "Discord's own move is not sent back");
+    assert_eq!(
+        discord_list(fake, Some(CATEGORY_CHANNELS), 0),
+        ["general", "roadmap"]
+    );
+}
+
+/// Channels and categories moved in Chat move in Discord, the server's own
+/// bridged channels too; a channel made in Chat is made where Chat lists
+/// it; and Discord's echo of all that changes nothing back in Chat.
+#[tokio::test(flavor = "multi_thread")]
+async fn moving_channels_in_chat_rearranges_discord() {
+    let (bridge, mut runner) = Bridge::start_with(Setup {
+        existing: true,
+        mirror: true,
+        ..Setup::default()
+    })
+    .await;
+    quiet(&mut runner, &bridge, "adopted").await;
+    let chat = bridge.room.chat().await;
+    let named = |name: &str| {
+        chat.channels
+            .iter()
+            .find(|(_, c)| c.name == name)
+            .map(|(id, _)| id.clone())
+            .unwrap()
+    };
+    let category = |name: &str| {
+        chat.categories
+            .iter()
+            .find(|(_, c)| c.name == name)
+            .map(|(id, _)| id.clone())
+            .unwrap()
+    };
+    // #goal one place down, below #roadmap; "chat" above "Channels".
+    bridge
+        .as_ada(
+            chat::Chat::MOVE_CHANNEL.with(chat::record::chat::MoveChannel {
+                channel: named("goal"),
+                up: false,
+            }),
+        )
+        .await;
+    bridge
+        .as_ada(
+            chat::Chat::MOVE_CATEGORY.with(chat::record::chat::MoveCategory {
+                category: category("chat"),
+                up: true,
+            }),
+        )
+        .await;
+    let fake = &bridge.fake;
+    settle(&mut runner, "Discord in Chat's order", || async {
+        (discord_list(fake, None, 0) == ["roadmap", "goal", "progress"]
+            && discord_list(fake, None, 4) == ["chat", "Channels"])
+        .then_some(())
+    })
+    .await;
+
+    // A channel made in Chat at the top of "Channels" is made there.
+    bridge
+        .as_ada(
+            chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+                name: "ideas".into(),
+                category: Some(category("Channels")),
+                kind: None,
+                topic: None,
+            }),
+        )
+        .await;
+    let ideas = settle(&mut runner, "#ideas in Chat", || async {
+        bridge
+            .room
+            .chat()
+            .await
+            .channels
+            .iter()
+            .find(|(_, c)| c.name == "ideas")
+            .map(|(id, _)| id.clone())
+    })
+    .await;
+    for _ in 0..3 {
+        bridge
+            .as_ada(
+                chat::Chat::MOVE_CHANNEL.with(chat::record::chat::MoveChannel {
+                    channel: ideas.clone(),
+                    up: true,
+                }),
+            )
+            .await;
+    }
+    let in_chat = chat_list(&bridge.room, Some("Channels")).await;
+    assert_eq!(in_chat.first().map(String::as_str), Some("ideas"));
+    settle(&mut runner, "#ideas first in Discord", || async {
+        (discord_list(fake, Some(CATEGORY_CHANNELS), 0)
+            .first()
+            .map(String::as_str)
+            == Some("ideas"))
+        .then_some(())
+    })
+    .await;
+
+    // Discord's echo moved nothing back: Chat is as Ada left it.
+    quiet(&mut runner, &bridge, "echoed").await;
+    assert_eq!(
+        chat_list(&bridge.room, None).await,
+        ["roadmap", "goal", "progress"]
+    );
+    assert_eq!(chat_categories(&bridge.room).await, ["chat", "Channels"]);
+    assert_eq!(chat_list(&bridge.room, Some("Channels")).await, in_chat);
+    let sent = arrangements(fake);
+    let idle = quiet(&mut runner, &bridge, "idle").await;
+    assert!(
+        !idle.iter().any(|call| call.starts_with("PATCH")),
+        "{idle:#?}"
+    );
+    assert_eq!(arrangements(fake), sent);
+}
+
 /// Lay the room's Chat out as its owner did before any bridge ran:
 /// "Channels" with #general, and "Voice" with the Lounge, in place of the
 /// `#chat` and `#voice` a room opens with.

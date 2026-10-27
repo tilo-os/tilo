@@ -197,6 +197,8 @@ pub struct MediaEngine {
     /// consumer agree on the one value the user selected.
     rate: f32,
     config: EngineConfig,
+    /// What the engine last described to the system's now-playing controls.
+    now_playing: Option<crate::NowPlaying>,
 }
 
 enum Backend {
@@ -275,6 +277,7 @@ impl MediaEngine {
                     muted: false,
                     rate: 1.0,
                     config,
+                    now_playing: None,
                 };
             }
         }
@@ -304,6 +307,7 @@ impl MediaEngine {
             muted: false,
             rate: 1.0,
             config,
+            now_playing: None,
         }
     }
 
@@ -334,6 +338,7 @@ impl MediaEngine {
             muted: false,
             rate: 1.0,
             config: EngineConfig::default(),
+            now_playing: None,
         }
     }
 
@@ -873,16 +878,24 @@ impl MediaEngine {
 
     /// Describe what is playing to the system's now-playing controls. On the
     /// web this is the page's Media Session; on Linux the toolkit's MPRIS
-    /// service publishes the `VideoPlayer` widget's engine, so this is a no-op
-    /// there, as it is on the synthesized backend.
+    /// service publishes the `VideoPlayer` widget's engine, so the system
+    /// hears nothing more from here, nor from the synthesized backend. A
+    /// description equal to the last one is not sent again.
     pub fn set_now_playing(&mut self, now: &crate::NowPlaying) {
-        match &self.backend {
-            #[cfg(web_page)]
-            Backend::Web(w) => w.set_now_playing(now),
-            _ => {
-                let _ = now;
-            }
+        if self.now_playing.as_ref() == Some(now) {
+            return;
         }
+        self.now_playing = Some(now.clone());
+        #[cfg(web_page)]
+        if let Backend::Web(w) = &self.backend {
+            w.set_now_playing(now);
+        }
+    }
+
+    /// What the engine last described to the system's now-playing controls.
+    #[must_use]
+    pub fn now_playing(&self) -> Option<&crate::NowPlaying> {
+        self.now_playing.as_ref()
     }
 
     /// Transport requests from the system's now-playing controls that the
@@ -892,7 +905,24 @@ impl MediaEngine {
         match &mut self.backend {
             #[cfg(web_page)]
             Backend::Web(w) => w.take_now_playing_actions(),
-            _ => Vec::new(),
+            Backend::Synth(s) => std::mem::take(&mut s.now_playing_actions),
+            #[cfg(gst_decode)]
+            Backend::Gst(_) | Backend::Unavailable(_) => Vec::new(),
+        }
+    }
+
+    /// On the synthesized backend, which has no system controls, stand in
+    /// for them: `action` is reported by
+    /// [`take_now_playing_actions`](Self::take_now_playing_actions) as a
+    /// page's Media Session reports a press. Other backends hear their own
+    /// controls and ignore it.
+    #[allow(
+        irrefutable_let_patterns,
+        reason = "a build without a decode or page backend has only the synthesized one"
+    )]
+    pub fn press_now_playing(&mut self, action: crate::NowPlayingAction) {
+        if let Backend::Synth(s) = &mut self.backend {
+            s.now_playing_actions.push(action);
         }
     }
 
@@ -1004,6 +1034,9 @@ struct SynthState {
     /// Prefetch progress for a file source.
     prefetch: Option<PrefetchProgress>,
     last_buffering: Option<u8>,
+    /// The presses of the system's now-playing controls it stands in for
+    /// ([`MediaEngine::press_now_playing`]), not taken yet.
+    now_playing_actions: Vec<crate::NowPlayingAction>,
     /// A test's stand-in for a running pipeline that, after the next seek,
     /// hands over the picture it decoded for its old position: the timestamp
     /// that picture carries.
@@ -1027,6 +1060,7 @@ impl SynthState {
             last_frame_pos: None,
             prefetch: None,
             last_buffering: None,
+            now_playing_actions: Vec::new(),
             #[cfg(test)]
             stale_on_seek: None,
         }
@@ -1396,5 +1430,24 @@ mod tests {
                 "a frame appears once media is opened"
             );
         }
+    }
+
+    #[test]
+    fn the_engine_keeps_what_it_described_and_reports_the_controls_presses() {
+        let mut engine = MediaEngine::new_synthesized();
+        assert_eq!(engine.now_playing(), None);
+        let song = crate::NowPlaying {
+            title: "Harbour".into(),
+            artist: "Ada".into(),
+            ..crate::NowPlaying::default()
+        };
+        engine.set_now_playing(&song);
+        assert_eq!(engine.now_playing(), Some(&song));
+        engine.press_now_playing(crate::NowPlayingAction::Next);
+        assert_eq!(
+            engine.take_now_playing_actions(),
+            vec![crate::NowPlayingAction::Next]
+        );
+        assert!(engine.take_now_playing_actions().is_empty(), "taken once");
     }
 }

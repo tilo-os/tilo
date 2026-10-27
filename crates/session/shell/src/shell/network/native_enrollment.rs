@@ -279,9 +279,11 @@ impl ShellNetwork {
         drop(retained);
         let rooms = tree.read().rooms();
         for room in rooms {
-            if owner.with_current(room, |_| Ok(())).is_ok()
-                && let Err(error) = self.connect_native_room(owner.clone(), room)
-            {
+            if owner.with_current(room, |_| Ok(())).is_err() {
+                continue;
+            }
+            self.prepare_workspace_layout(&owner, room);
+            if let Err(error) = self.connect_native_room(owner.clone(), room) {
                 tracing::warn!(%error, "native owner restored while data transport is unavailable");
             }
         }

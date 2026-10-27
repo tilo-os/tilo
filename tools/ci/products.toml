@@ -636,6 +636,7 @@ default = false
 # built from; t_toml.py generates them.
 [[matrix.check]]
 name = "app-sizes-{arch}"
+heavy = true
 run = "bash tools/apps/t-release.sh sizes {arch}"
 requires = ["{node}"]
 # The runtime library's link and the apps' one-unit codegen run side by side.
@@ -800,6 +801,7 @@ on = ["dispatch"]
 
 [[matrix.check]]
 name = "host-session-e2e"
+heavy = true
 run = '''
 dnf --setopt=retries=3 --setopt=install_weak_deps=False install -y \
   qemu-system-x86-core qemu-device-display-virtio-vga qemu-device-display-virtio-gpu \
@@ -893,6 +895,7 @@ each = [{ arch = "x86_64" }, { arch = "aarch64" }]
 
 [[matrix.check]]
 name = "development-signing-context-{arch}"
+heavy = true
 run = "bash os/tests/development_signing_native.sh context /target/development-signing/{arch}"
 needs = ["signing-tools"]
 inputs = ["os/tests/development_signing_native.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/tests/test_tls_registry_fixture.py", "os/dev/verify-development-source.py", "os/dev/development_boot.py", "os/dev/development_prediction.py", "os/tests/test_development_prediction.py", "os/tests/development_prediction_native.py", "os/dev/import-development-rootfs.py", "os/dev/initramfs-trust.py", "os/dev/complete-initramfs-rebind.py", "os/dev/installed_material_audit.py", "os/dev/rebind-development-rootfs.py", "os/usr/lib/dracut/modules.d/91tilo-rollback/**", "os/tests/test_rebind_development_rootfs.py", "os/tests/test_initramfs_trust.py", "os/tests/initramfs_trust_native.py", "os/tests/test_complete_initramfs_rebind.py", "os/dev/rebind-development-trust.py", "os/tests/test_import_development_rootfs.py", "os/tests/test_rebind_development_trust.py", "os/tests/test_development_trust.py", "os/dev/retain-development-rootfs.py", "os/tests/test_retain_development_rootfs.py", "os/tests/development_retention_native.py", "os/tests/tls_registry_fixture.py", "os/dev/audit-rootfs-layers.py", "os/tests/test_rootfs_layer_audit.py", "os/tests/development_layer_audit_native.py", "os/tests/development_rebind_native.py", "os/tests/test_development_boot.py", "os/tests/test_development_source.py", "os/dev/development-trust.py", "os/dev/install-public-trust.py", "os/dev/hardware_profile.py", "os/dev/development-signer.py", "os/dev/setup-development-signer.py", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/tests/development_source_registry.py", "os/tests/development_signer.py", "os/tests/test_development_signer.py", "os/tests/test_development_loader.py", "os/tests/development_stage_reuse.py", "os/dev/sign-development-rootfs.py", "os/dev/private_disk_image.py", "os/tests/test_private_disk_image.py", "os/Containerfile.development-loader", "os/tests/test_sign_development_rootfs.py", "os/tests/development_rootfs.py", "os/tests/Containerfile.development-source", "tools/tests/hang.py"]
@@ -905,6 +908,7 @@ default = false
 
 [[matrix.check]]
 name = "development-signing-{arch}"
+heavy = true
 run = 'bash os/tests/development_signing_native.sh run /target/development-signing/{arch} "${T_INPUT_PROOF:-full}"'
 inputs = ["os/tests/development_signing_native.sh"]
 needs = ["development-signing-context-{arch}"]
@@ -1371,6 +1375,7 @@ default = false
 
 [[matrix.check]]
 name = "os-acceptance-{arch}"
+heavy = true
 comment = """
 The devices and desktop a person gets from os-image-{arch} and os-dev-image-{arch}, booted under
 KVM on throwaway overlays of the disk os-dev-disk-{arch} installed (tools/ci/publish/os-acceptance.sh):
@@ -1509,6 +1514,7 @@ each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "a
 
 [[matrix.check]]
 name = "os-release-seal-{arch}"
+heavy = true
 comment = """
 The release image checked as a device gets it, on every release candidate and when dispatched:
 inside the image, every ELF resolves its libraries, every script its interpreter and every

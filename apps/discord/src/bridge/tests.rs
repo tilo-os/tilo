@@ -423,3 +423,126 @@ fn the_servers_custom_emoji_are_recorded_with_its_layout() {
             .is_empty()
     );
 }
+
+/// A mirroring bridge of "talk" with #one and #two, Discord listing them so.
+fn arranged_guild() -> Guild {
+    let mut g = guild();
+    g.mirror_channels = true;
+    g.map = [
+        mapping(MappedKind::Category, "k_talk", "d_talk"),
+        mapping(MappedKind::Channel, "c_one", "d_one"),
+        mapping(MappedKind::Channel, "c_two", "d_two"),
+        mapping(MappedKind::Webhook, "c_one", "wh_one"),
+        mapping(MappedKind::Webhook, "c_two", "wh_two"),
+    ]
+    .into_iter()
+    .collect();
+    observed(&mut g, &[("d_one", 0), ("d_two", 1)]);
+    g
+}
+
+/// Discord's layout with "talk"'s channels at these positions.
+fn layout_payload(positions: &[(&str, i64)], connected: bool) -> Value {
+    let mut channels =
+        vec![json!({"id": "d_talk", "kind": "category", "name": "talk", "position": 0})];
+    channels.extend(positions.iter().map(|(id, position)| {
+        json!({"id": id, "kind": "text", "name": id.trim_start_matches("d_"),
+            "parent": "d_talk", "position": position})
+    }));
+    json!({"guild_id": "1", "bot_user": "9", "channels": channels, "roles": [],
+        "connected": connected})
+}
+
+/// `g` with "talk"'s channels recorded at these positions.
+fn observed(g: &mut Guild, positions: &[(&str, i64)]) {
+    let layout: discord_wire::event::LayoutChanged =
+        serde_json::from_value(layout_payload(positions, false)).unwrap();
+    g.observe("9".into(), layout.channels, Vec::new());
+}
+
+/// The room's chat with "talk" listing `channels` in this order.
+fn talk(channels: &[&str]) -> Value {
+    json!({
+        "categories": [{"id": "k_talk", "value": {"name": "talk"}}],
+        "channels": channels.iter().map(|id| json!({"id": id, "value": {
+            "category": "k_talk", "name": id.trim_start_matches("c_"), "topic": "",
+            "kind": "text", "archived": false}})).collect::<Vec<_>>(),
+    })
+}
+
+fn planned_on(guild: &Guild, chat: &Value, event: &Value) -> BridgePlan {
+    plan(
+        Reading {
+            guild,
+            chat,
+            context: &Context::default(),
+            room: &Value::Null,
+            emoji: None,
+        },
+        event,
+    )
+}
+
+#[test]
+fn a_channel_moved_in_discord_rearranges_chat_with_the_layout() {
+    let g = arranged_guild();
+    let event = discord(
+        "layout-changed",
+        &layout_payload(&[("d_one", 1), ("d_two", 0)], false),
+    );
+    let first = planned_on(&g, &talk(&["c_one", "c_two"]), &event);
+    assert_eq!(first.observe.len(), 1);
+    assert_eq!(
+        first.chat_arrangements,
+        [json!({"categories": ["k_talk"], "channels": [
+            {"channel": "c_two", "category": "k_talk"},
+            {"channel": "c_one", "category": "k_talk"},
+        ]})]
+    );
+    assert!(first.arrange_channels.is_empty(), "never sent back");
+    // Once recorded, with Chat rearranged, nothing is left to do.
+    let mut recorded = g;
+    observed(&mut recorded, &[("d_one", 1), ("d_two", 0)]);
+    let second = planned_on(&recorded, &talk(&["c_two", "c_one"]), &event);
+    assert!(second.chat_arrangements.is_empty() && second.arrange_channels.is_empty());
+}
+
+#[test]
+fn a_reconnect_brings_chat_in_line_with_discord() {
+    let g = arranged_guild();
+    let chat = talk(&["c_two", "c_one"]);
+    let same = layout_payload(&[("d_one", 0), ("d_two", 1)], false);
+    assert!(
+        planned_on(&g, &chat, &discord("layout-changed", &same))
+            .chat_arrangements
+            .is_empty(),
+        "a layout that moved nothing leaves Chat's order be"
+    );
+    let connected = layout_payload(&[("d_one", 0), ("d_two", 1)], true);
+    assert_eq!(
+        planned_on(&g, &chat, &discord("layout-changed", &connected))
+            .chat_arrangements
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn a_channel_moved_in_chat_moves_in_discord() {
+    let g = arranged_guild();
+    let chat = talk(&["c_two", "c_one"]);
+    let moved = json!({"kind": CHAT_KIND, "did": verb("move-channel"),
+        "item": {"id": "c_two"}});
+    let plan = planned_on(&g, &chat, &moved);
+    assert_eq!(
+        plan.arrange_channels,
+        [json!({"categories": [], "channels": [
+            {"channel": "d_two", "parent": "d_talk", "position": 0},
+            {"channel": "d_one", "parent": "d_talk", "position": 1},
+        ]})]
+    );
+    assert!(plan.chat_arrangements.is_empty());
+    // A change that rearranges nothing does not move Discord's channels.
+    let read = json!({"kind": CHAT_KIND, "did": verb("mark-read"), "item": {"id": "c_two"}});
+    assert!(planned_on(&g, &chat, &read).arrange_channels.is_empty());
+}
