@@ -169,10 +169,11 @@ fn the_same_proposal_is_not_opened_twice() {
     let mut replica = Replica::<Workbench>::new();
     let mut program = proposal.program();
     program.name = proposal.name(&catalog);
+    let offered = json!(program);
     replica
-        .apply(Workbench::DRAFT_PROPOSAL.with(json!(program.clone())))
+        .apply(Workbench::DRAFT_PROPOSAL.with(offered.clone()))
         .unwrap();
-    let refused = replica.apply(Workbench::DRAFT_PROPOSAL.with(json!(program)));
+    let refused = replica.apply(Workbench::DRAFT_PROPOSAL.with(offered));
     assert!(refused.is_err(), "a second draft of the same name");
     assert_eq!(replica.state().unwrap().drafts.len(), 1);
 }
@@ -237,7 +238,7 @@ fn a_refinement_keeps_the_shortcut_and_says_what_changed() {
         "the person reviews what changed: {changes:?}"
     );
     assert!(
-        changes.iter().any(|line| line.contains("2")),
+        changes.iter().any(|line| line.contains('2')),
         "the step that changed is named: {changes:?}"
     );
 }
