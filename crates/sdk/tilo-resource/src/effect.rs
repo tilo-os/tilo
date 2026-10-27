@@ -717,9 +717,7 @@ impl EffectDecl {
         if !self.keywords.is_empty() {
             spec = spec.with_keywords(self.keywords.iter().copied());
         }
-        if let Some(icon) = self.icon {
-            spec = spec.with_icon(icon);
-        }
+        spec.icon = self.icon.map(str::to_owned);
         let base = if view {
             ActionContract::view()
         } else {
