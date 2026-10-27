@@ -371,7 +371,9 @@ fn add(
             None => return,
         },
     };
-    let kind = descriptor.map_or(ActionKind::Undoable, |descriptor| descriptor.contract.kind);
+    let kind = descriptor.map_or(ActionKind::Undoable, |descriptor| {
+        descriptor.contract.need().kind
+    });
     let label = match (&reach, descriptor) {
         (Reach::Resource(_), Some(descriptor)) => format!(
             "{} in {}",
