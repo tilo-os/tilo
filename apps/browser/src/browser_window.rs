@@ -11,12 +11,10 @@
 use crate::BrowserWidget;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use taffy::style_helpers::{auto, length};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::time::{Duration, Instant};
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::{
@@ -28,12 +26,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
-
-const FULLSCREEN_HINT_DURATION: Duration = Duration::from_secs(3);
-
-fn fullscreen_hint_visible(deadline: Option<Instant>, now: Instant) -> bool {
-    deadline.is_some_and(|deadline| now < deadline)
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ExitState {
@@ -67,8 +59,6 @@ pub struct BrowserWindow {
     close_intent: bool,
     window_fullscreen_active: bool,
     observed_content_fullscreen: bool,
-    fullscreen_hint_deadline: Option<Instant>,
-    fullscreen_hint: Option<Box<dyn Widget>>,
     /// This window among the profile's open Browser windows, in every
     /// process: closing the last of them is the Browser closing.
     open_window: Option<crate::storage::OpenWindow>,
@@ -102,8 +92,6 @@ impl BrowserWindow {
             close_intent: false,
             window_fullscreen_active: false,
             observed_content_fullscreen: false,
-            fullscreen_hint_deadline: None,
-            fullscreen_hint: None,
             open_window: crate::storage::data_dir()
                 .and_then(|root| crate::storage::open_window(&root).ok()),
         }
@@ -190,50 +178,12 @@ impl BrowserWindow {
         self.window_fullscreen_active && self.page.content_fullscreen()
     }
 
-    fn make_fullscreen_hint() -> Box<dyn Widget> {
-        use ui::a11y::Politeness;
-        use ui::widget::{Container, Text};
-        // Theme-driven: the hint pill takes the theme's own surface and body
-        // ink, so it reads on every palette (HIG §7 theme-driven).
-        Box::new(
-            Container::new()
-                .with_no_padding()
-                .with_height(48.0)
-                .with_child(Box::new(
-                    Container::new()
-                        .with_centered_max_width(240.0)
-                        .with_background()
-                        .with_child(Box::new(
-                            Text::new("Esc to exit full screen")
-                                .with_id("browser.fullscreen-hint")
-                                .with_live(Politeness::Polite)
-                                .with_role(ui::tokens::TextRole::Body),
-                        )),
-                )),
-        )
-    }
-
-    fn clear_fullscreen_hint(&mut self) {
-        self.fullscreen_hint_deadline = None;
-        self.fullscreen_hint = None;
-    }
-
-    fn start_fullscreen_hint(&mut self) {
-        self.fullscreen_hint_deadline = Some(ui::time::now() + FULLSCREEN_HINT_DURATION);
-        self.fullscreen_hint = Some(Self::make_fullscreen_hint());
-    }
-
     fn reconcile_content_fullscreen(&mut self) {
         let content_fullscreen = self.page.content_fullscreen();
         if content_fullscreen == self.observed_content_fullscreen {
             return;
         }
         self.observed_content_fullscreen = content_fullscreen;
-        if content_fullscreen && self.window_fullscreen_active {
-            self.start_fullscreen_hint();
-        } else {
-            self.clear_fullscreen_hint();
-        }
         self.dirty = true;
     }
 
@@ -320,12 +270,6 @@ impl Widget for BrowserWindow {
         dyn ui::component_lifecycle::ComponentLifecycle
     );
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        if self.fullscreen_hint_deadline.is_some()
-            && !fullscreen_hint_visible(self.fullscreen_hint_deadline, ui::time::now())
-        {
-            self.clear_fullscreen_hint();
-            self.dirty = true;
-        }
         if let Some(cancel) = self.exit_choice.get() {
             self.exit_choice.set(None);
             if cancel {
@@ -394,20 +338,7 @@ impl Widget for BrowserWindow {
         if self.immersive() {
             let page = self.page.build_layout(taffy, theme, nodes);
             self.layout_immersive = Some(true);
-            let mut children = vec![page];
-            if let Some(hint) = self.fullscreen_hint.as_mut() {
-                let hint = hint.build_layout(taffy, theme, nodes);
-                let mut style = taffy.style(hint).cloned().unwrap_or_default();
-                style.position = taffy::Position::Absolute;
-                style.inset = taffy::Rect {
-                    left: length(0.0_f32),
-                    right: length(0.0_f32),
-                    top: length(theme.tokens.spacing.s6),
-                    bottom: auto(),
-                };
-                let _ = taffy.set_style(hint, style);
-                children.push(hint);
-            }
+            let children = vec![page];
             let root = taffy.parent_node(full, &children);
             nodes.insert(root, std::ptr::from_mut::<dyn Widget>(self));
             return root;
@@ -451,11 +382,6 @@ impl Widget for BrowserWindow {
             if let Some(page) = children.first() {
                 self.page.apply_layout(taffy, *page, origin);
             }
-            if let Some(hint) = self.fullscreen_hint.as_mut()
-                && let Some(node) = children.get(1)
-            {
-                hint.apply_layout(taffy, *node, origin);
-            }
             return;
         }
         let page_index = usize::from(self.exit_panel.is_some());
@@ -478,9 +404,6 @@ impl Widget for BrowserWindow {
     ) {
         if self.layout_immersive == Some(true) {
             self.page.draw(scene, transform, tr, theme, presence);
-            if let Some(hint) = self.fullscreen_hint.as_mut() {
-                hint.draw(scene, transform, tr, theme, presence);
-            }
             return;
         }
         if let Some(panel) = self.exit_panel.as_mut() {
@@ -505,7 +428,6 @@ impl Widget for BrowserWindow {
         {
             self.page.exit_content_fullscreen();
             self.observed_content_fullscreen = false;
-            self.clear_fullscreen_hint();
             self.dirty = true;
             *ctx.handled = true;
             return;
@@ -602,9 +524,7 @@ impl Widget for BrowserWindow {
     }
     fn children(&self) -> Vec<&dyn Widget> {
         if self.immersive() {
-            return std::iter::once(self.page.as_ref() as &dyn Widget)
-                .chain(self.fullscreen_hint.as_deref())
-                .collect();
+            return vec![self.page.as_ref() as &dyn Widget];
         }
         let mut children: Vec<&dyn Widget> = Vec::new();
         if let Some(panel) = self.exit_panel.as_ref() {
@@ -615,11 +535,7 @@ impl Widget for BrowserWindow {
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.immersive() {
-            let mut children: Vec<&mut dyn Widget> = vec![self.page.as_mut()];
-            if let Some(hint) = self.fullscreen_hint.as_mut() {
-                children.push(hint.as_mut());
-            }
-            return children;
+            return vec![self.page.as_mut()];
         }
         let mut children: Vec<&mut dyn Widget> = Vec::new();
         if let Some(panel) = self.exit_panel.as_mut() {
@@ -630,27 +546,14 @@ impl Widget for BrowserWindow {
     }
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
-        let mut children = Vec::new();
-        if self.fullscreen_hint.is_some() {
-            children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name("Esc to exit full screen")
-                    .with_hashed_key("browser.fullscreen-hint-status"),
-            );
-        }
-        Some(
-            AccessNode::new(Role::Group)
-                .with_name("Browser")
-                .with_children(children),
-        )
+        Some(AccessNode::new(Role::Group).with_name("Browser"))
     }
     fn take_structure_dirty(&mut self) -> bool {
         let dirty = std::mem::take(&mut self.dirty);
         self.page.take_structure_dirty() || dirty
     }
     fn needs_animation_frame(&self) -> bool {
-        fullscreen_hint_visible(self.fullscreen_hint_deadline, ui::time::now())
-            || self.page.needs_animation_frame()
+        self.page.needs_animation_frame()
     }
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.page.set_motion_reduced(reduced);
@@ -707,7 +610,6 @@ impl ui::component_lifecycle::ComponentLifecycle for BrowserWindow {
                 // full screen before asking what to do with active downloads.
                 self.page.exit_content_fullscreen();
                 self.observed_content_fullscreen = false;
-                self.clear_fullscreen_hint();
                 self.exit_state = ExitState::Choice;
                 self.exit_panel = Some(self.make_exit_panel(false));
                 self.dirty = true;
@@ -810,13 +712,9 @@ impl FullscreenProvider for BrowserWindow {
         self.page.set_window_fullscreen_active(active);
         if active && self.page.content_fullscreen() {
             self.observed_content_fullscreen = true;
-            self.start_fullscreen_hint();
-        } else {
-            if !active {
-                self.page.exit_content_fullscreen();
-                self.observed_content_fullscreen = false;
-            }
-            self.clear_fullscreen_hint();
+        } else if !active {
+            self.page.exit_content_fullscreen();
+            self.observed_content_fullscreen = false;
         }
         self.dirty = true;
     }
@@ -1114,9 +1012,9 @@ mod tests {
         }
     }
 
-    /// Content full screen hint lifetime and exit routes.
+    /// Content full screen follows the root window, and leaves on Escape.
     #[test]
-    fn content_fullscreen_owner_hint_and_exit_follow_the_root_window() {
+    fn content_fullscreen_owner_and_exit_follow_the_root_window() {
         {
             let (mut window, engine) = window();
             engine.emit(WebViewEvent::FullscreenChanged(true));
@@ -1126,11 +1024,8 @@ mod tests {
             window.on_fullscreen_changed(true);
             let rects = layout_rects(&mut window);
             assert!(rects.contains_key("browser.surface"), "{rects:?}");
-            assert!(rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
             assert!(!rects.contains_key("browser.url_input"), "{rects:?}");
             assert_eq!(rects["browser.surface"], Rect::new(0.0, 0.0, 1000.0, 700.0));
-            assert!(rects["browser.fullscreen-hint"].y0 >= 24.0);
-            assert!(window.needs_animation_frame());
 
             let (tree, root, _nodes) = layout(&mut window);
             assert!(dispatch(
@@ -1144,7 +1039,6 @@ mod tests {
             window.on_fullscreen_changed(false);
             let rects = layout_rects(&mut window);
             assert!(rects.contains_key("browser.url_input"), "{rects:?}");
-            assert!(!rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
         }
 
         {
@@ -1153,7 +1047,6 @@ mod tests {
             assert_eq!(window.fullscreen_intent(), Some(false));
             let rects = layout_rects(&mut window);
             assert!(rects.contains_key("browser.url_input"), "{rects:?}");
-            assert!(!rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
         }
 
         {
@@ -1162,28 +1055,12 @@ mod tests {
             let (tree, root, _nodes) = layout(&mut window);
             engine.emit(WebViewEvent::FullscreenChanged(true));
             window.sync(&AutoCommit::new(), &automerge::ROOT);
-            assert!(window.fullscreen_hint.is_some());
             assert!(dispatch(
                 &mut window,
                 (&tree, root),
                 &key_event_with_state(Key::Named(NamedKey::Enter), ElementState::Released),
                 winit::keyboard::ModifiersState::empty()
             ));
-        }
-
-        {
-            let entered = ui::time::now();
-            let deadline = entered + FULLSCREEN_HINT_DURATION;
-            assert!(fullscreen_hint_visible(Some(deadline), entered));
-            assert!(fullscreen_hint_visible(
-                Some(deadline),
-                deadline
-                    .checked_sub(std::time::Duration::from_nanos(1))
-                    .unwrap()
-            ));
-            assert!(!fullscreen_hint_visible(Some(deadline), deadline));
-            assert!(!fullscreen_hint_visible(None, entered));
-            assert_eq!(FULLSCREEN_HINT_DURATION, std::time::Duration::from_secs(3));
         }
     }
 
@@ -1259,7 +1136,6 @@ mod tests {
                 WindowCloseAdmission::Defer
             );
             assert_eq!(window.fullscreen_intent(), Some(false));
-            assert!(window.fullscreen_hint.is_none());
             let rects = layout_rects(&mut window);
             for id in ["browser.download-exit.keep", "browser.download-exit.cancel"] {
                 let rect = rects.get(id).expect("visible exit choice");
