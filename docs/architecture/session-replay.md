@@ -105,6 +105,11 @@ past state. Nothing in replay is specific to feedback or to an app.
   module, or lists them through the replay window's History.
 - Following a past session is stepping the same History forward at the pace
   of the steps' times.
+- Looking at a past state is a read: it changes what this viewer sees, not
+  the record. History's looking actions (listing, viewing at an entry,
+  comparing, opening at a change) need only read access, so a read-only
+  member, the read-only replay window and an agent all step through them;
+  restoring and naming write and need write access.
 
 ## Checked against the principles
 
