@@ -968,16 +968,18 @@ impl ActionArgs {
                         reason,
                     }
                 })?;
-                check_schema_value(&value.to_json(), schema).map_err(|refusal| match refusal {
-                    SchemaRefusal::Bound(violation) => ArgError::OutOfRange {
-                        name: name.clone(),
-                        violation,
-                    },
-                    SchemaRefusal::Other(reason) => ArgError::Constraint {
-                        name: name.clone(),
-                        reason,
-                    },
-                })?;
+                SchemaScope::new(schema)
+                    .check(&value.to_json(), schema, 0)
+                    .map_err(|refusal| match refusal {
+                        SchemaRefusal::Bound(violation) => ArgError::OutOfRange {
+                            name: name.clone(),
+                            violation,
+                        },
+                        SchemaRefusal::Other(reason) => ArgError::Constraint {
+                            name: name.clone(),
+                            reason,
+                        },
+                    })?;
             }
             if !param.choices.is_empty() {
                 let got = match &value {
@@ -1193,41 +1195,6 @@ fn validate_string_schema(
     Ok(())
 }
 
-fn validate_object_schema(
-    object: &serde_json::Map<String, serde_json::Value>,
-    schema: &serde_json::Map<String, serde_json::Value>,
-) -> Result<(), String> {
-    if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
-        for key in required.iter().filter_map(serde_json::Value::as_str) {
-            if !object.contains_key(key) {
-                return Err(format!("must contain property `{key}`"));
-            }
-        }
-    }
-    if let Some(properties) = schema
-        .get("properties")
-        .and_then(serde_json::Value::as_object)
-    {
-        for (key, property_schema) in properties {
-            if let Some(property) = object.get(key) {
-                validate_schema_value(property, property_schema)
-                    .map_err(|reason| format!("property `{key}` {reason}"))?;
-            }
-        }
-    }
-    if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
-        let properties = schema
-            .get("properties")
-            .and_then(serde_json::Value::as_object);
-        for key in object.keys() {
-            if !properties.is_some_and(|properties| properties.contains_key(key)) {
-                return Err(format!("contains unknown property `{key}`"));
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Validate the commonly useful, deterministic JSON Schema vocabulary used by
 /// action inputs and outputs. Unknown annotations are intentionally ignored;
 /// all assertion keywords accepted here are enforced centrally.
@@ -1275,14 +1242,209 @@ fn check_schema(
 ) -> Result<(), SchemaRefusal> {
     // Check even branches the value never visits before enforcing the contract.
     validate_schema_definition(schema)?;
-    check_schema_value(value, schema)
+    SchemaScope::new(schema).check(value, schema, 0)
 }
 
-fn validate_schema_value(
-    value: &serde_json::Value,
-    schema: &serde_json::Value,
-) -> Result<(), String> {
-    check_schema_value(value, schema).map_err(|refusal| refusal.to_string())
+/// One schema document while a value is checked against it: where a `$ref`
+/// resolves, and how much of that work is left. A schema states its own
+/// definitions, so nothing here reaches outside the document it was given.
+struct SchemaScope<'a> {
+    root: &'a serde_json::Value,
+    references: std::cell::Cell<usize>,
+}
+
+impl<'a> SchemaScope<'a> {
+    fn new(root: &'a serde_json::Value) -> Self {
+        Self {
+            root,
+            references: std::cell::Cell::new(SCHEMA_REFERENCE_STEPS),
+        }
+    }
+
+    /// `value` against `schema`, a subschema of this document.
+    fn check(
+        &self,
+        value: &serde_json::Value,
+        schema: &serde_json::Value,
+        depth: usize,
+    ) -> Result<(), SchemaRefusal> {
+        let Some(fields) = schema.as_object() else {
+            return Err(SchemaRefusal::Other(
+                "has a schema that is not an object".into(),
+            ));
+        };
+        if depth > SCHEMA_DEPTH {
+            return Err(SchemaRefusal::Other(
+                "has a schema nested more deeply than Tilo reads".into(),
+            ));
+        }
+        // A `$ref` applies the definition it names, and so does everything
+        // it says beside it: the reference is one more keyword, not a
+        // replacement for the rest of the subschema.
+        if let Some(reference) = fields.get(crate::schema_refs::REF) {
+            let target = self.follow(reference)?;
+            self.check(value, target, depth.saturating_add(1))?;
+        }
+        if let Some(alternatives) = fields.get("oneOf").and_then(serde_json::Value::as_array) {
+            self.one_of(value, alternatives, depth)?;
+        }
+        validate_schema_type(value, fields)?;
+        validate_schema_equality(value, fields)?;
+        validate_schema_number(value, fields)?;
+        validate_schema_string(value, fields)?;
+        self.check_array(value, fields, depth)?;
+        self.check_object(value, fields, depth)?;
+        Ok(())
+    }
+
+    /// The schema `reference` names in this document.
+    fn follow(
+        &self,
+        reference: &serde_json::Value,
+    ) -> Result<&'a serde_json::Value, SchemaRefusal> {
+        let reference = reference.as_str().ok_or_else(|| {
+            SchemaRefusal::Other("has a schema `$ref` that is not a string".into())
+        })?;
+        let left = self.references.get();
+        if left == 0 {
+            return Err(SchemaRefusal::Other(format!(
+                "names more schemas through `$ref` than Tilo follows ({SCHEMA_REFERENCE_STEPS})"
+            )));
+        }
+        self.references.set(left.saturating_sub(1));
+        crate::schema_refs::local_reference(self.root, reference).map_err(SchemaRefusal::Other)
+    }
+    /// Exactly one alternative must accept `value`. When none does, the
+    /// refusal says why in terms of the alternative the value evidently
+    /// meant — the one whose required keys and constants it has
+    /// (`{"SpliceText": {..}}` meant the `SpliceText` alternative) — or else
+    /// names the alternatives, so a caller can correct the call rather than
+    /// guess.
+    fn one_of(
+        &self,
+        value: &serde_json::Value,
+        alternatives: &[serde_json::Value],
+        depth: usize,
+    ) -> Result<(), String> {
+        let mut failures = Vec::new();
+        let mut matched = 0_usize;
+        for alternative in alternatives {
+            match self.check(value, alternative, depth.saturating_add(1)) {
+                Ok(()) => matched = matched.saturating_add(1),
+                Err(reason) => failures.push((alternative, reason.to_string())),
+            }
+        }
+        match matched {
+            1 => return Ok(()),
+            0 => {}
+            _ => return Err("matches more than one `oneOf` alternative".into()),
+        }
+        let meant: Vec<_> = failures
+            .iter()
+            .filter(|(alternative, _)| selects(value, alternative))
+            .collect();
+        if let [(alternative, reason)] = meant.as_slice() {
+            return Err(match alternative_name(alternative) {
+                Some(name) => format!("as `{name}`: {reason}"),
+                None => reason.clone(),
+            });
+        }
+        let names: Option<Vec<String>> = alternatives.iter().map(alternative_name).collect();
+        Err(match names {
+            Some(names) if !names.is_empty() => format!("must be one of: {}", names.join(", ")),
+            _ => "must match exactly one `oneOf` alternative".into(),
+        })
+    }
+
+    fn check_array(
+        &self,
+        value: &serde_json::Value,
+        schema: &serde_json::Map<String, serde_json::Value>,
+        depth: usize,
+    ) -> Result<(), String> {
+        let Some(items) = value.as_array() else {
+            return Ok(());
+        };
+        let length = u64::try_from(items.len()).unwrap_or(u64::MAX);
+        if let Some(minimum) = schema.get("minItems").and_then(serde_json::Value::as_u64)
+            && length < minimum
+        {
+            return Err(format!("must contain at least {minimum} items"));
+        }
+        if let Some(maximum) = schema.get("maxItems").and_then(serde_json::Value::as_u64)
+            && length > maximum
+        {
+            return Err(format!("must contain at most {maximum} items"));
+        }
+        if schema
+            .get("uniqueItems")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+            && items
+                .iter()
+                .enumerate()
+                .any(|(index, item)| items.get(..index).is_some_and(|prior| prior.contains(item)))
+        {
+            return Err("must contain unique items".into());
+        }
+        // `prefixItems` checks the leading items one schema each; `items`
+        // the ones after them (JSON Schema 2020-12).
+        let prefix = schema
+            .get("prefixItems")
+            .and_then(serde_json::Value::as_array)
+            .map_or(&[][..], Vec::as_slice);
+        for (index, (item, item_schema)) in items.iter().zip(prefix).enumerate() {
+            self.check(item, item_schema, depth.saturating_add(1))
+                .map_err(|refusal| format!("item {index} {refusal}"))?;
+        }
+        if let Some(item_schema) = schema.get("items") {
+            for (index, item) in items.iter().enumerate().skip(prefix.len()) {
+                self.check(item, item_schema, depth.saturating_add(1))
+                    .map_err(|refusal| format!("item {index} {refusal}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn check_object(
+        &self,
+        value: &serde_json::Value,
+        schema: &serde_json::Map<String, serde_json::Value>,
+        depth: usize,
+    ) -> Result<(), String> {
+        let Some(object) = value.as_object() else {
+            return Ok(());
+        };
+        if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
+            for key in required.iter().filter_map(serde_json::Value::as_str) {
+                if !object.contains_key(key) {
+                    return Err(format!("must contain property `{key}`"));
+                }
+            }
+        }
+        if let Some(properties) = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        {
+            for (key, property_schema) in properties {
+                if let Some(property) = object.get(key) {
+                    self.check(property, property_schema, depth.saturating_add(1))
+                        .map_err(|refusal| format!("property `{key}` {refusal}"))?;
+                }
+            }
+        }
+        if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
+            let properties = schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object);
+            for key in object.keys() {
+                if !properties.is_some_and(|properties| properties.contains_key(key)) {
+                    return Err(format!("contains unknown property `{key}`"));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Whether `param`'s schema offers `value`'s JSON type as one of its
@@ -1309,66 +1471,6 @@ fn schema_alternative_of(param: &ActionParam, value: &ArgValue) -> bool {
                 alternative.get("type").and_then(serde_json::Value::as_str) == Some(json_type)
             })
         })
-}
-
-fn check_schema_value(
-    value: &serde_json::Value,
-    schema: &serde_json::Value,
-) -> Result<(), SchemaRefusal> {
-    let Some(schema) = schema.as_object() else {
-        return Err(SchemaRefusal::Other(
-            "has a schema that is not an object".into(),
-        ));
-    };
-    if let Some(alternatives) = schema.get("oneOf").and_then(serde_json::Value::as_array) {
-        validate_one_of(value, alternatives)?;
-    }
-    validate_schema_type(value, schema)?;
-    validate_schema_equality(value, schema)?;
-    validate_schema_number(value, schema)?;
-    validate_schema_string(value, schema)?;
-    validate_schema_array(value, schema)?;
-    validate_schema_object(value, schema)?;
-    Ok(())
-}
-
-/// Exactly one alternative must accept `value`. When none does, the refusal
-/// says why in terms of the alternative the value evidently meant — the one
-/// whose required keys and constants it has (`{"SpliceText": {..}}` meant
-/// the `SpliceText` alternative) — or else names the alternatives, so a
-/// caller can correct the call rather than guess.
-fn validate_one_of(
-    value: &serde_json::Value,
-    alternatives: &[serde_json::Value],
-) -> Result<(), String> {
-    let mut failures = Vec::new();
-    let mut matched = 0_usize;
-    for alternative in alternatives {
-        match validate_schema_value(value, alternative) {
-            Ok(()) => matched = matched.saturating_add(1),
-            Err(reason) => failures.push((alternative, reason)),
-        }
-    }
-    match matched {
-        1 => return Ok(()),
-        0 => {}
-        _ => return Err("matches more than one `oneOf` alternative".into()),
-    }
-    let meant: Vec<_> = failures
-        .iter()
-        .filter(|(alternative, _)| selects(value, alternative))
-        .collect();
-    if let [(alternative, reason)] = meant.as_slice() {
-        return Err(match alternative_name(alternative) {
-            Some(name) => format!("as `{name}`: {reason}"),
-            None => reason.clone(),
-        });
-    }
-    let names: Option<Vec<String>> = alternatives.iter().map(alternative_name).collect();
-    Err(match names {
-        Some(names) if !names.is_empty() => format!("must be one of: {}", names.join(", ")),
-        _ => "must match exactly one `oneOf` alternative".into(),
-    })
 }
 
 /// Whether `value` carries what tells `alternative` apart: the values of its
@@ -1525,63 +1627,6 @@ fn validate_schema_string(
     Ok(())
 }
 
-fn validate_schema_array(
-    value: &serde_json::Value,
-    schema: &serde_json::Map<String, serde_json::Value>,
-) -> Result<(), String> {
-    if let Some(items) = value.as_array() {
-        let length = u64::try_from(items.len()).unwrap_or(u64::MAX);
-        if let Some(minimum) = schema.get("minItems").and_then(serde_json::Value::as_u64)
-            && length < minimum
-        {
-            return Err(format!("must contain at least {minimum} items"));
-        }
-        if let Some(maximum) = schema.get("maxItems").and_then(serde_json::Value::as_u64)
-            && length > maximum
-        {
-            return Err(format!("must contain at most {maximum} items"));
-        }
-        if schema
-            .get("uniqueItems")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-            && items
-                .iter()
-                .enumerate()
-                .any(|(index, item)| items.get(..index).is_some_and(|prior| prior.contains(item)))
-        {
-            return Err("must contain unique items".into());
-        }
-        // `prefixItems` checks the leading items one schema each; `items`
-        // the ones after them (JSON Schema 2020-12).
-        let prefix = schema
-            .get("prefixItems")
-            .and_then(serde_json::Value::as_array)
-            .map_or(&[][..], Vec::as_slice);
-        for (index, (item, item_schema)) in items.iter().zip(prefix).enumerate() {
-            validate_schema_value(item, item_schema)
-                .map_err(|reason| format!("item {index} {reason}"))?;
-        }
-        if let Some(item_schema) = schema.get("items") {
-            for (index, item) in items.iter().enumerate().skip(prefix.len()) {
-                validate_schema_value(item, item_schema)
-                    .map_err(|reason| format!("item {index} {reason}"))?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_schema_object(
-    value: &serde_json::Value,
-    schema: &serde_json::Map<String, serde_json::Value>,
-) -> Result<(), String> {
-    if let Some(object) = value.as_object() {
-        validate_object_schema(object, schema)?;
-    }
-    Ok(())
-}
-
 /// Validate one JSON value against the deterministic JSON Schema subset used
 /// by Tilo action contracts.
 pub fn validate_json_schema(
@@ -1590,6 +1635,11 @@ pub fn validate_json_schema(
 ) -> Result<(), String> {
     validate_schema(value, schema)
 }
+
+/// [`crate::schema_refs::share_repeated_subschemas_among`]: the factoring a
+/// publisher applies, so the schemas it hands out stay inside the validator's
+/// one vocabulary.
+pub use crate::schema_refs::{scoped, share_repeated_subschemas, share_repeated_subschemas_among};
 
 const SCHEMA_ASSERTIONS: &[&str] = &[
     "type",
@@ -1629,18 +1679,51 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
     PEOPLE_ANNOTATION,
     PICK_ANNOTATION,
 ];
+/// The keywords a schema states its own definitions with. Both name
+/// schemas of the same document, so a reader resolves them where it stands.
+const SCHEMA_REFERENCES: &[&str] = &["$defs", "$ref"];
 
 /// Validate the assertion vocabulary itself before a surface is published.
 /// Runtime value validation is too late to discover a malformed regular
 /// expression or an unsupported format: callers must be able to trust every
 /// schema they enumerate.
-pub(crate) fn validate_schema_definition(schema: &serde_json::Value) -> Result<(), String> {
+///
+/// A schema states the definitions it names: `$defs` holds schemas of its
+/// own, and every `$ref` names one of them in the same document. A reference
+/// that names a URL, a file or another document is refused, as is one that
+/// names nothing or follows itself, so what a caller reads is everything that
+/// constrains it and nothing it would have to fetch.
+pub fn validate_schema_definition(schema: &serde_json::Value) -> Result<(), String> {
+    let mut left = SCHEMA_DEFINITION_NODES;
+    validate_schema_definition_in(schema, schema, &mut Vec::new(), &mut left)
+}
+
+/// The most subschemas one schema definition may state, the references that
+/// reach them included: a contract is not a place to hide work.
+const SCHEMA_DEFINITION_NODES: usize = 16 * 1024;
+/// The most definitions one schema may carry.
+const SCHEMA_DEFS_LIMIT: usize = 64;
+/// The most times one value check may follow a `$ref`.
+const SCHEMA_REFERENCE_STEPS: usize = 4 * 1024;
+/// The deepest subschema one value check enters.
+const SCHEMA_DEPTH: usize = 64;
+
+fn validate_schema_definition_in(
+    root: &serde_json::Value,
+    schema: &serde_json::Value,
+    following: &mut Vec<String>,
+    left: &mut usize,
+) -> Result<(), String> {
+    *left = left
+        .checked_sub(1)
+        .ok_or_else(|| "schema states too many subschemas".to_string())?;
     let object = schema
         .as_object()
         .ok_or_else(|| "schema must be an object".to_string())?;
     for keyword in object.keys() {
         if !SCHEMA_ASSERTIONS.contains(&keyword.as_str())
             && !SCHEMA_ANNOTATIONS.contains(&keyword.as_str())
+            && !SCHEMA_REFERENCES.contains(&keyword.as_str())
         {
             return Err(format!(
                 "schema uses unsupported keyword `{keyword}`; Tilo rejects unknown keywords instead of silently weakening a contract"
@@ -1649,8 +1732,35 @@ pub(crate) fn validate_schema_definition(schema: &serde_json::Value) -> Result<(
     }
     validate_schema_definition_type(object)?;
     validate_schema_definition_strings(object)?;
-    validate_schema_definition_collections(object)?;
-    validate_schema_definition_numbers(object)
+    validate_schema_definition_numbers(object)?;
+    if let Some(definitions) = object.get(crate::schema_refs::DEFS) {
+        let definitions = definitions
+            .as_object()
+            .ok_or_else(|| "schema `$defs` must be an object".to_string())?;
+        if definitions.len() > SCHEMA_DEFS_LIMIT {
+            return Err(format!(
+                "schema carries more than {SCHEMA_DEFS_LIMIT} definitions"
+            ));
+        }
+        for (name, definition) in definitions {
+            validate_schema_definition_in(root, definition, following, left)
+                .map_err(|reason| format!("definition `{name}` {reason}"))?;
+        }
+    }
+    if let Some(reference) = object.get(crate::schema_refs::REF) {
+        let reference = reference
+            .as_str()
+            .ok_or_else(|| "schema `$ref` must be a string".to_string())?;
+        let target = crate::schema_refs::local_reference(root, reference)?;
+        if following.iter().any(|followed| followed == reference) {
+            return Err(format!("schema `$ref` `{reference}` follows itself"));
+        }
+        following.push(reference.to_owned());
+        validate_schema_definition_in(root, target, following, left)
+            .map_err(|reason| format!("`{reference}` {reason}"))?;
+        following.pop();
+    }
+    validate_schema_definition_collections(root, object, following, left)
 }
 
 fn validate_schema_definition_type(
@@ -1699,7 +1809,10 @@ fn validate_schema_definition_strings(
 }
 
 fn validate_schema_definition_collections(
+    root: &serde_json::Value,
     object: &serde_json::Map<String, serde_json::Value>,
+    following: &mut Vec<String>,
+    left: &mut usize,
 ) -> Result<(), String> {
     if let Some(required) = object.get("required")
         && !required
@@ -1728,19 +1841,20 @@ fn validate_schema_definition_collections(
             .as_object()
             .ok_or_else(|| "schema `properties` must be an object".to_string())?;
         for (name, child) in properties {
-            validate_schema_definition(child)
+            validate_schema_definition_in(root, child, following, left)
                 .map_err(|reason| format!("property `{name}` {reason}"))?;
         }
     }
     if let Some(items) = object.get("items") {
-        validate_schema_definition(items).map_err(|reason| format!("items {reason}"))?;
+        validate_schema_definition_in(root, items, following, left)
+            .map_err(|reason| format!("items {reason}"))?;
     }
     if let Some(prefix) = object.get("prefixItems") {
         let prefix = prefix
             .as_array()
             .ok_or_else(|| "schema `prefixItems` must be an array".to_string())?;
         for (index, item) in prefix.iter().enumerate() {
-            validate_schema_definition(item)
+            validate_schema_definition_in(root, item, following, left)
                 .map_err(|reason| format!("prefixItems {index} {reason}"))?;
         }
     }
@@ -1750,7 +1864,7 @@ fn validate_schema_definition_collections(
             .filter(|alternatives| !alternatives.is_empty())
             .ok_or_else(|| "schema `oneOf` must be a non-empty array".to_string())?;
         for (index, alternative) in alternatives.iter().enumerate() {
-            validate_schema_definition(alternative)
+            validate_schema_definition_in(root, alternative, following, left)
                 .map_err(|reason| format!("oneOf alternative {index} {reason}"))?;
         }
     }

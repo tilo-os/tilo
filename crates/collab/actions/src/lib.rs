@@ -145,6 +145,7 @@ pub mod registry;
 pub mod remote;
 pub mod resource;
 pub mod schema;
+mod schema_refs;
 pub mod selection;
 pub mod surface;
 pub mod task_step;

@@ -10,11 +10,6 @@
 //! a repeated subschema becomes one `$defs` entry its places `$ref`.
 use serde_json::{Map, Value};
 
-/// Subschemas shorter than this stay inline: a `$ref` would cost about as
-/// much.
-const SHARED_BYTES: usize = 48;
-/// The most definitions one schema gets.
-const MAX_DEFS: usize = 32;
 /// Bounds at or beyond this magnitude only restate an integer type's range.
 const TYPE_LIMIT: f64 = 2_147_483_647.0;
 
@@ -129,150 +124,12 @@ fn each_subschema(fields: &mut Map<String, Value>, mut visit: impl FnMut(&mut Va
     }
 }
 
-/// Every subschema of `schema` with the property name it first stands
-/// under, if any.
-fn subschemas<'a>(
-    schema: &'a Value,
-    name: Option<&'a str>,
-    out: &mut Vec<(&'a Value, Option<&'a str>)>,
-) {
-    let Some(fields) = schema.as_object() else {
-        return;
-    };
-    out.push((schema, name));
-    for (key, value) in fields {
-        match (key.as_str(), value) {
-            ("properties" | "$defs", Value::Object(children)) => {
-                for (child, child_schema) in children {
-                    subschemas(child_schema, Some(child), out);
-                }
-            }
-            ("items" | "additionalProperties" | "not", value) if value.is_object() => {
-                subschemas(value, name, out);
-            }
-            ("items" | "oneOf" | "anyOf" | "allOf", Value::Array(alternatives)) => {
-                for alternative in alternatives {
-                    subschemas(alternative, None, out);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// What makes two subschemas the same shape: everything but their own
-/// description, which stays beside the `$ref` at each place.
-fn shape(schema: &Value) -> Option<Value> {
-    let mut fields = schema.as_object()?.clone();
-    fields.remove("description");
-    (!fields.is_empty() && !fields.contains_key("$ref")).then_some(Value::Object(fields))
-}
-
 /// Move the subschema `schema` repeats that saves the most into its
-/// `$defs`, again while one is repeated and worth a reference.
+/// `$defs`, again while one is repeated and worth a reference: the same
+/// factoring every publisher applies, in the validator's own vocabulary
+/// ([`tilo_actions::params::share_repeated_subschemas`]).
 fn share(schema: &mut Value) {
-    let mut defs = Map::new();
-    while defs.len() < MAX_DEFS {
-        let Some((shared, name)) = most_repeated(schema, &defs) else {
-            break;
-        };
-        let reference = format!("#/$defs/{name}");
-        replace_inside(schema, &shared, &reference);
-        for def in defs.values_mut() {
-            replace_inside(def, &shared, &reference);
-        }
-        defs.insert(name, shared);
-    }
-    if !defs.is_empty()
-        && let Some(fields) = schema.as_object_mut()
-    {
-        fields.insert("$defs".into(), Value::Object(defs));
-    }
-}
-
-/// The repeated shape that saves the most bytes once shared, with the
-/// name its definition gets: the property it first stands under.
-fn most_repeated(schema: &Value, defs: &Map<String, Value>) -> Option<(Value, String)> {
-    let mut found = Vec::new();
-    // Neither the parameter itself nor a definition is a place to share.
-    for root in std::iter::once(schema).chain(defs.values()) {
-        let at = found.len();
-        subschemas(root, None, &mut found);
-        found.remove(at);
-    }
-    let mut counted: Vec<(String, Value, usize, Option<&str>)> = Vec::new();
-    for (subschema, name) in found {
-        let Some(shape) = shape(subschema) else {
-            continue;
-        };
-        let text = shape.to_string();
-        if text.len() < SHARED_BYTES {
-            continue;
-        }
-        match counted.iter_mut().find(|(seen, ..)| *seen == text) {
-            Some((_, _, count, first)) => {
-                *count = count.saturating_add(1);
-                if first.is_none() {
-                    *first = name;
-                }
-            }
-            None => counted.push((text, shape, 1, name)),
-        }
-    }
-    counted
-        .into_iter()
-        .filter(|(_, _, count, _)| *count > 1)
-        .map(|(text, shape, count, name)| {
-            let name = free_name(name.unwrap_or("shared"), defs);
-            // `{"$ref":"#/$defs/<name>"}` at each place, and the
-            // definition under its name once.
-            let reference = name.len().saturating_add(19);
-            let saved = text
-                .len()
-                .saturating_mul(count)
-                .saturating_sub(text.len().saturating_add(name.len()).saturating_add(3))
-                .saturating_sub(reference.saturating_mul(count));
-            (saved, shape, name)
-        })
-        .filter(|(saved, ..)| *saved > 0)
-        .max_by_key(|(saved, ..)| *saved)
-        .map(|(_, shape, name)| (shape, name))
-}
-
-/// `name`, or `name2`, `name3`, … when a definition has it already.
-fn free_name(name: &str, defs: &Map<String, Value>) -> String {
-    if !defs.contains_key(name) {
-        return name.to_owned();
-    }
-    // At most `MAX_DEFS` names are taken, so one of these is free.
-    (2..=MAX_DEFS.saturating_add(2))
-        .map(|index| format!("{name}{index}"))
-        .find(|candidate| !defs.contains_key(candidate))
-        .unwrap_or_else(|| name.to_owned())
-}
-
-/// Each place under `schema` (not `schema` itself) that has `shape_of`
-/// names `reference` instead, keeping its own description.
-fn replace_inside(schema: &mut Value, shape_of: &Value, reference: &str) {
-    let Some(fields) = schema.as_object_mut() else {
-        return;
-    };
-    let mut place = |child: &mut Value| {
-        if shape(child).as_ref() == Some(shape_of) {
-            let mut named = Map::new();
-            named.insert("$ref".into(), reference.into());
-            if let Some(description) = child.get("description") {
-                named.insert("description".into(), description.clone());
-            }
-            *child = Value::Object(named);
-        } else {
-            replace_inside(child, shape_of, reference);
-        }
-    };
-    if let Some(Value::Object(properties)) = fields.get_mut("properties") {
-        properties.values_mut().for_each(&mut place);
-    }
-    each_subschema(fields, place);
+    tilo_actions::params::share_repeated_subschemas(schema);
 }
 
 #[cfg(test)]
