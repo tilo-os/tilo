@@ -101,12 +101,13 @@ impl FrameHarness {
         presses: usize,
     ) -> Result<Vec<SidebarShown>, String> {
         let _landed = crate::motion::testing::settled();
-        self.relayout_until_still();
+        self.relayout_until_still()?;
         let read = |harness: &mut Self| harness.window_sidebar_shown();
         let mut states = vec![read(self)?];
         for _ in 0..presses {
             self.click_window_sidebar_button()?;
-            self.relayout_until_still();
+            self.relayout_until_still()
+                .map_err(|error| format!("after click {}: {error}", states.len()))?;
             states.push(read(self)?);
         }
         Ok(states)
@@ -162,16 +163,24 @@ impl FrameHarness {
     }
 
     /// Lay out frames as the window's host draws them: the one asked for,
-    /// then more only while the app asks.
-    fn relayout_until_still(&mut self) {
+    /// then more only while the app asks. Motion lands at once here, so a
+    /// window still asking after many frames never comes to rest.
+    ///
+    /// # Errors
+    /// When the window never stops asking for frames.
+    fn relayout_until_still(&mut self) -> Result<(), String> {
         self.relayout();
         for _ in 0..64 {
             let schedule = self.frame_schedule();
             if !(schedule.needs_animation_frame || schedule.queued_work) {
-                return;
+                return Ok(());
             }
             self.relayout();
         }
+        Err(format!(
+            "the window still asks for frames 64 frames after the motion landed: {}",
+            self.sidebar_diagnosis()
+        ))
     }
 }
 
