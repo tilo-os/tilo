@@ -1310,6 +1310,17 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence:
                 ctx.register_presence(&key, UserId(c.id.clone()));
             }
         }
+        // A window someone shared with the room wears their presence while
+        // they are here: the share says whose it is, whatever they let out
+        // of where they are.
+        for (tab, sharer) in shared_window_sharers(tree, ws, tilo_clock::unix_now_ms()) {
+            ctx.register_presence(
+                &PresenceKey::Tab {
+                    id: format!("{tab:x}"),
+                },
+                UserId(sharer),
+            );
+        }
     }
     // Tree-level roster too (top-bar avatar stack); only the colour
     // override applies since tab attribution lives on the workspace.
@@ -1318,6 +1329,26 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence:
             ctx.set_color_override(UserId(c.id.clone()), hex);
         }
     }
+}
+
+/// Each tab of `ws` showing a window shared with its room, with the roster
+/// id of the person who shared it, while they are here: the member whose
+/// session is the device hosting the window.
+pub(crate) fn shared_window_sharers(
+    tree: &WorkspaceTree,
+    ws: &crate::shell::state::Workspace,
+    now_ms: u64,
+) -> Vec<(u64, String)> {
+    tree.shared_windows(ws.room(), now_ms)
+        .filter_map(|share| {
+            let session = crate::shell::state::host_handle(&share.host)?;
+            let sharer = ws
+                .collaborators
+                .iter()
+                .find(|c| c.session == Some(session) && !c.invited)?;
+            Some((share.tab, sharer.id.clone()))
+        })
+        .collect()
 }
 
 #[cfg(test)]
