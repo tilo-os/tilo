@@ -13,7 +13,7 @@
 "apps/contacts/src/app/tests.rs" = 5000
 "apps/ebook/src/app.rs" = 9000
 "apps/ebook/src/app/interaction_tests.rs" = 5500
-"apps/file-explorer/src/files_app.rs" = 11000
+"apps/file-explorer/src/files_app.rs" = 10500
 "apps/file-explorer/src/files_app/tests.rs" = 8000
 "apps/file-explorer/src/views/file_view.rs" = 3500
 "apps/imager/src/app.rs" = 6000
