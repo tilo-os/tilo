@@ -106,10 +106,8 @@ impl ChatApp {
         let name = self.display_name(id);
         let s = ui::widget::initials_for_name(&name);
         if s.is_empty() {
-            name.chars()
-                .next()
-                .map(|c| c.to_uppercase().to_string())
-                .unwrap_or_default()
+            // No word of the name has a letter, so there is no case to set.
+            name.chars().next().map(String::from).unwrap_or_default()
         } else {
             s
         }

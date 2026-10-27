@@ -301,6 +301,7 @@ fn paint_caption(
     );
     let media = &theme.tokens.colors.media;
     let style = theme.text(ui::TextRole::Body);
+    // ratchet-allow(raw_paint): a caption's scrim over the video picture, content
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
