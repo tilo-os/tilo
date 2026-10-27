@@ -36,6 +36,7 @@ mod now_playing_fixture;
 mod scene_catalogue;
 mod search_seed;
 mod secret_prompt_sim_scene;
+mod tab_bar_drop;
 mod two_groups_scene;
 mod uninstall_scenes;
 mod window_menu_scene;
