@@ -1221,12 +1221,9 @@ fn present_component(
     .map_err(error)?;
     let checkout = component.record().clone();
     let image_owners = crate::page_content::ImageOwners::default();
-    crate::page_content::own_loaders(
-        &image_owners,
-        0..loaders.borrow().len(),
-        definition.app_id,
-        &checkout.id,
-    );
+    if let Some(content) = component.content() {
+        crate::page_content::own_loaders(&image_owners, 0..loaders.borrow().len(), &content);
+    }
     Ok(Presentation {
         root: Root::Component(Box::new(component)),
         stores,

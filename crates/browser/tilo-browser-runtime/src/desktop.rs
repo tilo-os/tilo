@@ -1113,12 +1113,13 @@ impl Tiles {
             || definition.instantiate(context, target, restore),
         )
         .map_err(|error| error.to_string())?;
-        crate::page_content::own_loaders(
-            &self.shared.image_owners,
-            first_loader..self.shared.images.borrow().len(),
-            definition.app_id,
-            &component.record().id,
-        );
+        if let Some(content) = component.content() {
+            crate::page_content::own_loaders(
+                &self.shared.image_owners,
+                first_loader..self.shared.images.borrow().len(),
+                &content,
+            );
+        }
         let woken = Arc::clone(&self.shared.woken);
         let wakers = Arc::clone(&self.shared.wakers);
         let notify = Arc::clone(&self.notify);

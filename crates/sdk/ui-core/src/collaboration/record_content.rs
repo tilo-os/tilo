@@ -21,16 +21,18 @@
 //!   The event syncs the window, and [`arrivals`] moves: an app waiting for
 //!   content looks again then, never on a timer.
 //!
-//! The app's window and the store meet in a [`ContentLane`], one per
-//! record of a process: the store queues its requests there, and the
-//! window's collaboration loop sends them on the record's route and hands
-//! back what arrives.
+//! The app's window and the store meet in a [`ContentLane`], one per window
+//! ([`ContentLane::of_window`]): the store queues its requests there, and
+//! the window's collaboration loop sends them on the record's route and
+//! hands back what arrives. Two windows showing one record each queue on
+//! their own lane, so what one asks for is never what the other sends.
 //!
 //! A record other than the window's own — one of the person's records,
 //! kept in their own room — has a lane of its own that names its route
 //! ([`ContentLane::record_store`]): its content lives where that record
 //! does, on the person's devices, never in the window's room.
 
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,6 +42,21 @@ use tilo_content::{
     Collected, ContentBackend, ContentError, ContentReader, ContentState, ContentStore, Stored,
 };
 use tilo_lock::MutexRecover as _;
+
+// The lane `window`, the wake scope a window's code runs in, keeps for the
+// record it shows: one per window, so two windows of one app in a process are
+// never the one lane of the record they share. The window's own threads — the
+// ones that entered its scope — read the lane from here.
+thread_local! {
+    static OWN_LANE: RefCell<Option<(crate::WakeHandle, Arc<ContentLane>)>> =
+        const { RefCell::new(None) };
+}
+
+/// Let `window`'s record content travel on `lane`: the window keeps it, and
+/// its own record content reads it back ([`ContentLane::of_window`]).
+pub fn keep_lane(window: &crate::WakeHandle, lane: Arc<ContentLane>) {
+    OWN_LANE.with(|own| *own.borrow_mut() = Some((window.clone(), lane)));
+}
 
 /// Largest content one record references.
 pub const MAX_RECORD_CONTENT_BYTES: usize = 64 * 1024 * 1024;
@@ -110,16 +127,29 @@ impl ContentLane {
         )
     }
 
-    /// The lane of a window's record `record` of app `app`: the one its
-    /// route carries. A package's primary record travels as the route
-    /// without a record, so its lane is that route's.
-    pub fn of_record(app: &str, record: &crate::record::RecordId) -> Arc<Self> {
-        let wire = if record.is_package_primary() {
-            ""
-        } else {
-            record.as_str()
-        };
-        Self::of(app, wire)
+    /// The lane of the window whose code is running: the one it keeps
+    /// ([`keep_lane`]), made for it when it keeps none yet.
+    ///
+    /// A lane belongs to a window, not to a record: two windows of one app
+    /// showing the same record queue their wants and their offers apart, so
+    /// what one asks for is never what the other thinks it asked. The record
+    /// travels on its route either way; its route is the same for both
+    /// windows, its lane is not.
+    pub fn of_window() -> Arc<Self> {
+        let window = crate::WakeHandle::new();
+        OWN_LANE.with(|own| {
+            let mut own = own.borrow_mut();
+            match own.as_ref() {
+                Some((kept, lane)) if kept.same_open_scope(&window) => return Arc::clone(lane),
+                // The window that kept a lane before this one closed; the
+                // window here now keeps a lane of its own.
+                Some(_) => *own = None,
+                None => {}
+            }
+            let lane = Arc::new(Self::default());
+            *own = Some((window, Arc::clone(&lane)));
+            lane
+        })
     }
 
     /// The content store of the record `route` names, when it is not the
