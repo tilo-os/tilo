@@ -73,7 +73,8 @@ impl MapsApp {
                 Rect::new(sx, y, sx + seg_w, y + seg_h)
             })
             .collect();
-        let labels: Vec<&str> = TravelMode::ALL.iter().map(|m| m.label()).collect();
+        let labels: Vec<String> = TravelMode::ALL.iter().map(|m| m.label()).collect();
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
         let current = TravelMode::ALL
             .iter()
             .position(|m| *m == self.model.mode)
@@ -84,7 +85,7 @@ impl MapsApp {
             t,
             tr,
             theme,
-            &SegmentedFace::new(&segs, &labels, current).hovered(hovered),
+            &SegmentedFace::new(&segs, &label_refs, current).hovered(hovered),
         );
         for (rect, mode) in segs.iter().zip(TravelMode::ALL) {
             self.click_targets.push((*rect, Hit::Mode(mode)));
@@ -122,17 +123,18 @@ impl MapsApp {
         let distance = geo::fmt_distance(route.distance_m);
         // The distance and Clear route stand on the duration's baseline.
         let baseline = y + draw::baseline(tr, &duration, &display);
-        let clear_face = ButtonFace::new(Rect::ZERO, "Clear route")
+        let clear_label = failure::t("maps-clear-route");
+        let clear_face = ButtonFace::new(Rect::ZERO, &clear_label)
             .role(ButtonRole::Plain)
             .control_size(ControlSize::Small);
         let clear_w = clear_face.intrinsic_width(tr, theme);
         let label = theme.text(TextRole::Label);
         let label_top = (small_h - draw::line_h(tr, &label)) / 2.0;
-        let clear_y = baseline - label_top - draw::baseline(tr, "Clear route", &label);
+        let clear_y = baseline - label_top - draw::baseline(tr, &clear_label, &label);
         let clear = Rect::new(right - clear_w, clear_y, right, clear_y + small_h);
         self.text_button(
             &mut PaintCtx::new(scene, t, tr, theme),
-            ButtonFace::new(clear, "Clear route")
+            ButtonFace::new(clear, &clear_label)
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small),
             clear,
@@ -152,10 +154,12 @@ impl MapsApp {
                         .position(|offered| offered.is_same_trip(current))
                 })
                 .unwrap_or(0);
-            let label = format!(
-                "Route {} of {}",
-                shown + 1,
-                self.model.route_alternatives.len()
+            let label = failure::t_args(
+                "maps-route-number",
+                &[
+                    ("number", (shown + 1).into()),
+                    ("count", self.model.route_alternatives.len().into()),
+                ],
             );
             let face = ButtonFace::new(Rect::ZERO, &label)
                 .role(ButtonRole::Plain)
@@ -194,9 +198,12 @@ impl MapsApp {
         y += display_h;
         let (departure, arrival) = self.road_trip_clock(route.duration_s);
         let trip = if self.model.transit_time.is_now() {
-            format!("Arrive at {arrival}")
+            failure::t_args("maps-arrive-at", &[("time", arrival.into())])
         } else {
-            format!("Leave at {departure}, arrive at {arrival}")
+            failure::t_args(
+                "maps-leave-arrive-at",
+                &[("departure", departure.into()), ("arrival", arrival.into())],
+            )
         };
         draw::text(
             &mut ctx,
@@ -280,8 +287,9 @@ impl MapsApp {
         let row_h = SegmentedFace::height(ControlSize::Regular, theme);
 
         // Leave / Arrive: quiet, so the travel mode above reads first.
-        let labels = ["Leave", "Arrive"];
-        let toggle_w = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, tr, theme);
+        let labels = [failure::t("maps-leave"), failure::t("maps-arrive")];
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let toggle_w = SegmentedFace::intrinsic_width(&label_refs, ControlSize::Regular, tr, theme);
         let half = toggle_w / 2.0;
         let segs = [
             Rect::new(x, y, x + half, y + row_h),
@@ -294,7 +302,7 @@ impl MapsApp {
             t,
             tr,
             theme,
-            &SegmentedFace::new(&segs, &labels, current)
+            &SegmentedFace::new(&segs, &label_refs, current)
                 .style(SegmentedStyle::Quiet)
                 .hovered(hovered),
         );
@@ -307,7 +315,7 @@ impl MapsApp {
         // clock time, so stepping never moves it.
         let target = ui::clock::local_now() + chrono::Duration::minutes(i64::from(tt.offset_min));
         let label = if tt.is_now() {
-            "Now".to_string()
+            failure::t("maps-now")
         } else {
             clock_label(target)
         };
@@ -320,7 +328,9 @@ impl MapsApp {
             right,
             y + (row_h + height) / 2.0,
         );
-        let probe = NumberStepperFace::new(stepper, &label).names("Earlier", "Later");
+        let earlier_label = failure::t("maps-earlier");
+        let later_label = failure::t("maps-later");
+        let probe = NumberStepperFace::new(stepper, &label).names(&earlier_label, &later_label);
         let hovered = probe
             .part_at(theme, self.last_mouse)
             .filter(|_| !self.dragging);
@@ -337,14 +347,15 @@ impl MapsApp {
         if !tt.is_now() {
             y += s1;
             let small_h = ButtonFace::height(ControlSize::Small, theme);
-            let face = ButtonFace::new(Rect::ZERO, "Reset to now")
+            let reset_label = failure::t("maps-reset-to-now");
+            let face = ButtonFace::new(Rect::ZERO, &reset_label)
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small);
             let w = face.intrinsic_width(tr, theme);
             let reset = Rect::new(x, y, x + w, y + small_h);
             self.text_button(
                 &mut PaintCtx::new(scene, t, tr, theme),
-                ButtonFace::new(reset, "Reset to now")
+                ButtonFace::new(reset, &reset_label)
                     .role(ButtonRole::Plain)
                     .control_size(ControlSize::Small),
                 reset,
@@ -382,7 +393,7 @@ impl MapsApp {
         let to = if self.model.dest_name.is_empty() {
             self.model
                 .selected_place()
-                .map_or_else(|| "your destination".to_string(), |p| p.name.clone())
+                .map_or_else(|| failure::t("maps-your-destination"), |p| p.name.clone())
         } else {
             self.model.dest_name.clone()
         };
@@ -390,24 +401,24 @@ impl MapsApp {
             &mut PaintCtx::new(scene, t, tr, theme),
             content,
             y,
-            &format!("Departures to {to}"),
+            &failure::t_args("maps-departures-to", &[("to", to.into())]),
             None,
         );
 
         if self.model.transit.is_empty() {
             let has_target = self.model.dest.is_some() || self.model.selected_place().is_some();
             let msg = if self.pending > 0 {
-                "Finding departures…"
+                failure::t("maps-finding-departures")
             } else if !has_target {
-                "Choose a destination to see departures."
+                failure::t("maps-choose-destination-departures")
             } else {
-                "No public transport goes there at this time."
+                failure::t("maps-no-public-transport")
             };
             let body = theme.text(TextRole::Body);
             let mut ctx = PaintCtx::new(scene, t, tr, theme);
             draw::text_clip(
                 &mut ctx,
-                msg,
+                &msg,
                 Point::new(content.x0 + s2 + s3, y),
                 &body,
                 theme.text_dim,
@@ -460,10 +471,10 @@ impl MapsApp {
             );
             // The journey's lines in their own colours, walks as plain text.
             let chips_y = ty + title_h + s1;
-            let changes = match j.transfers {
-                0 => "Direct".to_string(),
-                1 => "1 change".to_string(),
-                n => format!("{n} changes"),
+            let changes = if j.transfers == 0 {
+                failure::t("maps-direct")
+            } else {
+                failure::t_args("maps-changes", &[("count", j.transfers.into())])
             };
             let changes_w = draw::measure_w(ctx.text, &changes, &caption);
             draw::text_right(
@@ -480,7 +491,10 @@ impl MapsApp {
             for (li, leg) in j.legs.iter().enumerate() {
                 let lead = if li > 0 { sep + s1 } else { 0.0 };
                 if leg.mode == TransitMode::Walk {
-                    let label = format!("Walk {} min", leg.duration_min.max(1));
+                    let label = failure::t_args(
+                        "maps-walk-minutes",
+                        &[("minutes", leg.duration_min.max(1).into())],
+                    );
                     let w = draw::measure_w(ctx.text, &label, &numeric);
                     if px + lead + w > chips_right {
                         break;
@@ -560,28 +574,38 @@ impl MapsApp {
                     let col = canvas::leg_color(theme, leg);
                     let (title, secondary) = if leg.mode == TransitMode::Walk {
                         (
-                            format!("Walk to {}", leg.to_name),
-                            format!("{} min", leg.duration_min.max(1)),
+                            failure::t_args(
+                                "maps-walk-to",
+                                &[("place", leg.to_name.clone().into())],
+                            ),
+                            failure::t_args(
+                                "maps-minutes",
+                                &[("count", leg.duration_min.max(1).into())],
+                            ),
                         )
                     } else {
                         let line = format!("{} {}", leg.mode.label(), leg.line);
                         let title = if leg.headsign.is_empty() {
                             line
                         } else {
-                            format!("{line} towards {}", leg.headsign)
+                            failure::t_args(
+                                "maps-line-towards",
+                                &[
+                                    ("line", line.into()),
+                                    ("headsign", leg.headsign.clone().into()),
+                                ],
+                            )
                         };
-                        let stops = if leg.num_stops == 1 {
-                            "1 stop".to_string()
-                        } else {
-                            format!("{} stops", leg.num_stops)
-                        };
+                        let stops =
+                            failure::t_args("maps-stops", &[("count", leg.num_stops.into())]);
                         (
                             title,
                             format!("{} to {}, {stops}", leg.from_name, leg.to_name),
                         )
                     };
                     let times = format!("{}–{}", leg.dep, leg.arr);
-                    let live = [("Live", ChipStyle::Tinted(Tone::Success))];
+                    let live_label = failure::t("maps-live");
+                    let live = [(live_label.as_str(), ChipStyle::Tinted(Tone::Success))];
                     let face = ListRowFace::new(&title)
                         .secondary(&secondary)
                         .meta(&times)
@@ -619,14 +643,17 @@ impl MapsApp {
             .iter()
             .flat_map(|j| j.legs.iter())
             .any(|l| l.realtime);
-        let freshness = if any_live {
-            "Live times"
+        let freshness = failure::t(if any_live {
+            "maps-live-times"
         } else {
-            "Scheduled times"
-        };
+            "maps-scheduled-times"
+        });
         let source = match agency {
-            Some(a) => format!("{freshness} from {a} via Transitous"),
-            None => format!("{freshness} via Transitous"),
+            Some(agency) => failure::t_args(
+                "maps-times-from",
+                &[("freshness", freshness.into()), ("agency", agency.into())],
+            ),
+            None => failure::t_args("maps-times-via", &[("freshness", freshness.into())]),
         };
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
         y += s2;

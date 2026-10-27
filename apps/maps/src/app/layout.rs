@@ -2,7 +2,7 @@
 
 use super::{
     ColumnMetrics, GeoBounds, Hit, LatLon, MapsApp, NAVIGATION_FLOAT_ID, Point, Projection, Rect,
-    SegmentedTouchGroup, SegmentedTouchResult, TransitTimeMode, TravelMode,
+    SegmentedTouchGroup, SegmentedTouchResult, TransitTimeMode, TravelMode, failure,
 };
 
 impl MapsApp {
@@ -67,7 +67,7 @@ impl MapsApp {
             .as_ref()
             .map(|_route| ui::floating_surface::FloatingSurfaceRequest {
                 id: NAVIGATION_FLOAT_ID.into(),
-                title: "Active navigation".into(),
+                title: failure::t("maps-active-navigation"),
                 role: ui::floating_surface::FloatingRole::Navigation,
                 source: ui::floating_surface::FloatingSource::AppElement {
                     app_id: "so.tilo.maps".into(),

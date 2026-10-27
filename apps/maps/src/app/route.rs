@@ -13,7 +13,7 @@ impl MapsApp {
         if let Some(o) = self.model.origin {
             o
         } else {
-            self.model.origin_name = "Map centre".to_string();
+            self.model.origin_name = failure::t("maps-map-centre");
             self.model.center
         }
     }
@@ -160,7 +160,7 @@ impl MapsApp {
 
         // Live OSRM request.
         self.pending += 1;
-        self.model.status = "Routing…".to_string();
+        self.model.status = failure::t("maps-routing");
         if self.online {
             let tx = self.net_tx.clone();
             spawn_net(async move {
@@ -201,7 +201,7 @@ impl MapsApp {
         // state until the planner responds — we never fabricate departures.
         self.model.transit.clear();
         self.pending += 1;
-        self.model.status = "Finding departures…".to_string();
+        self.model.status = failure::t("maps-finding-departures");
         // No route geometry to fit; frame the map on the endpoints instead.
         self.fit_points(&[origin, dest]);
         if self.online {

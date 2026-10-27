@@ -1,6 +1,7 @@
 //! What assistive technology addresses on the map: the controls and rows the last paint recorded, under stable keys.
 
 use super::{AccessibilityTarget, Hit, MapMenu, MapsApp, Rect, TransitTimeMode};
+use crate::failure;
 
 impl MapsApp {
     /// Immediate-mode controls exported as one semantic list. Keeping this
@@ -16,24 +17,23 @@ impl MapsApp {
         let (label, target, role, state) = match hit {
             Hit::Consume | Hit::CloseNav => return None,
             Hit::OpenSearch => (
-                "Search places".to_string(),
+                failure::t("maps-search-places"),
                 "maps.search".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::OpenEmptySearch => (
-                "Search places".to_string(),
+                failure::t("maps-search-places"),
                 "maps.empty-search".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::ToggleCollapse => (
                 if self.panel_collapsed {
-                    "Expand panel"
+                    failure::t("maps-expand-panel")
                 } else {
-                    "Collapse panel"
-                }
-                .to_string(),
+                    failure::t("maps-collapse-panel")
+                },
                 "maps.panel-collapse".to_string(),
                 Role::ToggleButton,
                 AccessState::new()
@@ -41,14 +41,14 @@ impl MapsApp {
                     .checked(self.panel_collapsed),
             ),
             Hit::PanelBack => (
-                "Back to places".to_string(),
+                failure::t("maps-back-to-places"),
                 "maps.panel.back".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::Mode(mode) => (
-                format!("Travel by {}", mode.label()),
-                format!("maps.mode:{}", mode.label().to_lowercase()),
+                failure::t_args("maps-travel-by", &[("mode", mode.label().into())]),
+                format!("maps.mode:{}", mode.id()),
                 Role::RadioButton,
                 AccessState::new()
                     .focusable(true)
@@ -56,8 +56,13 @@ impl MapsApp {
             ),
             Hit::SelectPlace(id) => (
                 self.model.place(id).map_or_else(
-                    || "Open place".to_string(),
-                    |place| format!("Open {}", place.name),
+                    || failure::t("maps-open-place"),
+                    |place| {
+                        failure::t_args(
+                            "maps-open-named-place",
+                            &[("name", place.name.clone().into())],
+                        )
+                    },
                 ),
                 format!("maps.place:{id}"),
                 Role::Button,
@@ -65,62 +70,66 @@ impl MapsApp {
             ),
             Hit::SelectPoi(id) => (
                 self.pois.iter().find(|poi| poi.id == *id).map_or_else(
-                    || "Open nearby place".to_string(),
-                    |poi| format!("Open {}", poi.name),
+                    || failure::t("maps-open-nearby-place"),
+                    |poi| {
+                        failure::t_args(
+                            "maps-open-named-place",
+                            &[("name", poi.name.clone().into())],
+                        )
+                    },
                 ),
                 format!("maps.poi:{id}"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::ClosePoi => (
-                "Close place details".to_string(),
+                failure::t("maps-close-place-details"),
                 "maps.poi.close".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::PoiDirections => (
-                "Directions to this place".to_string(),
+                failure::t("maps-directions-to-place"),
                 "maps.poi.directions".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::Recent(query) => (
-                format!("Search again for {query}"),
+                failure::t_args("maps-search-again", &[("query", query.clone().into())]),
                 format!("maps.recent:{query}"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::ClearRecents => (
-                "Clear search history".to_string(),
+                failure::t("maps-clear-search-history"),
                 "maps.recent.clear".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::ToggleNav => (
                 if self.nav_open {
-                    "Hide places"
+                    failure::t("maps-hide-places")
                 } else {
-                    "Show places"
-                }
-                .to_string(),
+                    failure::t("maps-show-places")
+                },
                 "maps.navigation".to_string(),
                 Role::ToggleButton,
                 AccessState::new().focusable(true).checked(self.nav_open),
             ),
             Hit::Directions => (
-                "Directions".to_string(),
+                failure::t("maps-directions"),
                 "maps.directions".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::Transit => (
-                "Transit".to_string(),
+                failure::t("maps-transit"),
                 "maps.transit".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::ToggleSave => (
-                "Save or unsave place".to_string(),
+                failure::t("maps-save-or-unsave"),
                 "maps.save".to_string(),
                 Role::ToggleButton,
                 AccessState::new()
@@ -128,25 +137,25 @@ impl MapsApp {
                     .checked(self.model.selected_place().is_some_and(|place| place.saved)),
             ),
             Hit::ClearRoute => (
-                "Clear route".to_string(),
+                failure::t("maps-clear-route"),
                 "maps.route.clear".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::NextRoute => (
-                "Another route".to_string(),
+                failure::t("maps-route-another"),
                 "maps.route.another".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::UseMyLocation => (
-                "Use my location".to_string(),
+                failure::t("maps-use-my-location"),
                 "maps.location".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::TransitTimeMode(TransitTimeMode::Depart) => (
-                "Leave at".to_string(),
+                failure::t("maps-leave-at"),
                 "maps.transit-time:depart".to_string(),
                 Role::RadioButton,
                 AccessState::new()
@@ -154,7 +163,7 @@ impl MapsApp {
                     .checked(self.model.transit_time.mode == TransitTimeMode::Depart),
             ),
             Hit::TransitTimeMode(TransitTimeMode::Arrive) => (
-                "Arrive by".to_string(),
+                failure::t("maps-arrive-by"),
                 "maps.transit-time:arrive".to_string(),
                 Role::RadioButton,
                 AccessState::new()
@@ -162,19 +171,23 @@ impl MapsApp {
                     .checked(self.model.transit_time.mode == TransitTimeMode::Arrive),
             ),
             Hit::TransitTimeDelta(minutes) => (
-                if *minutes < 0 { "Earlier" } else { "Later" }.to_string(),
+                failure::t(if *minutes < 0 {
+                    "maps-earlier"
+                } else {
+                    "maps-later"
+                }),
                 format!("maps.transit-time:delta:{minutes}"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::TransitTimeNow => (
-                "Reset to now".to_string(),
+                failure::t("maps-reset-to-now"),
                 "maps.transit-time:now".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Hit::Journey(index) => (
-                format!("Journey option {}", index + 1),
+                failure::t_args("maps-journey-option", &[("number", (index + 1).into())]),
                 format!("maps.journey:{index}"),
                 Role::RadioButton,
                 AccessState::new()
@@ -182,7 +195,7 @@ impl MapsApp {
                     .checked(self.model.transit_choice == *index),
             ),
             Hit::ToggleOverflow => (
-                "More map options".to_string(),
+                failure::t("maps-more-map-options"),
                 "maps.overflow".to_string(),
                 Role::ToggleButton,
                 AccessState::new()
@@ -206,7 +219,7 @@ impl MapsApp {
         let mut targets = vec![
             AccessibilityTarget {
                 rect: self.map_controls.rect(MapControlAction::History),
-                label: "History".to_string(),
+                label: failure::t("maps-history"),
                 target: ui::widget::HISTORY_CONTROL_ID.to_string(),
                 role: Role::ToggleButton,
                 state: AccessState::new().focusable(true).checked(
@@ -217,28 +230,28 @@ impl MapsApp {
             },
             AccessibilityTarget {
                 rect: self.map_controls.rect(MapControlAction::ZoomIn),
-                label: "Zoom in".to_string(),
+                label: failure::t("maps-zoom-in"),
                 target: "maps.control:zoom-in".to_string(),
                 role: Role::Button,
                 state: AccessState::new().focusable(true),
             },
             AccessibilityTarget {
                 rect: self.map_controls.rect(MapControlAction::ZoomOut),
-                label: "Zoom out".to_string(),
+                label: failure::t("maps-zoom-out"),
                 target: "maps.control:zoom-out".to_string(),
                 role: Role::Button,
                 state: AccessState::new().focusable(true),
             },
             AccessibilityTarget {
                 rect: self.map_controls.rect(MapControlAction::Locate),
-                label: "Use my location".to_string(),
+                label: failure::t("maps-use-my-location"),
                 target: "maps.control:locate".to_string(),
                 role: Role::Button,
                 state: AccessState::new().focusable(true),
             },
             AccessibilityTarget {
                 rect: self.map_controls.rect(MapControlAction::Layers),
-                label: "Map layers".to_string(),
+                label: failure::t("maps-map-layers"),
                 target: "maps.control:layers".to_string(),
                 role: Role::ToggleButton,
                 state: AccessState::new()
@@ -250,7 +263,7 @@ impl MapsApp {
         if self.navigation_end_rect.area() > 0.0 && self.model.route.is_some() {
             targets.push(AccessibilityTarget {
                 rect: self.navigation_end_rect,
-                label: "End navigation".to_string(),
+                label: failure::t("maps-end-navigation"),
                 target: "maps.navigation.end".to_string(),
                 role: Role::Button,
                 state: AccessState::new().focusable(true),
