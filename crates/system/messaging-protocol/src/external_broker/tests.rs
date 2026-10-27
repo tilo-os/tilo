@@ -221,7 +221,7 @@ async fn authority_revoked_during_native_submission_keeps_uncertain_reservation_
         assert_eq!(wakes.load(Ordering::SeqCst), 0);
         assert!(!client.supports(&route(service)));
         revoked.store(false, Ordering::SeqCst);
-        let page = client.history().read(route(service)).await.unwrap();
+        let page = client.history().read(route(service), None).await.unwrap();
         assert_eq!(page.messages.len(), 1);
         assert_eq!(
             page.messages.first().unwrap().delivery,
@@ -298,7 +298,7 @@ async fn native_whatsapp_and_sms_submit_through_private_client_without_false_del
             client.send(request(service)).await.unwrap().delivery,
             Delivery::Submitted
         );
-        let page = client.history().read(route(service)).await.unwrap();
+        let page = client.history().read(route(service), None).await.unwrap();
         assert_eq!(page.messages.len(), 1);
         assert_eq!(
             page.messages.first().unwrap().delivery,
@@ -316,7 +316,7 @@ async fn native_whatsapp_and_sms_submit_through_private_client_without_false_del
         revoked.store(true, Ordering::SeqCst);
         assert!(!client.supports(&route(service)));
         assert_eq!(
-            client.history().read(route(service)).await,
+            client.history().read(route(service), None).await,
             Err(HistoryError::Revoked)
         );
         drop(client);
