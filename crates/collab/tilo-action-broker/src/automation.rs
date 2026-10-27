@@ -1195,6 +1195,12 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
         TriggerSpec::RecordChanged { kind, .. } if kind.trim().is_empty() => {
             Err("a record trigger names the record kind it watches".into())
         }
+        TriggerSpec::AppEvent { app_id, .. } if app_id.trim().is_empty() => {
+            Err("an app-event trigger names the application that declares the event".into())
+        }
+        TriggerSpec::AppEvent { kind, .. } if kind.trim().is_empty() => {
+            Err("an app-event trigger names the event the application declares".into())
+        }
         TriggerSpec::Connector { .. } => Err(
             "connector triggers run only bots, on the room's host; a Shortcut cannot watch one"
                 .into(),
@@ -1204,11 +1210,12 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
         | TriggerSpec::FileChanged { .. }
         | TriggerSpec::FocusMode { .. }
         | TriggerSpec::RecordChanged { .. }
-        | TriggerSpec::IncomingMessage { .. } => Ok(()),
+        | TriggerSpec::IncomingMessage { .. }
+        | TriggerSpec::AppEvent { .. } => Ok(()),
         other => Err(format!(
             "`{}` triggers cannot be saved yet; keyboard, schedule, app-opened, \
-             workspace-joined, file-changed, focus-mode, record-changed and \
-             incoming-message triggers can",
+             workspace-joined, file-changed, focus-mode, record-changed, \
+             incoming-message and app-event triggers can",
             other.kind()
         )),
     }
@@ -1497,6 +1504,33 @@ mod tests {
             run_descriptor(&silent).contract.result,
             ResultSpec::None,
             "a shortcut that binds no output answers none"
+        );
+    }
+
+    #[test]
+    fn an_app_event_trigger_names_the_app_and_the_event() {
+        assert!(
+            validate_trigger(&TriggerSpec::AppEvent {
+                app_id: "so.tilo.mail".into(),
+                kind: "mail.message".into(),
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_trigger(&TriggerSpec::AppEvent {
+                app_id: " ".into(),
+                kind: "mail.message".into(),
+            })
+            .unwrap_err()
+            .contains("names the application")
+        );
+        assert!(
+            validate_trigger(&TriggerSpec::AppEvent {
+                app_id: "so.tilo.mail".into(),
+                kind: " ".into(),
+            })
+            .unwrap_err()
+            .contains("names the event")
         );
     }
 
