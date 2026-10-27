@@ -3012,6 +3012,39 @@ Plus: `crates/sdk/ui-core` (Part B, 15 findings), `crates/session/shell` + `desk
 cross-app duplication (Part E, 9 findings), chrome structure (Part D, 7 findings), and one app
 re-rendered and verified frame-by-frame (Part F).
 
+## G7. The second pass — everything §G6 left open, closed
+
+§G6 named what was still reachable. This is what closed it, and the tree it was checked against
+(`ceee963369`). Each entry names the finding and the commit that settles it; where the honest answer
+was "not this way", it says that instead.
+
+| Findings | Settled by |
+|---|---|
+| `APP-messages-04` | history pages with a cursor and says there is more, instead of ending at 128 in silence |
+| `APP-ebook` `CHROME-01` | the reader and the library declare window-bar slots and paint no rows of their own — the last of the three stragglers; its ceiling falls with the rows |
+| `APP-mail-02`, `APP-mail-03` | `d870f98dbf` the outbox is a place, with what waits and why; `275a24daca` select-all reads the whole folder before it acts |
+| `APP-word-processor-03` | an unsaved-work signal on the document, not the repaint flag that `mark_drawn` clears |
+| `APP-word-processor-04` | `ContentZoom`, so the bar's text zoom has a key |
+| `APP-sheets-03` | structural edits arrive through `ui::motion` rather than cutting |
+| `APP-photos-02`, thumbnails | `f6e87cd6a1` a bad picture fails itself, named by content, not the batch |
+| `APP-web-search-01` | `9479355ebf` safe search is honoured per engine; Marginalia is named as skipped rather than searched unfiltered |
+| `APP-maps-04` | Maps' German, with the remaining copy through the catalogue |
+| `APP-remote-03` | `18207aebbb` file transfer with measured bytes reported to its job |
+| `APP-store-01` | the Stop that only stopped the watching is gone; the job says what stopping would mean |
+| `APP-activity-02` | a whole-workspace history rewrite asks first |
+| `APP-file-explorer-02` | `45471708bc` a column width the person dragged is kept |
+| `APP-api-tester-04` | history rows get delete, save-as-request and replay |
+| `APP-calculator-02` | `da3861f175` units convert on their own page, offline — and currency says plainly that rates need a source rather than pretending |
+| `APP-osk-04` | the keyboard can be parked, and its surface shrinks with it |
+| `APP-print-centre` | the form takes the options the driver reports and the document pages |
+| `APP-contacts-01` | a contact offers call, text and email |
+| `APP-calendar-01`, `-02` | quick-add, and a shortcut sheet |
+
+**One thing the second pass refused to do**: Mail's *Cancel sending* was built with
+`.destructive()`. It returns the message to Drafts — nothing is lost — so the confirmation rule was
+right to object and no exemption was needed. The tag came off; a reason written into the exemptions
+file would have been a fiction to satisfy a check.
+
 # Appendix B — What is genuinely well handled
 
 Recorded because a list of 120 problems misrepresents a codebase that gets a lot right. These were
