@@ -241,20 +241,22 @@ runtime_id=tilo-runtime/$runtime_version
 # The tilolang runtime bundle: the binary every tilolang app's entrypoint
 # executes (apps/tilolang/tilo-runtime.toml), built against the runtime above
 # and signed with the same key. Its version is the one the bundle provides,
-# and `tilolang run` reads it from .tilolang-version.
+# and `tilolang run` reads it from .tilolang-version. It holds the binary
+# alone (--binaries-only): the launcher runs it on the app's runtime, whose
+# loader and libraries it links, so a loader set of its own is never read.
 tilolang_bin=$thin/tilolang-app
 if [[ -f $tilolang_bin ]]; then
     tilolang_version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' \
         "$repo_root/apps/tilolang/tilo-runtime.toml")
     [[ -n $tilolang_version ]] || die "apps/tilolang/tilo-runtime.toml provides no tilolang version"
-    tilolang_key=$( { printf '%s\n' "$tilolang_version" "$runtime_version" "$pubkey"; sha256sum "$tilolang_bin"; } | sha256sum | cut -c1-64)
+    tilolang_key=$( { printf '%s\n' binaries-only "$tilolang_version" "$runtime_version" "$pubkey"; sha256sum "$tilolang_bin"; } | sha256sum | cut -c1-64)
     if [[ ! -f $runtimes/.tilolang-key || $(<"$runtimes/.tilolang-key") != "$tilolang_key" \
           || ! -f $runtimes/$tilolang_version/bundle.toml ]]; then
         say "baking the tilolang runtime bundle"
         chmod +x "$tilolang_bin"
         rm -rf "$state/work/tilolang" "$runtimes/$tilolang_version"
         mkdir -p "$state/work"
-        "$bin/tilo-runtime-bundle" build --version "$tilolang_version" \
+        "$bin/tilo-runtime-bundle" build --binaries-only --version "$tilolang_version" \
             --out "$state/work/tilolang" --include-bin "$tilolang_bin" \
             --identity "$identity" >/dev/null
         mv "$state/work/tilolang" "$runtimes/$tilolang_version"
