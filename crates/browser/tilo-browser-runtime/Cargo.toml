@@ -107,9 +107,10 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 workspace-hack = { version = "0.1" }
 
 # What the page hands every window it mounts, prepared on the host for its
-# tests (src/person_records.rs).
+# tests (src/person_records.rs, src/content_open.rs).
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tracing.workspace = true
