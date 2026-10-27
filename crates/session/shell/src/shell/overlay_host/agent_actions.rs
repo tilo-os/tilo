@@ -1753,6 +1753,7 @@ mod tests {
             ));
             let mut composer = AgentQuickComposer::default();
             settle(&mut actions, &mut composer, &Tracker::default());
+            drop(actions);
             let asked = room.arguments("ask-agent");
             assert_eq!(asked["title"], query);
             assert_eq!(asked["body"], query);
@@ -1781,5 +1782,6 @@ mod tests {
         assert!(actions.start_once(now));
         assert!(!actions.start_once(now + Duration::from_secs(5)));
         assert!(actions.start_once(now + AGENT_START));
+        drop(actions);
     }
 }

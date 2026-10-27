@@ -1666,12 +1666,9 @@ impl SearchRegistry {
                 } else {
                     0.0
                 };
-                if interactive
-                    && !direct
-                    && fallbacks::directly_matched(provider, &r, needle, top, intent + chosen)
-                {
-                    direct = true;
-                }
+                direct = direct
+                    || (interactive
+                        && fallbacks::directly_matched(provider, &r, needle, top, intent + chosen));
                 let strength = system::merged_strength(
                     needle,
                     &r.kind,
@@ -1718,18 +1715,10 @@ impl SearchRegistry {
                 });
             (&row.kind, availability)
         });
-        // The rows that answer any query (asking an agent, searching the
-        // web) follow a direct match, which Enter runs; with none, they lead,
-        // so Enter hands the query on. Among themselves they go by rank, in
-        // their providers' order on a tie.
+        // Asking an agent and searching the web: after a direct match, else
+        // first.
         if interactive && !needle.trim().is_empty() {
-            fallbacks.sort_by(|a, b| a.1.total_cmp(&b.1));
-            if direct {
-                merged.append(&mut fallbacks);
-            } else {
-                fallbacks.append(&mut merged);
-                merged = fallbacks;
-            }
+            fallbacks::place(&mut merged, fallbacks, direct);
         }
         let completion = QueryCompletion {
             complete: incomplete.is_empty(),
