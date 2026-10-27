@@ -14,7 +14,11 @@ impl crate::collaboration::PeerTransport for HostedModelTransport {
         vec![]
     }
     // Legacy owner-route delivery is explicit; no native capture is synthesized.
-    fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+    fn join_route(
+            &mut self,
+            _: crate::collaboration::RouteSpec,
+            _: crate::record::RecordKind,
+        ) -> Result<(), String> {
         Ok(())
     }
     fn send_to_route(

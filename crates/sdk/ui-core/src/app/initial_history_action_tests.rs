@@ -783,7 +783,9 @@ fn initial_history_job2_does_not_wait_for_unowned_retained_native_route() {
         original.cluster_id,
         "retained-unowned",
     );
-    app.collaboration.manager.join_route(unowned.clone());
+    app.collaboration
+        .manager
+        .join_route(unowned.clone(), crate::record::RecordKind::new("tilo.rich-text"));
     while !app
         .committed_documents
         .iter()

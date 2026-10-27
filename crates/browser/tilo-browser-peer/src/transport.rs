@@ -165,6 +165,10 @@ impl RelayCollabTransport {
                         max: collab_types::MAX_DOCUMENT_TRANSFER_BYTES,
                     });
                 }
+                // A refusal comes back through the publication barrier as
+                // the host's answer, not as a lost session: `publish` queues
+                // the change and returns here, and the manager tells the two
+                // apart by what the barrier reports.
                 self.peer
                     .publish(document_route(route), &mutation)
                     .map_err(|_| TransportError::Closed)
@@ -403,7 +407,7 @@ impl CollabTransport for RelayCollabTransport {
                 self.join(&route)?;
                 self.publish(&route, request)
             }
-            TransportCommand::Join(route) => self.join(&route).map(|_| ()),
+            TransportCommand::Join(route, _) => self.join(&route).map(|_| ()),
             TransportCommand::ConfirmPrimaryRoute => {
                 self.confirm_pending = true;
                 Ok(())
@@ -441,7 +445,16 @@ impl CollabTransport for RelayCollabTransport {
         let (reply, receipt) = std::sync::mpsc::sync_channel(1);
         self.peer
             .barrier_then(Box::new(move |result| {
-                let _ = reply.send(result.map_err(DocumentPublicationError::Failed));
+                // The host answered "no" about the change itself. That is not
+                // a lost session: the manager keeps the app connected and
+                // fails only that change.
+                let _ = reply.send(result.map_err(|reason| {
+                    if crate::session::is_refusal(&reason) {
+                        DocumentPublicationError::Refused(reason)
+                    } else {
+                        DocumentPublicationError::Failed(reason)
+                    }
+                }));
             }))
             .map_err(|_| DocumentPublicationError::Unavailable)?;
         Ok(DocumentPublicationReceipt::new(receipt))

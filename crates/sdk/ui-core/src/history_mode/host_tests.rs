@@ -129,6 +129,9 @@ fn history_status_and_recovery_keep_the_existing_bar_geometry() {
             None,
             Some("history-local-action-not-saved"),
             Some("history-sync-offline"),
+            // A refused change keeps the connection, so it is its own
+            // status: the bar must say what happened, not who is offline.
+            Some("history-sync-refused"),
             None,
         ] {
             let status = key
