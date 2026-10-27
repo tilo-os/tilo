@@ -123,9 +123,13 @@ impl FrameHarness {
         let states = self.press_window_sidebar_button(3)?;
         let mut expected = None;
         for (presses, state) in states.iter().enumerate() {
-            let shown = state.agreed().ok_or_else(|| {
-                format!("after {presses} clicks the bar, shell and frame disagree: {state:?}")
-            })?;
+            let Some(shown) = state.agreed() else {
+                return Err(format!(
+                    "after {presses} clicks the bar, shell and frame disagree: {state:?}; \
+                     the shell now: {}",
+                    self.sidebar_diagnosis()
+                ));
+            };
             let wanted = expected.unwrap_or(shown);
             if shown != wanted {
                 return Err(format!(
@@ -136,6 +140,25 @@ impl FrameHarness {
             expected = Some(!shown);
         }
         Ok(states.first().and_then(|state| state.agreed()) == Some(true))
+    }
+
+    /// Where the window's shell stands, for a failure to say.
+    fn sidebar_diagnosis(&self) -> String {
+        let schedule = self.frame_schedule();
+        window_sidebar_shell(self.root.as_ref()).map_or_else(
+            || "none laid out".to_owned(),
+            |shell| {
+                let geometry = shell.geometry();
+                format!(
+                    "{:?} at {:?}, open {}, animating {}, frame wanted {}",
+                    geometry.sidebar,
+                    geometry.sidebar_column,
+                    shell.is_sidebar_open(),
+                    shell.needs_animation_frame(),
+                    schedule.needs_animation_frame || schedule.queued_work,
+                )
+            },
+        )
     }
 
     /// Lay out frames as the window's host draws them: the one asked for,
