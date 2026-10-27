@@ -36,6 +36,13 @@ use crate::shell::i18n::t_args;
 /// settled into what they opened.
 pub(crate) const FULLSCREEN_HINT_HOLD: Duration = Duration::from_secs(3);
 
+/// When a hint that began at `entered` goes. Saturating, because an `Instant`
+/// that has run out of room must end the hint rather than wrap it into
+/// staying up forever.
+pub(crate) fn hint_gone_at(entered: Instant) -> Instant {
+    entered.checked_add(FULLSCREEN_HINT_HOLD).unwrap_or(entered)
+}
+
 /// The key that leaves full screen, as the desktop's shortcuts name it.
 const LEAVING_KEY: &str = "Esc";
 
@@ -77,15 +84,21 @@ impl ShellOverlayHost {
 
     /// When the hint began, while it is up at `now`.
     pub(super) fn fullscreen_hint_shown(&self, now: Instant) -> Option<Instant> {
-        self.fullscreen_hint
-            .filter(|entered| now >= *entered && now < *entered + FULLSCREEN_HINT_HOLD)
+        Self::fullscreen_hint_shown_at(self.fullscreen_hint, now)
+    }
+
+    /// When the hint that began at `began` is up at `now`: the entry is kept
+    /// after the words have gone, so a later follow of the same full screen
+    /// does not say them again.
+    fn fullscreen_hint_shown_at(began: Option<Instant>, now: Instant) -> Option<Instant> {
+        began.filter(|entered| now >= *entered && now < hint_gone_at(*entered))
     }
 
     /// When the hint next needs a frame without input.
     pub(super) fn fullscreen_hint_deadline(&self, now: Instant) -> Option<Instant> {
         let theme = &self.overview_layout_theme;
         let entered = self.fullscreen_hint_shown(now)?;
-        let gone = entered + FULLSCREEN_HINT_HOLD;
+        let gone = hint_gone_at(entered);
         let fade_from = Transient::exit_starts(Transient::CONFIRMATION, gone, theme.motion());
         if !theme.reduce_motion && now < fade_from {
             Some(fade_from)
@@ -102,7 +115,7 @@ impl ShellOverlayHost {
         self.fullscreen_hint_shown(now).is_some_and(|entered| {
             Transient::is_moving(
                 Transient::CONFIRMATION,
-                (entered, entered + FULLSCREEN_HINT_HOLD),
+                (entered, hint_gone_at(entered)),
                 now,
                 theme.motion(),
             )
@@ -147,7 +160,7 @@ impl ShellOverlayHost {
         };
         let alpha = Transient::opacity(
             Transient::CONFIRMATION,
-            (entered, entered + FULLSCREEN_HINT_HOLD),
+            (entered, hint_gone_at(entered)),
             now,
             theme.motion(),
         );
@@ -191,8 +204,8 @@ impl ShellOverlayHost {
 
     /// What the hint says, as a polite live region: said once after what the
     /// screen reader is already saying, and never focused.
-    pub(super) fn fullscreen_hint_accessibility(&self, now: Instant) -> Option<AccessNode> {
-        self.fullscreen_hint_shown(now)?;
+    pub(super) fn fullscreen_hint_accessibility(now: Instant) -> Option<AccessNode> {
+        Self::fullscreen_hint_shown_at(self.fullscreen_hint, now)?;
         Some(
             AccessNode::new(Role::StaticText)
                 .with_hashed_key("shell-fullscreen-way-out")

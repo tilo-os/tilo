@@ -666,7 +666,7 @@ fn a_workspace_joined_from_an_invitation_alone_is_arrived_in() {
     let site = Site::start(dir.path());
     let room = RoomId::parse(&site.room).unwrap();
     let ada = key(1);
-    let (net, tree) = computer(&dir.path().join("computer"), ada.clone(), "Ada's computer");
+    let (net, tree) = computer(&dir.path().join("computer"), ada, "Ada's computer");
     let text = site.invite_text();
     let announced = net.join_from_field(&text);
     assert!(

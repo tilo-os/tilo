@@ -261,7 +261,7 @@ fn a_rebind_in_the_section_moves_what_the_chord_triggers() {
     // The compositor re-reads the saved table whenever the settings file
     // changes; this is that handoff.
     let (mut host, chrome) =
-        crate::shell::build_tilo_overlay_host_with_handle(door.membership.clone(), false);
+        crate::shell::build_tilo_overlay_host_with_handle(door.membership, false);
     host.set_shortcut_config(settings_store::hardware::ShortcutConfig::load())
         .expect("the saved table is valid");
     assert!(
