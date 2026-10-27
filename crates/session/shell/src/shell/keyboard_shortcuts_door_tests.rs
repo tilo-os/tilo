@@ -1,13 +1,12 @@
-//! The desktop's keyboard shortcuts, listed and rebound through the action
-//! door.
+//! The desktop's keyboard shortcuts, listed through the action door and
+//! rebound in the person's `shortcuts` section.
 //!
 //! The production broker publishes the shortcut catalogue on a workspace's
-//! own provider. Rebinding Quick Settings there saves the new chord; a
-//! compositor session reading the saved table (as it does whenever the
-//! settings file changes) opens Quick Settings on the new chord and leaves
-//! the old one to the focused application, and `list` reports the change. A
-//! rebind onto a chord another shortcut holds fails naming it, and a caller
-//! without the Settings grant is shown none of this.
+//! own provider, to read. Rebinding Quick Settings in the section saves the
+//! new chord; a compositor session reading the saved table (as it does
+//! whenever the settings file changes) opens Quick Settings on the new chord
+//! and leaves the old one to the focused application, and `list` reports
+//! the change. A caller without the Settings grant is shown none of it.
 
 use std::path::Path;
 
@@ -30,7 +29,7 @@ fn answer<T>(pending: Pending<T>) -> T {
 }
 
 struct Door {
-    broker: crate::shell::collab_broker::BrokerHandle,
+    _broker: crate::shell::collab_broker::BrokerHandle,
     membership: crate::shell::state::WorkspaceTreeHandle,
     host: crate::shell::remote_actions::BrokerActionHost,
     owner: Caller,
@@ -81,7 +80,7 @@ impl Door {
             broker.app_action_broker().expect("the action broker"),
         );
         Self {
-            broker,
+            _broker: broker,
             membership,
             host,
             owner: Caller::local_person(OWNER),
@@ -212,7 +211,7 @@ fn quick_settings_row(listed: &Value) -> Value {
     clippy::significant_drop_tightening,
     reason = "the door owns the broker and its socket directory for the whole test"
 )]
-fn rebinding_through_the_door_moves_what_the_chord_triggers() {
+fn a_rebind_in_the_section_moves_what_the_chord_triggers() {
     use winit::keyboard::{Key, ModifiersState};
 
     let config = tempfile::tempdir().expect("temporary config directory");
@@ -231,40 +230,26 @@ fn rebinding_through_the_door_moves_what_the_chord_triggers() {
         )),
         "the catalogue is published as a Settings resource: {top:?}"
     );
-    let entries = door.rows(&door.owner, Some("keyboard-shortcuts"));
-    assert!(entries.contains(&(
-        "so.tilo.settings".into(),
-        "keyboard-shortcut:quick-settings".into(),
-        "rebind".into()
-    )));
     assert!(
-        !entries
-            .iter()
-            .any(|(_, resource, _)| resource == "keyboard-shortcut:fixed-close-tab"),
-        "a fixed chord offers nothing to change"
+        !top.iter().any(|(_, _, action)| action == "rebind"),
+        "a shortcut is rebound in the shortcuts section, not here: {top:?}"
     );
 
-    let rebound = door.output(
-        "keyboard-shortcut:quick-settings",
-        "rebind",
-        &json!({"chord": "Super+J"}),
+    let shortcuts = ui::storage::Settings::<settings_sections::shortcuts::ShortcutPrefs>::for_app(
+        crate::shell::keyboard_shortcuts::APP_ID,
     );
-    assert_eq!(rebound["chords"], json!(["Super+J"]));
-
-    match door.invoke(
-        &door.owner,
-        "keyboard-shortcut:quick-settings",
-        "rebind",
-        &json!({"chord": "Super+Space"}),
-    ) {
-        Ok(ReceiptStatus::Failed { error }) => {
-            assert_eq!(error.code, "shortcut_conflict");
-            let details = error.details.expect("the holder is named");
-            assert_eq!(details["conflict"]["id"], "search");
-            assert_eq!(details["conflict"]["kind"], "shortcut");
-        }
-        other => panic!("taking search's chord must fail naming search: {other:?}"),
-    }
+    let mut section = shortcuts.get();
+    section
+        .rebind("quick-settings".into(), "Super+J".into())
+        .expect("Super+J is free");
+    assert!(
+        section
+            .rebind("quick-settings".into(), "Super+Space".into())
+            .expect_err("Super+Space opens search")
+            .0
+            .contains("search")
+    );
+    shortcuts.set(&section).expect("saved");
 
     let listed = door.output("keyboard-shortcuts", "list", &json!({}));
     let row = quick_settings_row(&listed);
@@ -293,9 +278,6 @@ fn rebinding_through_the_door_moves_what_the_chord_triggers() {
         chrome.borrow().overlays.quick_settings,
         "the new chord opens Quick Settings"
     );
-
-    let reset = door.output("keyboard-shortcut:quick-settings", "reset", &json!({}));
-    assert_eq!(reset["chords"], json!(["Super+Q"]));
 }
 
 #[test]
@@ -303,7 +285,7 @@ fn rebinding_through_the_door_moves_what_the_chord_triggers() {
     clippy::significant_drop_tightening,
     reason = "the door owns the broker and its socket directory for the whole test"
 )]
-fn a_caller_without_the_settings_grant_cannot_rebind() {
+fn the_door_changes_no_shortcut() {
     let config = tempfile::tempdir().expect("temporary config directory");
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("XDG_CONFIG_HOME", config.path());
@@ -311,127 +293,22 @@ fn a_caller_without_the_settings_grant_cannot_rebind() {
     let socket = dir.path().join("collab.sock");
     let door = Door::open(&socket, dir);
     let agent = Caller::local_agent(AGENT);
-
-    assert!(
-        !door
-            .rows(&agent, Some("keyboard-shortcuts"))
-            .iter()
-            .any(|(_, _, action)| action == "rebind"),
-        "an agent without the Settings grant is shown no rebind"
-    );
-    // Refused either way: not permitted, or (for a caller the room does
-    // not admit at all) not there.
-    assert!(matches!(
-        door.invoke(
-            &agent,
-            "keyboard-shortcut:quick-settings",
-            "rebind",
-            &json!({"chord": "Super+J"}),
-        ),
-        Err(ActionHostError::NotPermitted | ActionHostError::UnknownAction)
-    ));
+    for (caller, resource, action) in [
+        (&door.owner, "keyboard-shortcuts", "reset-all"),
+        (&door.owner, "keyboard-shortcut:quick-settings", "rebind"),
+        (&agent, "keyboard-shortcut:quick-settings", "rebind"),
+    ] {
+        assert!(
+            matches!(
+                door.invoke(caller, resource, action, &json!({"chord": "Super+J"})),
+                Err(ActionHostError::NotPermitted | ActionHostError::UnknownAction)
+            ),
+            "{resource}#{action} is the shortcuts section's, not this door's"
+        );
+    }
     assert_eq!(
         settings_store::hardware::ShortcutConfig::load(),
         settings_store::hardware::ShortcutConfig::default(),
         "nothing was saved"
-    );
-}
-
-/// A helper whose grant on Settings asks first is offered the rebind; it
-/// does not rebind on its own word, and does once the person confirms on
-/// their device.
-#[test]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the door owns the broker and its socket directory for the whole test"
-)]
-fn a_helper_asked_first_rebinds_on_the_persons_confirmation() {
-    use tilo_action_broker::app_actions::{
-        AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
-    };
-    struct Person;
-    impl AppActionConsentPrompter for Person {
-        fn ask(
-            &self,
-            request: AppActionConsentRequest,
-        ) -> Option<tokio::sync::oneshot::Receiver<AppActionConsent>> {
-            assert!(
-                request.confirming,
-                "the person confirms one call: {request:?}"
-            );
-            let (answer, asked) = tokio::sync::oneshot::channel();
-            let _ = answer.send(AppActionConsent::Once);
-            Some(asked)
-        }
-    }
-    let config = tempfile::tempdir().expect("temporary config directory");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", config.path());
-    let dir = tempfile::tempdir().expect("socket directory");
-    let socket = dir.path().join("collab.sock");
-    let door = Door::open(&socket, dir);
-    door.membership
-        .write()
-        .desktop
-        .workspaces
-        .first_mut()
-        .map(|workspace| {
-            let settings = workspace
-                .node()
-                .app(crate::shell::keyboard_shortcuts::APP_ID);
-            workspace.grant(tilo_action_policy::Grant::new(
-                "helper-settings-asks",
-                tilo_action_policy::Subject::agent(AGENT),
-                settings,
-                tilo_action_policy::KindSet::ALL,
-                tilo_action_policy::Answer::Ask,
-                tilo_action_policy::Subject::person(OWNER.to_string()),
-            ))
-        })
-        .expect("the room");
-    door.broker
-        .app_action_broker()
-        .expect("the action broker")
-        .set_app_action_consent(std::sync::Arc::new(Person));
-    let agent = Caller::local_agent(AGENT)
-        .in_room(ROOM.to_string())
-        .acting_for(OWNER);
-    assert!(
-        door.rows(&agent, Some("keyboard-shortcuts"))
-            .iter()
-            .any(|(_, _, action)| action == "rebind"),
-        "an action asking first is offered"
-    );
-    let request = || InvokeRequest {
-        on_behalf_of: None,
-        invocation: InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: workspace_provider(&ROOM.to_string()),
-            address: ActionAddress::new("keyboard-shortcut:quick-settings", "rebind"),
-        },
-        argument: InvokeArgument::Json(
-            json!({"chord": "Super+J"})
-                .as_object()
-                .cloned()
-                .expect("an object"),
-        ),
-        context: None,
-        confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
-        revision: None,
-        wait_ms: None,
-        appearance: None,
-    };
-    assert_eq!(
-        answer(door.host.invoke(&agent, request())).err(),
-        Some(ActionHostError::ConfirmationRequired),
-        "the helper's own word confirms nothing"
-    );
-    let mut asked = request();
-    let witnessed = answer(door.host.confirm(&agent, &asked)).expect("the person confirmed");
-    asked.confirmation = Some(witnessed);
-    let receipt = answer(door.host.invoke(&agent, asked)).expect("admitted");
-    assert!(
-        matches!(receipt.status, ReceiptStatus::Completed { .. }),
-        "{receipt:?}"
     );
 }

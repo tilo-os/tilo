@@ -219,16 +219,6 @@ shortcut-category-accessibility = Accessibility
 keyboard-shortcuts-resource = Keyboard shortcuts
 keyboard-shortcuts-list = List keyboard shortcuts
 keyboard-shortcuts-list-description = Every desktop shortcut with its label, current and default chords, whether it can be changed, and its category
-keyboard-shortcuts-reset-all = Restore all default shortcuts
-keyboard-shortcuts-reset-all-description = Put every changeable desktop shortcut back on its default chord
-keyboard-shortcut-rebind = Change the shortcut for { $shortcut }
-keyboard-shortcut-rebind-description = { $shortcut } is on { $chords } (default { $defaults }). Give it another chord; a chord something else uses is refused, naming what uses it.
-keyboard-shortcut-reset = Restore the default shortcut for { $shortcut }
-keyboard-shortcut-reset-description = Put { $shortcut } back on { $defaults }
-keyboard-shortcut-conflict = { $chord } is already used for “{ $shortcut }”.
-keyboard-shortcut-invalid = That shortcut is not supported.
-
-# Shortcut guide (F1)
 guide-title = Keyboard shortcuts
 guide-reopen-hint = Select a navigation shortcut to change it
 guide-chord-row = Change this shortcut, bound to { $chord }

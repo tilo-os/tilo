@@ -54,6 +54,8 @@ action_control! {
     Dropdown => String, |control| control.with_enabled(false);
     ui_core::widget::ToggleGroup => usize, |control| control.with_enabled(false);
     ui_core::KeyboardMapSelection => String, |control| control.with_enabled(false);
+    // Unavailable, a recorder records nothing it could commit.
+    ui_core::widget::ShortcutRecorder => String, |control| control;
     Button => (), |control| control.with_enabled(false);
     // A row that does something when chosen (a service to link).
     ui_core::widget::ListRow => (), |control| control.with_enabled(false);
