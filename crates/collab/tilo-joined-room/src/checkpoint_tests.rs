@@ -1190,34 +1190,43 @@ fn checkpoint_captures_full_stored_schema_identity() {
     assert_eq!(schema.storage_version, Some(7));
 }
 
+fn describe(
+    fixture: &Fixture,
+    id: uuid::Uuid,
+    name: &str,
+    description: &str,
+) -> Result<super::CheckpointAcknowledgement, String> {
+    fixture.owner.capture_checkpoint(
+        room(),
+        &fixture.certificate,
+        &fixture.key,
+        CheckpointCapture {
+            id,
+            name,
+            description,
+            routes: &routes(),
+        },
+        fixture.now,
+    )
+}
+
 #[test]
-fn checkpoint_manifest_states_its_reach_and_every_name_move_is_auditable() {
+fn checkpoint_manifest_carries_the_person_s_words_and_states_its_reach() {
     let fixture = fixture();
     prepare(&fixture);
-    let route = &routes()[0];
-    assert_eq!(route.app, "so.tilo.chat");
-    let first = uuid::Uuid::new_v4();
-    let second = uuid::Uuid::new_v4();
-    let described = fixture
-        .owner
-        .capture_checkpoint(
-            room(),
-            &fixture.certificate,
-            &fixture.key,
-            CheckpointCapture {
-                id: first,
-                name: "before the rewrite",
-                description: "Chapters one and two, before the editor's pass",
-                routes: &routes(),
-            },
-            fixture.now,
-        )
-        .unwrap();
+    let id = uuid::Uuid::new_v4();
+    describe(
+        &fixture,
+        id,
+        "before the rewrite",
+        "Chapters one and two, before the editor's pass",
+    )
+    .unwrap();
     let path = fixture.directory.path().join("owner.json");
     let durable = std::fs::read(&path).unwrap();
-    let reopened = open_file(&path).unwrap();
-    let shown = reopened
-        .read_checkpoint(room(), &fixture.certificate, first, fixture.now)
+    let shown = open_file(&path)
+        .unwrap()
+        .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
         .unwrap()
         .manifest;
     assert_eq!(
@@ -1234,45 +1243,29 @@ fn checkpoint_manifest_states_its_reach_and_every_name_move_is_auditable() {
         "a native manifest is complete for records only, never for files"
     );
     // The description is part of the immutable manifest, not a mutable name.
-    assert!(
-        fixture
-            .owner
-            .capture_checkpoint(
-                room(),
-                &fixture.certificate,
-                &fixture.key,
-                CheckpointCapture {
-                    id: first,
-                    name: "before the rewrite",
-                    description: "a different story",
-                    routes: &routes(),
-                },
-                fixture.now,
-            )
-            .is_err()
-    );
+    assert!(describe(&fixture, id, "before the rewrite", "a different story").is_err());
     assert_eq!(std::fs::read(&path).unwrap(), durable);
     for text in [" padded ", &"x".repeat(281), "bad\u{7}description"] {
         assert!(
-            fixture
-                .owner
-                .capture_checkpoint(
-                    room(),
-                    &fixture.certificate,
-                    &fixture.key,
-                    CheckpointCapture {
-                        id: uuid::Uuid::new_v4(),
-                        name: "bounded description",
-                        description: text,
-                        routes: &routes(),
-                    },
-                    fixture.now,
-                )
-                .is_err(),
+            describe(&fixture, uuid::Uuid::new_v4(), "bounded", text).is_err(),
             "{text:?} must not be retained"
         );
     }
     assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert!(
+        describe(&fixture, uuid::Uuid::new_v4(), "", "").is_err(),
+        "an empty name is still refused"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), durable);
+}
+
+#[test]
+fn every_checkpoint_name_move_is_auditable() {
+    let fixture = fixture();
+    prepare(&fixture);
+    let first = uuid::Uuid::new_v4();
+    let second = uuid::Uuid::new_v4();
+    let described = describe(&fixture, first, "before the rewrite", "").unwrap();
     assert_eq!(
         fixture
             .owner
@@ -1293,14 +1286,13 @@ fn checkpoint_manifest_states_its_reach_and_every_name_move_is_auditable() {
         &routes(),
     )
     .unwrap();
-    fixture
-        .owner
-        .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, "latest", first)
-        .unwrap();
-    fixture
-        .owner
-        .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, "latest", second)
-        .unwrap();
+    for id in [first, second] {
+        fixture
+            .owner
+            .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, "latest", id)
+            .unwrap();
+    }
+    let path = fixture.directory.path().join("owner.json");
     let reopened = open_file(&path).unwrap();
     let history = reopened.checkpoint_name_history(room(), "latest").unwrap();
     assert_eq!(history.len(), 2, "a move appends, it never rewrites");
