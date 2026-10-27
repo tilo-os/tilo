@@ -85,7 +85,15 @@ fn the_deck_publishes_its_verbs_on_the_deck_and_on_each_slide() {
         }
     }
     let add = row(&actions::slide_resource_id(&slides[0].id), "add-element").unwrap();
-    let params = add["params"].to_string();
+    // What `add-element` takes, as an agent reads it: the parameters the row
+    // publishes, and the shape of the one that holds the element's fields,
+    // which the document states once and names with a local `$ref`.
+    let mut params = add["params"].to_string();
+    for param in add["params"].as_array().into_iter().flatten() {
+        if let Some(schema) = param.get("schema") {
+            params.push_str(&surface.scoped(schema).to_string());
+        }
+    }
     for name in [
         "kind",
         "x",
