@@ -2961,8 +2961,8 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "resource/history_context_tests.rs"]
-mod history_context_tests;
+#[path = "resource/history_tests.rs"]
+mod history_tests;
 
 #[cfg(test)]
 #[path = "resource/effective_invocation_tests.rs"]
