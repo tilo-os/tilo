@@ -616,17 +616,17 @@ fn spend_line(run: &Run) -> Option<String> {
         return None;
     }
     let mut parts = Vec::new();
-    if !spend.currency.is_empty() {
-        parts.push(tr_with(
+    parts.push(if spend.currency.is_empty() {
+        tr("tasks-run-spent-nothing")
+    } else {
+        tr_with(
             "tasks-run-spent",
             &[
                 ("cost", &money(spend.cost())),
                 ("currency", &spend.currency),
             ],
-        ));
-    } else {
-        parts.push(tr("tasks-run-spent-nothing"));
-    }
+        )
+    });
     parts.push(tr_with(
         "tasks-run-used",
         &[("tokens", &ui::format::count(spend.tokens()))],
