@@ -15,8 +15,10 @@
 //!   hardware exposes them);
 //! * either a plaintext account password or its canonical SHA-512 crypt hash,
 //!   but never both, and never a target UID;
-//! * a disk-unlock secret, with an explicit choice between the measured-boot
-//!   TPM2 PIN policy and an independent strong passphrase;
+//! * either a separate disk-unlock secret, with an explicit choice between the
+//!   measured-boot TPM2 PIN policy and an independent strong passphrase, or no
+//!   `protection` at all: then the plaintext account password is the startup
+//!   secret too, exactly as in the wizard;
 //! * an explicit `data_source`, currently only `none` because no data transfer
 //!   runs from this path;
 //! * an explicit acknowledgement that the one-time recovery key is the
@@ -437,7 +439,10 @@ struct Recipe {
     schema: u32,
     account: AccountRecipe,
     disk: DiskRecipe,
-    protection: ProtectionRecipe,
+    /// A separate disk secret. Absent, the account password is the startup
+    /// secret too, as in the wizard; that needs the plaintext `password`.
+    #[serde(default)]
+    protection: Option<ProtectionRecipe>,
     /// No data-transfer implementation runs from this path yet. Requiring the
     /// field makes "none" a reviewed choice rather than a silent omission.
     data_source: String,
@@ -451,7 +456,9 @@ struct Recipe {
 impl Drop for Recipe {
     fn drop(&mut self) {
         self.account.zeroize();
-        self.protection.zeroize();
+        if let Some(protection) = self.protection.as_mut() {
+            protection.zeroize();
+        }
     }
 }
 
@@ -473,7 +480,17 @@ impl Recipe {
         }
         self.account.validate()?;
         self.disk.validate()?;
-        self.protection.validate()?;
+        match &self.protection {
+            Some(protection) => protection.validate()?,
+            None if self.account.password.is_none() => {
+                return Err(
+                    "Without `protection` the account password is also the disk's startup \
+                     secret, so the account needs its plaintext `password`, not a hash"
+                        .into(),
+                );
+            }
+            None => {}
+        }
         if self.data_source != "none" {
             return Err(format!(
                 "Unattended data source {:?} is not implemented. Leave the data source out or set \
@@ -502,7 +519,11 @@ impl Recipe {
     }
 
     fn secrets(&self) -> Vec<&str> {
-        let mut secrets = vec![self.protection.secret.as_str()];
+        let mut secrets: Vec<&str> = self
+            .protection
+            .iter()
+            .map(|protection| protection.secret.as_str())
+            .collect();
         if let Some(password) = self.account.password.as_deref() {
             secrets.push(password);
         }
@@ -982,7 +1003,11 @@ fn execute(
     probe: &mut dyn ProtectionProbe,
     sink: &mut RecoverySink,
 ) -> Result<(), String> {
-    if recipe.protection.kind == "tpm2" {
+    if recipe
+        .protection
+        .as_ref()
+        .is_some_and(|protection| protection.kind == "tpm2")
+    {
         let report = probe.probe()?;
         if !report.tpm2 || !report.target_verified_boot {
             return Err("The destination did not prove a usable hardware-backed unlock".into());
@@ -1083,16 +1108,19 @@ fn drive(app: &mut InstallerApp, recipe: &Recipe) -> Result<(), String> {
                 advance(app, step)?;
             }
             Step::Account => {
-                let mode = recipe.protection.kind.as_str();
-                invoke(
-                    app,
-                    "set-disk-passphrase@installer.account",
-                    serde_json::json!({
-                        "passphrase": recipe.protection.secret,
-                        "confirmation": recipe.protection.secret,
-                        "mode": mode,
-                    }),
-                )?;
+                // Without a separate disk secret the wizard's own rule holds:
+                // the account password set below is the startup secret too.
+                if let Some(protection) = &recipe.protection {
+                    invoke(
+                        app,
+                        "set-disk-passphrase@installer.account",
+                        serde_json::json!({
+                            "passphrase": protection.secret,
+                            "confirmation": protection.secret,
+                            "mode": protection.kind,
+                        }),
+                    )?;
+                }
                 if let Some(hash) = recipe.account.password_sha512_crypt.as_deref() {
                     invoke(
                         app,
@@ -1602,6 +1630,46 @@ mod tests {
     }
 
     #[test]
+    fn without_protection_the_account_password_is_the_startup_secret() {
+        let fake = Fake::succeeding();
+        let mut app = build_app(
+            &fake,
+            Protection {
+                tpm2: false,
+                secure_boot: false,
+                kernel_lockdown: false,
+                target_verified_boot: false,
+            },
+        );
+        let mut value = recipe(false);
+        value.as_object_mut().unwrap().remove("protection");
+        let recipe = parse(&value);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("recovery-key");
+        let mut sink = RecoveryDestination::File(path.clone()).open().unwrap();
+        let mut probe = Probe(ProtectionReport {
+            tpm2: false,
+            pin_defensible: false,
+            lockout_auth_set: false,
+            shared_with_windows: false,
+            target_verified_boot: false,
+        });
+
+        execute(&mut app, &recipe, &mut probe, &mut sink).unwrap();
+
+        let installs = fake.installs.lock().unwrap().clone();
+        assert_eq!(installs.len(), 1);
+        let (_, _, password, options) = &installs[0];
+        // The same secret for both, as the wizard installs it: tilo-install
+        // then marks the slot as the account password's.
+        assert_eq!(password, "ordinary typed password");
+        assert_eq!(options.pin.as_str(), "ordinary typed password");
+        assert!(!options.password_is_hash);
+        assert_eq!(app.install_state(), InstallState::Done);
+        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), KEY);
+    }
+
+    #[test]
     fn tpm2_requires_the_actual_probe_and_uses_the_reviewed_pin() {
         let fake = Fake::succeeding();
         let mut app = build_app(
@@ -1777,6 +1845,10 @@ mod tests {
             |value: &mut serde_json::Value| value["disk"]["method"] = json!("alongside"),
             |value: &mut serde_json::Value| value["disk"]["partition_table"] = json!("dos"),
             |value: &mut serde_json::Value| value["protection"]["kind"] = json!("auto"),
+            // A hash cannot be the startup secret.
+            |value: &mut serde_json::Value| {
+                value.as_object_mut().unwrap().remove("protection");
+            },
             |value: &mut serde_json::Value| value["schema"] = json!(2),
         ] {
             let mut value = recipe(true);
