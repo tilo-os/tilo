@@ -58,6 +58,8 @@ action_control! {
     // Unavailable, a recorder records nothing it could commit.
     ui_core::widget::ShortcutRecorder => String, |control| control;
     Button => (), |control| control.with_enabled(false);
+    // Unavailable, a chip is left unbound, which makes it inert.
+    ui_core::widget::Chip => (), |control| control;
     // A row that does something when chosen (a service to link).
     ui_core::widget::ListRow => (), |control| control.with_enabled(false);
     // Unavailable, a card is left unbound, which makes it inert.
