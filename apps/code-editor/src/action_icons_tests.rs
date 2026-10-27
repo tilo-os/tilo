@@ -63,17 +63,15 @@ fn actions_wear_icons_the_toolkit_draws() {
 #[test]
 fn what_acts_on_the_selection_says_so() {
     let actions = actions();
-    for id in ["toggle-comment"] {
-        let action = actions
-            .iter()
-            .find(|action| action.id == id)
-            .unwrap_or_else(|| panic!("{id} is declared"));
-        assert!(
-            action
-                .contract
-                .requirements()
-                .contains(&ui::tilo_actions::ContextRequirement::Selection),
-            "{id} acts on the selection"
-        );
-    }
+    let action = actions
+        .iter()
+        .find(|action| action.id == "toggle-comment")
+        .expect("Toggle line comment is declared");
+    assert!(
+        action
+            .contract
+            .requirements()
+            .contains(&ui::tilo_actions::ContextRequirement::Selection),
+        "Toggle line comment acts on the selection"
+    );
 }
