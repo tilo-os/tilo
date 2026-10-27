@@ -1033,6 +1033,7 @@ impl AudioRead {
     /// `input`, the devices' names) is applied again when its device is
     /// present.
     fn of_device(output: Option<&str>, input: Option<&str>) -> Self {
+        crate::device_read::off_ui_thread();
         let (initial, volume_error) = match os_actions::get_volume_state() {
             Ok(state) => (state, None),
             Err(error) => (
