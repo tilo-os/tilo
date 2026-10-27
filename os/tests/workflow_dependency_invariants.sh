@@ -63,7 +63,7 @@ kernel_inputs="$(tcheck image-kernel-{arch} inputs)" || fail=1
 kernel_needs="$(tcheck image-kernel-{arch} needs)" || fail=1
 signer_inputs="$(tcheck kernel-signer-crate inputs)" || fail=1
 kernel_digest="$(sed -n '/^inputs_digest() {/,/^}/p' "$kernel_script")"
-signer_crate="$(sed -n '/^  signer-crate)/,/^    ;;/p' "$kernel_script")"
+signer_crate="$(sed -n '/^kernel_signer_crate() {/,/^}/p' "$publish/kernel-env.sh")"
 if [ -n "$kernel_digest" ] \
    && grep -Fq 'crates/system/tilo-crypto/Cargo.toml' <<<"$kernel_digest" \
    && grep -Fq 'crates/system/tilo-crypto/src/lib.rs' <<<"$kernel_digest" \
