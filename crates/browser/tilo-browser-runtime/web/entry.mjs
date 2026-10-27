@@ -23,7 +23,7 @@ import {wireFetchProxy} from './fetch-proxy.mjs';
 import {takeLinkSecrets} from './link-secrets.mjs';
 import {openTarget} from './open-target.mjs';
 import {startRouter} from './router.mjs';
-import {listedWorkspaces, workspaceAt} from './workspaces.mjs';
+import {listedAt, listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
 const PRIMARY_RECORD = '@tilo:package-primary';
 /** The mount's record option: `-` is the app's room document, no record
@@ -112,9 +112,11 @@ export async function readEntry({mode, location, fetch = globalThis.fetch}) {
 /** Send problem reports from the home workspace to the channel its
  * entry names. The desktop does not wait for it: the owner's admission is
  * a round trip of its own, and the desktop takes reports up once it is in. */
-export function configureFeedback(peer, home) {
+export function configureFeedback(peer, home, admittedRoom = null) {
   const channel = home?.feedback?.channel;
   if (!peer?.room || typeof channel !== 'string' || typeof peer.configureFeedback !== 'function') return;
+  // The channel is the home workspace's: another room has no such record.
+  if (!listedAt([home], {kind: 'room', host: peer.origin, room: peer.room}, admittedRoom)) return;
   peer.configureFeedback({room: peer.room, provider: 'record:so.tilo.chat:', channel})
     .catch(error => console.warn('feedback:', error?.message ?? error));
 }
@@ -271,7 +273,10 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     },
   });
   if (peer) deps.onAdmitted?.(peer);
-  configureFeedback(peer, entry.home);
+  // A link that names no room is let in through its host's door: the room
+  // the door admits to is that host's listed workspace.
+  const admittedRoom = peer && route.target.scope.kind === 'room' && !route.target.scope.room ? peer.room : null;
+  configureFeedback(peer, entry.home, admittedRoom);
   // The app in front (a home workspace's, or the link's) downloads once the
   // page is in, while the desktop mounts, not when the desktop first opens
   // it. Not before: admission is a run of small round trips to the host,
@@ -292,7 +297,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   }
   // A listed workspace is shown under its listed name, not its room id.
   const scope = route.target.scope;
-  const listed = scope.kind === 'room' ? workspaceAt(workspaces, scope.host) : null;
+  const listed = listedAt(workspaces, scope, admittedRoom);
   // The desktop offers Invite in a room the page can invite to.
   const invite = peer?.room && deps.onInvite ? {onInvite: deps.onInvite} : {};
   const host = scopeHost(scope, window.location?.host);
