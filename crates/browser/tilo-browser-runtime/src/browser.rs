@@ -453,6 +453,9 @@ struct Mount {
     /// Who is here changed since the last frame, which puts them on their
     /// windows before it lays out ([`Mount::apply_here`]).
     here_stale: bool,
+    /// The change of the page's theme this mount draws in
+    /// ([`crate::page_theme::generation`]).
+    theme_seen: u64,
     /// The peer this mount replicates through, and whether a peer's change
     /// reached it since the last frame.
     peer: Option<u32>,
@@ -1372,7 +1375,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                 *component,
                 viewport.logical_size(),
                 ComponentRunnerInputs {
-                    theme: ui::Theme::dark(),
+                    theme: crate::page_theme::current(),
                     text_renderer,
                 },
                 move || {
@@ -1396,7 +1399,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                 ui::state::State::new(),
                 surface,
                 viewport.logical_size(),
-                ui::Theme::dark(),
+                crate::page_theme::current(),
                 text_renderer,
                 UserId(config.author()),
             )
@@ -1496,6 +1499,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         oversized_scene: false,
         skipped_frame: false,
         here_stale: false,
+        theme_seen: crate::page_theme::generation(),
         peer: config.peer,
         replica_changed,
         focus_presence: RefCell::new(None),
@@ -1960,7 +1964,9 @@ impl Mount {
         if let Some(peer) = self.peer {
             crate::replication::follow_answers(peer);
         }
-        self.pending |= desktop_woken || self.replica_changed.get();
+        self.pending |= desktop_woken
+            || self.replica_changed.get()
+            || self.theme_seen != crate::page_theme::generation();
         let frame = self.frame.frame_schedule();
         let due = frame
             .next_wake_deadline
@@ -2120,6 +2126,13 @@ impl Mount {
             if desktop.shared.take_arrived() {
                 desktop.shared.retry_waiting(&desktop.handle);
             }
+            host_changed = true;
+        }
+        // The person's settings or their browser's preferences changed
+        // what the theme is: every window draws in the new one.
+        if self.theme_seen != crate::page_theme::generation() {
+            self.theme_seen = crate::page_theme::generation();
+            self.frame.set_theme(crate::page_theme::current());
             host_changed = true;
         }
         // A peer's change merged into an open record.
