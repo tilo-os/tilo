@@ -90,3 +90,62 @@ fn a_seeded_workspace_keeps_its_windows_and_record_index() {
         "an existing record index travels with the workspace"
     );
 }
+
+/// The records themselves travel with the workspace, not only their index:
+/// a record whose document this device already held opens with its content
+/// in the room, instead of appearing in the index and reading empty.
+#[test]
+fn a_seeded_workspace_keeps_the_records_it_already_held() {
+    let (key, authority, now) = fixture();
+    let room = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    let mut document = AutoCommit::new();
+    document
+        .put(automerge::ROOT, "title", "Kept")
+        .expect("a record document");
+    let bytes = document.save();
+    let records = BTreeMap::from([("record-1".to_string(), "notes".to_string())]);
+    let seed = workspace_seed_with_records(
+        room,
+        &authority,
+        std::slice::from_ref(&authority),
+        "Work",
+        SALT,
+        &[strip()],
+        &records,
+        vec![SeedDocument {
+            app_id: "so.tilo.notes".into(),
+            record_id: "record-1".into(),
+            kind: "notes".into(),
+            bytes: bytes.clone(),
+        }],
+    )
+    .unwrap();
+    assert_eq!(seed.documents.len(), 1);
+    let mut peer = StatePeer::new(
+        room,
+        authority.clone(),
+        vec![authority.clone()],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    peer.install_seed(seed, &key, now).unwrap();
+    let served = peer
+        .document("so.tilo.notes", "record-1")
+        .expect("the imported record is served by the room");
+    let held = AutoCommit::load(&served).expect("the record document loads");
+    assert_eq!(
+        held.get(automerge::ROOT, "title")
+            .unwrap()
+            .and_then(|(value, _)| match value {
+                automerge::Value::Scalar(value) => match value.as_ref() {
+                    automerge::ScalarValue::Str(text) => Some(text.to_string()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .as_deref(),
+        Some("Kept"),
+        "the content the workspace had is in the room"
+    );
+}

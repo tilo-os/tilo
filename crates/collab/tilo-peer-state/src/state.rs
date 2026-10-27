@@ -3711,6 +3711,57 @@ pub fn workspace_seed_with_layout(
     strips: &[tilo_desktop_model::layout::Strip],
     records: &BTreeMap<String, String>,
 ) -> Result<SeedState, String> {
+    workspace_seed_carrying(
+        room,
+        authority,
+        roster,
+        name,
+        salt,
+        strips,
+        records,
+        Vec::new(),
+    )
+}
+
+/// [`workspace_seed_with_layout`] carrying the records themselves: the
+/// documents the apps keeping them already hold on this device, each
+/// published under the app that keeps it, not only the index that names
+/// them.
+///
+/// A room that kept only the index would list a record whose content this
+/// device alone had and serve none of it: the workspace would show the
+/// record and open it empty. Importing the documents the same one-time pass
+/// publishes them at the route their app reads, and the room keeps them like
+/// any other admitted document.
+///
+/// # Errors
+///
+/// As [`workspace_seed_with_layout`].
+pub fn workspace_seed_with_records(
+    room: &str,
+    authority: &DeviceCert,
+    roster: &[DeviceCert],
+    name: &str,
+    salt: u16,
+    strips: &[tilo_desktop_model::layout::Strip],
+    records: &BTreeMap<String, String>,
+    documents: Vec<SeedDocument>,
+) -> Result<SeedState, String> {
+    workspace_seed_carrying(
+        room, authority, roster, name, salt, strips, records, documents,
+    )
+}
+
+fn workspace_seed_carrying(
+    room: &str,
+    authority: &DeviceCert,
+    roster: &[DeviceCert],
+    name: &str,
+    salt: u16,
+    strips: &[tilo_desktop_model::layout::Strip],
+    records: &BTreeMap<String, String>,
+    documents: Vec<SeedDocument>,
+) -> Result<SeedState, String> {
     use tilo_automerge::ApplyIncoming as _;
     let mut seed = workspace_seed(room, authority, roster, name, salt)?;
     let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(
@@ -3737,6 +3788,7 @@ pub fn workspace_seed_with_layout(
         .iter()
         .map(|change| change.raw_bytes().to_vec())
         .collect();
+    seed.documents = documents;
     Ok(seed)
 }
 
