@@ -318,7 +318,9 @@ impl App {
                     .map(|owner| owner.route.clone()),
             )
             .collect();
-        self.collaboration.manager.set_document_owner_routes(routes);
+        self.collaboration
+            .manager
+            .set_document_owner_routes(routes, self.autosave_generation);
         // The exact live owner map exists before any join can deliver callbacks.
         for route in joins {
             self.collaboration.manager.join_route(route);
