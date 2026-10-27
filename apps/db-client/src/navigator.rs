@@ -154,9 +154,8 @@ impl Navigator {
         let new = link.clone();
         let opened = link.clone();
         let list = NavList::new(sections(&[], None))
-            .with_id("db.sidebar")
             .with_accessible_name(t("db-navigator"))
-            .on_select(move |id| {
+            .on_view("db.sidebar", move |id| {
                 if let Some(id) = parse_connection(&id) {
                     // Choosing the connection that is already open keeps it open.
                     let open = opened.read(|model| model.connected && model.active == Some(id));

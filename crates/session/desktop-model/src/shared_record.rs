@@ -638,6 +638,26 @@ fn held(doc: &AutoCommit) -> Levels<HeldEntry> {
     }
 }
 
+/// Every entry `doc` holds, by kind and id, as what it says: where it is
+/// and its text fields. An entry nobody changed reads the same.
+#[must_use]
+pub fn entries(doc: &AutoCommit) -> BTreeMap<(&'static str, u64), String> {
+    let held = held(doc);
+    [
+        (WORKSPACES, held.workspaces),
+        (STRIPS, held.strips),
+        (GROUPS, held.groups),
+        (WINDOWS, held.windows),
+    ]
+    .into_iter()
+    .flat_map(|(kind, level)| {
+        level
+            .into_iter()
+            .map(move |(id, held)| ((kind, id), format!("{:?}", held.entry)))
+    })
+    .collect()
+}
+
 /// Make the entries at `ROOT[key]` exactly `want`, writing only what differs.
 fn reconcile(
     doc: &mut AutoCommit,

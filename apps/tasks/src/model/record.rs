@@ -711,10 +711,11 @@ impl Tracker {
     }
 
     /// Send a message to the issue's run: its agent reads it at its next
-    /// step.
+    /// step. Without a run going, the message joins the thread instead, so
+    /// it stays with the issue and every collaborator reads it there.
     ///
     /// # Errors
-    /// Refuses an empty message, or an issue with no run going.
+    /// Refuses an empty message.
     #[action(field = "comments", writes = issues)]
     pub fn send_message(
         &mut self,
@@ -727,10 +728,10 @@ impl Tracker {
         let agent = by_agent(cx);
         let at_ms = cx.now_ms();
         let target = self.issue_mut(issue)?;
-        let epoch = target
-            .active_run()
-            .map(|run| run.epoch)
-            .ok_or_else(|| Refusal::new("No run of this issue is going to read it"))?;
+        let (kind, run, incorporated) = match target.active_run() {
+            Some(run) => (MessageKind::ToRun, run.epoch, false),
+            None => (MessageKind::Comment, 0, true),
+        };
         push_message(
             target,
             cx,
@@ -739,9 +740,9 @@ impl Tracker {
                 by_agent: agent,
                 at_ms,
                 text,
-                kind: MessageKind::ToRun,
-                run: epoch,
-                incorporated: false,
+                kind,
+                run,
+                incorporated,
             },
         );
         Ok(())

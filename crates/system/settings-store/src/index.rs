@@ -34,6 +34,47 @@ pub struct Setting {
     /// flipped through the section's field edit as its control in Settings
     /// flips it.
     pub switch: Option<Switch>,
+    /// The choice it is, where it is one: a field of a settings section the
+    /// session keeps that holds one of a few named values. Search then
+    /// offers each value by its name, set through the section's field edit
+    /// as its control in Settings sets it.
+    pub choice: Option<Choice>,
+}
+
+/// A setting that holds one of a few values, as the section that holds it
+/// publishes it: a yes-or-no shown as two choices is one too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Choice {
+    /// The section's kind (`settings.input`).
+    pub section: &'static str,
+    /// The field's path in the section, its names joined by dots.
+    pub field: &'static str,
+    pub options: &'static [ChoiceOption],
+}
+
+/// One value of a [`Choice`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChoiceOption {
+    /// The value as the field stores it, as JSON (`"edge"`, `true`).
+    pub value: &'static str,
+    /// The value's name in the catalogue, under its setting's
+    /// ([`Setting::option_key`]).
+    pub name: &'static str,
+}
+
+impl Choice {
+    /// The names of the field's path, outermost first.
+    pub fn path(self) -> impl Iterator<Item = &'static str> {
+        self.field.split('.')
+    }
+}
+
+impl ChoiceOption {
+    /// The value as JSON.
+    #[must_use]
+    pub fn json(self) -> serde_json::Value {
+        serde_json::from_str(self.value).unwrap_or(serde_json::Value::Null)
+    }
 }
 
 /// A yes-or-no setting, as the section that holds it publishes it.
@@ -97,6 +138,16 @@ impl Setting {
         format!("settings-index-setting-{}-words", key(self.id))
     }
 
+    /// The catalogue key of the name of its choice `option`.
+    #[must_use]
+    pub fn option_key(self, option: ChoiceOption) -> String {
+        format!(
+            "settings-index-setting-{}-{}",
+            key(self.id),
+            key(option.name)
+        )
+    }
+
     /// The link that opens the setting's page at the setting.
     #[must_use]
     pub fn link(self) -> String {
@@ -104,12 +155,21 @@ impl Setting {
     }
 
     /// Every word the setting is found by, in every language, lowercased:
-    /// its names and the other words people use for it. Settings' own search
+    /// its names, the other words people use for it and the names of the
+    /// values it may hold. Settings' own search
     /// and the desktop palette rank a setting by these alike.
     #[must_use]
     pub fn search_words(self) -> Vec<String> {
         let mut words = names_in_every_locale(&self.name_key());
-        for word in words_in_every_locale(&self.words_key()) {
+        let options = self
+            .choice
+            .iter()
+            .flat_map(|choice| choice.options)
+            .flat_map(|option| names_in_every_locale(&self.option_key(*option)));
+        for word in words_in_every_locale(&self.words_key())
+            .into_iter()
+            .chain(options)
+        {
             if !words.contains(&word) {
                 words.push(word);
             }
@@ -268,10 +328,29 @@ const fn s(id: &'static str, page: &'static str, control: &'static str) -> Setti
         page,
         control,
         switch: None,
+        choice: None,
     }
 }
 
 impl Setting {
+    /// The setting is the field `field` of the section `section`, holding
+    /// one of `options`.
+    const fn choice(
+        self,
+        section: &'static str,
+        field: &'static str,
+        options: &'static [ChoiceOption],
+    ) -> Self {
+        Self {
+            choice: Some(Choice {
+                section,
+                field,
+                options,
+            }),
+            ..self
+        }
+    }
+
     /// The setting is the yes-or-no field `field` of the section `section`.
     const fn switch(self, section: &'static str, field: &'static str) -> Self {
         Self {
@@ -362,11 +441,43 @@ pub const SETTINGS: &[Setting] = &[
         "pointing.secondary_click",
         "pointing",
         "input.touchpad_click_method",
+    )
+    .choice(
+        "settings.input",
+        "touchpad_click_method",
+        &[
+            ChoiceOption {
+                value: "\"default\"",
+                name: "default",
+            },
+            ChoiceOption {
+                value: "\"areas\"",
+                name: "areas",
+            },
+            ChoiceOption {
+                value: "\"clickfinger\"",
+                name: "clickfinger",
+            },
+        ],
     ),
     s(
         "pointing.scroll_method",
         "pointing",
         "input.touchpad_scroll_method",
+    )
+    .choice(
+        "settings.input",
+        "touchpad_scroll_method",
+        &[
+            ChoiceOption {
+                value: "\"two_finger\"",
+                name: "two_finger",
+            },
+            ChoiceOption {
+                value: "\"edge\"",
+                name: "edge",
+            },
+        ],
     ),
     s("pointing.gestures", "pointing", "input.touchpad_gestures"),
     s(
@@ -480,7 +591,20 @@ pub const SETTINGS: &[Setting] = &[
         "notifications",
         "notifications.previews",
     )
-    .switch("settings.notifications", "show_previews"),
+    .choice(
+        "settings.notifications",
+        "show_previews",
+        &[
+            ChoiceOption {
+                value: "true",
+                name: "shown",
+            },
+            ChoiceOption {
+                value: "false",
+                name: "hidden",
+            },
+        ],
+    ),
     s(
         "notifications.lock_screen",
         "notifications",
@@ -557,6 +681,9 @@ mod tests {
         for setting in SETTINGS {
             wanted.insert(setting.name_key());
             wanted.insert(setting.words_key());
+            for option in setting.choice.iter().flat_map(|choice| choice.options) {
+                wanted.insert(setting.option_key(*option));
+            }
         }
         for (locale, catalogue) in CATALOGUES {
             let have: BTreeSet<String> =
@@ -565,6 +692,29 @@ mod tests {
             let extra: Vec<_> = have.difference(&wanted).collect();
             assert!(missing.is_empty(), "{locale} lacks {missing:?}");
             assert!(extra.is_empty(), "{locale} holds unused {extra:?}");
+        }
+    }
+
+    /// A choice's values are JSON, each named once, and a setting is a
+    /// switch or a choice, not both.
+    #[test]
+    fn every_choice_names_values_its_field_can_hold() {
+        for setting in SETTINGS {
+            let Some(choice) = setting.choice else {
+                continue;
+            };
+            assert!(setting.switch.is_none(), "{}", setting.id);
+            assert!(choice.options.len() >= 2, "{}", setting.id);
+            let mut names = HashSet::new();
+            for option in choice.options {
+                assert!(
+                    serde_json::from_str::<serde_json::Value>(option.value).is_ok(),
+                    "{}: {} is JSON",
+                    setting.id,
+                    option.value
+                );
+                assert!(names.insert(option.name), "{}: {}", setting.id, option.name);
+            }
         }
     }
 

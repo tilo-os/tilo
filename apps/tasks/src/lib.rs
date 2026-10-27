@@ -184,13 +184,12 @@ impl ResourceApp for App {
             let chosen = chosen.clone();
             Box::new(
                 ui::widget::NavList::new(sidebar_sections(tracker, me.as_deref()))
-                    .with_id("tasks.filters")
                     // Named for what it narrows, not the app: the sidebar's
                     // heading and the window's tab already say "Tasks".
                     .with_accessible_name(tr("tasks-filters"))
                     .with_semantic_key("tasks.filters")
                     .bind_selection(&selection)
-                    .on_select(move |key| {
+                    .on_view("tasks.filters", move |key| {
                         chosen.open.set(None);
                         chosen
                             .filter

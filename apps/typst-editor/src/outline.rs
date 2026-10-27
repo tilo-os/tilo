@@ -147,9 +147,8 @@ impl Outline {
         Self {
             drawer: SidebarDrawer::new().left().closed(),
             list: NavList::new(Vec::new())
-                .with_id("typst.outline")
                 .with_accessible_name("Outline")
-                .on_select(move |id| *pick.borrow_mut() = Some(id)),
+                .on_view("typst.outline", move |id| *pick.borrow_mut() = Some(id)),
             chosen,
             headings: Vec::new(),
             structure_dirty: false,

@@ -45,12 +45,21 @@ mod workspace_activity {
                 },
                 app_title: None,
             });
-            tilo_desktop_model::projection::project_owned_contents(
+            let mut layout = tilo_desktop_model::Workspace::in_room(
+                tilo_desktop_model::WorkspaceId(1),
+                room,
+                "Design",
+            );
+            layout.strips = vec![strip.clone()];
+            tilo_desktop_model::shared_record::device::write(
                 &mut doc,
-                std::slice::from_ref(strip),
-                7,
-                None,
-                tilo_desktop_model::projection::EmptyStrips::Retain,
+                room,
+                &layout,
+                &tilo_desktop_model::shared_record::device::Writer {
+                    person: Some("ada"),
+                    mine: &|id| id >> 48 == 7,
+                    retained: &|_| true,
+                },
             )
             .unwrap();
             doc.commit_with(CommitOptions::default().with_time(n.cast_signed()));
