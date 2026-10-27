@@ -225,16 +225,30 @@ case ${1:-} in
       TILO_DEV_MODEL_CATALOG=/target/model-catalog/dev/$arch \
       TILO_DISTROBOX= TILO_OUTPUT=$scratch/dev-output TMPDIR=/var/tmp \
       bash os/dev/build-dev-image.sh
-    # Kept as the layers it added over the OS image's, composed with them: the OS image's
-    # layers are the same blobs in both, stored and sent once.
+    # Kept as the layers it added over the OS image's (a fragment), which `dev-compose`
+    # composes with the OS image's outside the VM, linking the blobs both share rather than
+    # copying gigabytes of the OS image into this step's outputs.
     phase push
     dev=$scratch/dev-built
     rm -rf "$out"
     python3 -I tools/ci/os/oci_layers.py export localhost/tilo-vm:ci "$in/oci" "$dev"
     printf '{"inputs":{},"inputsDigest":""}' > "$scratch/dev-inputs.json"
-    python3 -I tools/ci/os/oci_layers.py take "$in/oci" "$dev" "$scratch/dev-fragment" dev-image "$scratch/dev-inputs.json"
+    python3 -I tools/ci/os/oci_layers.py take "$in/oci" "$dev" "$out" dev-image "$scratch/dev-inputs.json"
     rm -rf "$dev"
-    python3 -I tools/ci/os/oci_layers.py compose --copy "$out" "$in/oci" "$scratch/dev-fragment"
+    printf '%s\n' "$revision" > "$out/revision"
+    ;;
+  dev-compose)
+    # The dev image as one OCI layout: the OS image's layers and the dev fragment `dev` left,
+    # their blobs hard links to theirs, with the commit both were built from.
+    arch=${2:?usage: os-image.sh dev-compose ARCH IN FRAGMENT OUT}
+    in=${3:?}
+    fragment=${4:?}
+    out=${5:?}
+    revision=$(git rev-parse --verify HEAD) || die 'the build names its commit: git = true'
+    [[ $(cat "$fragment/revision") == "$revision" ]] \
+      || die "$fragment is of $(cat "$fragment/revision"), this build of $revision"
+    rm -rf "$out"
+    python3 -I tools/ci/os/oci_layers.py compose "$out" "$in/oci" "$fragment"
     printf '%s\n' "$revision" > "$out/revision"
     ;;
   board)
@@ -270,5 +284,5 @@ case ${1:-} in
     phase disk
     install_board_disk "$board" localhost/tilo-board:ci "$out/disk"
     ;;
-  *) die 'usage: os-image.sh dev ARCH IN OUT COMPILED | board BOARD IN OUT' ;;
+  *) die 'usage: os-image.sh dev ARCH IN OUT COMPILED | dev-compose ARCH IN FRAGMENT OUT | board BOARD IN OUT' ;;
 esac

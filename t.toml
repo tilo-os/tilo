@@ -7569,23 +7569,41 @@ default = false
 # Images built on the OS image of the same tree: its image is os-image-<arch>, composed from the
 # layer actions of os/image/layers.toml (the os-layers block, tools/ci/os/os_toml.py), as an OCI
 # layout under /target/os/<arch>/image.
-# The dev image a development VM runs (os/Containerfile.dev: tilo-vmd, sshd, the toolchain and the
-# components with their dev features, compiled by os-compile-dev-{arch}, and model-catalog-dev-{arch}'s
-# local model catalog with the runtimes of this tree) on os-image-{arch}, kept as an OCI layout of its
-# layers over the OS image's.
+# The layers of the dev image a development VM runs (os/Containerfile.dev: tilo-vmd, sshd, the
+# toolchain and the components with their dev features, compiled by os-compile-dev-{arch}, and
+# model-catalog-dev-{arch}'s local model catalog with the runtimes of this tree) over os-image-{arch},
+# kept as a fragment of only the layers it adds, which os-dev-image-{arch} composes.
 [[check]]
-name = "os-dev-image-{arch}"
+name = "os-dev-layer-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/os/{arch}/compiled-dev"
+run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/os/{arch}/dev-layer /target/os/{arch}/compiled-dev"
 inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "keys/cosign-dev.pub", "Cargo.lock", "rust-toolchain.toml", ".containerignore", "tools/ci/os/oci_layers.py", "tools/ci/publish/build-lib.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
 needs = ["image-rpms-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "model-catalog-dev-{arch}", "signing-tools"]
-outputs = ["/target/publish/os-dev/{arch}/**"]
+outputs = ["/target/os/{arch}/dev-layer/**"]
 git = true
 requires = ["{node}", "disk-100g"]
 isolation = "vm"
 cost = "heavy"
 requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
+default = false
+
+[check.matrix]
+arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
+# The dev image as one OCI layout: os-image-{arch}'s layers and os-dev-layer-{arch}'s, composed outside
+# a VM with their blobs linked, in seconds, rather than copied out of the VM that built the dev
+# layers.
+[[check]]
+name = "os-dev-image-{arch}"
+run = "bash tools/ci/publish/os-image.sh dev-compose {arch} /target/os/{arch}/image /target/os/{arch}/dev-layer /target/publish/os-dev/{arch}"
+inputs = ["tools/ci/os/oci_layers.py", "tools/ci/publish/build-lib.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
+needs = ["os-image-{arch}", "os-dev-layer-{arch}", "signing-tools"]
+outputs = ["/target/publish/os-dev/{arch}/**"]
+git = true
+requires = ["arch=any"]
+cost = "minutes"
+requirement = { cores = 1, memory = "2GiB" }
 default = false
 
 [check.matrix]
