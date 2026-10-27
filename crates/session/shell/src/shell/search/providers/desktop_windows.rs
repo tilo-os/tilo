@@ -118,6 +118,9 @@ pub(crate) fn share_request(
             tab,
             app_id,
             share,
+            // The overlay host says what a Tilo app's window shows as it
+            // sends the request ([`crate::shell::overlay_host`]).
+            shows: None,
         },
     ))
 }

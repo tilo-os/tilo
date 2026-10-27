@@ -11,10 +11,19 @@
 //! (`contents_owners_v1`), so the registry says which device hosts the
 //! window, and nobody shares another device's window.
 //!
+//! A Tilo app's window is a view of a resource that already lives in the
+//! room, so its share also says what the window shows: the share
+//! [`window_shows_share_id`] of the resource's own node (the record, or the
+//! item of it the window is at). Its sharer streams none of its pixels; every
+//! other member opens the same app on that resource. A window with no such
+//! share is an outside window (a terminal, any Wayland or X client), whose
+//! state lives in its process: it is streamed.
+//!
 //! Every device reads the room's live window shares from the room's
-//! governance ([`window_shares`]): the sharer streams only those windows to
-//! the room, and every other member shows each as a tab of the sharer's
-//! window in its own layout, for as long as the share lasts.
+//! governance ([`window_shares`]): the sharer streams only the outside
+//! windows among them to the room, and every other member shows each as a
+//! tab of the sharer's window in its own layout, for as long as the share
+//! lasts.
 
 use std::collections::BTreeMap;
 
@@ -34,6 +43,31 @@ pub const WINDOW_KIND: &str = "window";
 #[must_use]
 pub fn window_share_id(tab: TabId) -> String {
     format!("{WINDOW_KIND}.{}", contents_key(tab))
+}
+
+/// The share id of what the window `tab` of a Tilo app shows, beside its
+/// own share ([`window_share_id`]). Its grants' ids start with the window
+/// share's prefix, so ending the window's share ends this one with it.
+#[must_use]
+pub fn window_shows_share_id(tab: TabId) -> String {
+    format!("{}:{SHOWS}", window_share_id(tab))
+}
+
+/// What [`window_shows_share_id`] adds to the window's share id.
+const SHOWS: &str = "shows";
+
+/// The window a share id names, and whether it is the share of what the
+/// window shows ([`window_shows_share_id`]) rather than of the window.
+#[must_use]
+pub fn window_of_share_id(share: &str) -> Option<(TabId, bool)> {
+    let rest = share.strip_prefix(WINDOW_KIND)?.strip_prefix('.')?;
+    let (key, shows) = match rest.split_once(':') {
+        Some((key, SHOWS)) => (key, true),
+        Some(_) => return None,
+        None => (rest, false),
+    };
+    let tab = contents_key_id(key)?;
+    (contents_key(tab) == key).then_some((tab, shows))
 }
 
 /// The node of the window `tab` of `app_id` in `room`: what a share of it
@@ -67,6 +101,75 @@ pub fn window_of_node(node: &TreePath) -> Option<(String, TabId)> {
     Some((app.to_owned(), tab))
 }
 
+/// What a Tilo app's shared window shows: a record of the room, and the
+/// item of it the window is at.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowShows {
+    /// The record, as its route names it: empty for the app's own record
+    /// of the room.
+    pub record: String,
+    /// What in the record the window is at (a note of the notebook), as
+    /// the app's `open` takes it; `None` for the record as a whole.
+    pub item: Option<String>,
+}
+
+/// The node a share of what the window `tab` of `app_id` shows grants on:
+/// the item of the record it is at, or the record (`record`, a route, of
+/// kind `kind`). The app's own record as a whole has no node of its own
+/// (a node naming every record of the kind is no one resource), so it is
+/// named by the window's own node.
+#[must_use]
+pub fn shows_node(
+    room: &str,
+    app_id: &str,
+    tab: TabId,
+    kind: &str,
+    shows: &WindowShows,
+) -> TreePath {
+    let at = TreePath::room(room).app(app_id).kind(kind);
+    match (&shows.item, shows.record.is_empty()) {
+        // An item of the app's own record: its id is unique, so any
+        // record of the kind is it.
+        (Some(item), true) => at.any(Level::Resource).item(item.as_str()),
+        (Some(item), false) => at.resource(shows.record.as_str()).item(item.as_str()),
+        (None, false) => at.resource(shows.record.as_str()),
+        (None, true) => window_node(room, app_id, tab),
+    }
+}
+
+/// What the share of what the window `tab` of `app_id` shows says, from
+/// its node ([`shows_node`]): `None` for a node of another app or window,
+/// or one that names no record or item.
+#[must_use]
+pub fn shows_of_node(node: &TreePath, app_id: &str, tab: TabId) -> Option<WindowShows> {
+    if window_of_node(node).is_some_and(|(app, window)| app == app_id && window == tab) {
+        return Some(WindowShows::default());
+    }
+    let segments = node.segments();
+    let named = |at: usize, level: Level| match segments.get(at) {
+        Some(Segment::Name(found, id)) if *found == level && !id.is_empty() => Some(id.clone()),
+        _ => None,
+    };
+    if named(0, Level::Room).is_none()
+        || named(1, Level::App).as_deref() != Some(app_id)
+        || named(2, Level::Kind)
+            .as_deref()
+            .is_none_or(|kind| kind == WINDOW_KIND)
+    {
+        return None;
+    }
+    let record = match segments.get(3) {
+        Some(Segment::Any(Level::Resource)) => String::new(),
+        _ => named(3, Level::Resource)?,
+    };
+    let item = match segments.len() {
+        4 if !record.is_empty() => None,
+        5 => Some(named(4, Level::Item)?),
+        _ => return None,
+    };
+    Some(WindowShows { record, item })
+}
+
 /// One window shared with a room, as its governance records it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowShare {
@@ -82,6 +185,9 @@ pub struct WindowShare {
     /// Until when the share lasts, in Unix milliseconds; `None` until the
     /// sharer stops it.
     pub until_ms: Option<u64>,
+    /// What the window shows, when it is a Tilo app's: the others open the
+    /// same app on it. `None` for an outside window, which is streamed.
+    pub shows: Option<WindowShows>,
 }
 
 /// The windows shared with `policy`'s room that are live at `now_ms`, by
@@ -129,7 +235,34 @@ pub fn window_shares(
             sharer: giver.clone(),
             host: host.clone(),
             until_ms,
+            shows: None,
         });
+    }
+    // What each Tilo app's window shows: the share its sharer made beside
+    // the window's, of the resource's own node.
+    for grant in &policy.grants {
+        let Subject::Person(giver) = &grant.granted_by else {
+            continue;
+        };
+        if grant.answer != Answer::Allow
+            || !grant.kinds.contains(ActionKind::Read)
+            || !grant.is_live(&cx)
+            || grant.node.room_id() != Some(policy.room.as_str())
+        {
+            continue;
+        }
+        for share in shares.values_mut() {
+            if share.shows.is_some()
+                || share.sharer != *giver
+                || !grant
+                    .id
+                    .as_str()
+                    .starts_with(&share_id_prefix(&window_shows_share_id(share.tab)))
+            {
+                continue;
+            }
+            share.shows = shows_of_node(&grant.node, &share.app_id, share.tab);
+        }
     }
     shares
 }
@@ -164,6 +297,7 @@ mod tests {
                 sharer: "ana".into(),
                 host: "aa".into(),
                 until_ms: None,
+                shows: None,
             })
         );
         assert!(
@@ -193,5 +327,107 @@ mod tests {
         )
         .expect("a record share");
         assert!(window_shares(&policy, &owners, 1).is_empty());
+    }
+
+    #[test]
+    fn a_tilo_apps_window_share_says_what_the_window_shows() {
+        let tab = (0x0A51_u64 << 48) | 4;
+        let app = "so.tilo.notes";
+        assert_eq!(
+            window_of_share_id(&window_share_id(tab)),
+            Some((tab, false))
+        );
+        assert_eq!(
+            window_of_share_id(&window_shows_share_id(tab)),
+            Some((tab, true))
+        );
+        assert_eq!(window_of_share_id("window.x:shows"), None);
+        assert_eq!(window_of_share_id("message.1"), None);
+        assert!(
+            window_shows_share_id(tab).starts_with(&format!("{}:", window_share_id(tab))),
+            "ending the window's share ends what it shows with it"
+        );
+
+        let owners = BTreeMap::from([(0x0A51, "aa".to_owned())]);
+        let share = |shows: &WindowShows, kind: &str| {
+            let mut policy = RoomPolicy::new(ROOM, "owner".to_owned());
+            for (id, node) in [
+                (window_share_id(tab), window_node(ROOM, app, tab)),
+                (
+                    window_shows_share_id(tab),
+                    shows_node(ROOM, app, tab, kind, shows),
+                ),
+            ] {
+                policy.grants.extend(
+                    share_grants(ROOM, "ana", &id, &node, ShareAccess::View)
+                        .expect("one resource of the room"),
+                );
+            }
+            window_shares(&policy, &owners, 1)
+                .remove(&tab)
+                .expect("the window is shared")
+        };
+        for shows in [
+            // A note of the app's own notebook.
+            WindowShows {
+                record: String::new(),
+                item: Some("notes.page/pages/7".into()),
+            },
+            // A record of its own, and an item of it.
+            WindowShows {
+                record: "derived:default@tab:0a51000000000009".into(),
+                item: None,
+            },
+            WindowShows {
+                record: "derived:default@tab:0a51000000000009".into(),
+                item: Some("7".into()),
+            },
+            // The app's own record as a whole.
+            WindowShows::default(),
+        ] {
+            assert_eq!(share(&shows, "notes.notebook").shows, Some(shows));
+        }
+
+        // A window with nothing shown beside it is an outside window's.
+        let mut policy = RoomPolicy::new(ROOM, "owner".to_owned());
+        policy.grants.extend(
+            share_grants(
+                ROOM,
+                "ana",
+                &window_share_id(tab),
+                &window_node(ROOM, app, tab),
+                ShareAccess::View,
+            )
+            .expect("a window"),
+        );
+        assert_eq!(window_shares(&policy, &owners, 1)[&tab].shows, None);
+
+        // What another person shares under the window's id is not what it shows.
+        policy.grants.extend(
+            share_grants(
+                ROOM,
+                "bo",
+                &window_shows_share_id(tab),
+                &TreePath::room(ROOM)
+                    .app(app)
+                    .kind("notes.notebook")
+                    .resource("r"),
+                ShareAccess::View,
+            )
+            .expect("a record"),
+        );
+        assert_eq!(window_shares(&policy, &owners, 1)[&tab].shows, None);
+        // Nor is a node of another app.
+        assert_eq!(
+            shows_of_node(
+                &TreePath::room(ROOM)
+                    .app("so.tilo.chat")
+                    .kind("k")
+                    .resource("r"),
+                app,
+                tab
+            ),
+            None
+        );
     }
 }

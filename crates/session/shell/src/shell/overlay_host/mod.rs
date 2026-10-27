@@ -1295,6 +1295,9 @@ pub enum PeerSyncAction {
     PromptInvite,
     /// Leave the site's workspace `room` (the overview's Leave).
     LeaveSite { room: crate::shell::state::RoomId },
+    /// Delete the workspace `room`, which shares this device's windows:
+    /// they stop being shared before the room goes, as on leaving.
+    DeleteWorkspace { room: crate::shell::state::RoomId },
     /// Try again to join `room`, whose workspace says it was not joined or
     /// needs joining again (the workspace menu's Join again).
     RetryJoin { room: crate::shell::state::RoomId },

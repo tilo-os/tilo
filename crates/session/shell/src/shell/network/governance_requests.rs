@@ -277,6 +277,9 @@ impl ShellNetwork {
                     }
                 }
                 RoomChange::Receipt(receipt) => self.record_receipt(entry.room, receipt),
+                RoomChange::WindowUnshare { tab, app_id } => {
+                    self.stop_outlived_share(entry.room, *tab, app_id)
+                }
             };
             answers.push((entry.id, answer));
         }
@@ -298,6 +301,34 @@ impl ShellNetwork {
         // a host to change from where they stand now.
         if unreachable && let Ok(mut gate) = self.outbox_waiting.lock() {
             *gate = state;
+        }
+    }
+
+    /// Stop sharing this device's window `tab` of `app_id` with `room`,
+    /// whose window it no longer shows, when the room's host can be reached
+    /// now. A room this device no longer holds has nothing more to ask: its
+    /// shares were stopped as it was let go.
+    fn stop_outlived_share(
+        &self,
+        room: RoomId,
+        tab: crate::shell::state::TabId,
+        app_id: &str,
+    ) -> crate::shell::state::HostAnswer {
+        use crate::shell::state::HostAnswer;
+        if !self.tree.read().room_docs.contains_key(&room) {
+            return HostAnswer::Accepted;
+        }
+        // A member's own action: any member holding a session with the
+        // room's host may ask it.
+        if self.runtime.is_none() || self.hosted_room(room).is_none() {
+            return HostAnswer::Unreachable;
+        }
+        match self.share_window(room, tab, app_id, false, None) {
+            Ok(()) => HostAnswer::Accepted,
+            Err(error) => {
+                tracing::info!(%room, tab, %error, "the workspace host did not stop sharing a closed window");
+                HostAnswer::Refused(error)
+            }
         }
     }
 
@@ -679,7 +710,8 @@ mod tests {
                 crate::shell::state::RoomChange::Governance(request) => {
                     Some((entry.room, request.clone()))
                 }
-                crate::shell::state::RoomChange::Receipt(_) => None,
+                crate::shell::state::RoomChange::Receipt(_)
+                | crate::shell::state::RoomChange::WindowUnshare { .. } => None,
             })
             .collect()
     }
