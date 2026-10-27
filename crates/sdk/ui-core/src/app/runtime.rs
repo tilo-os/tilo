@@ -164,14 +164,18 @@ impl LayoutRuntime {
 /// What the widgets declare moves on with the resource generation (an
 /// update, a sync or an input that changed it:
 /// `App::invalidate_widget_resource_cache`), the widgets themselves with a
-/// rebuild or a remount, and what the local actor may do with the
-/// permission generation. Equal generations are the same tree.
+/// rebuild or a remount, what the local actor may do with the permission
+/// generation, and what the components in the tree may do with the
+/// revision of the permissions their hosts share with them
+/// ([`crate::permissions::shared_revision`]). Equal generations are the
+/// same tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TreeGeneration {
     pub(super) resources: u64,
     pub(super) rebuilds: u64,
     pub(super) remounts: u64,
     pub(super) permissions: u64,
+    pub(super) shared_permissions: u64,
 }
 
 /// What a frame's walks of the whole widget tree last read. A walk whose
@@ -205,10 +209,10 @@ pub(super) struct AvailabilityWalk {
     /// (`ActionRuntime::last_control_availability`) as the walk left it:
     /// anything that drops it asks for the walk again.
     pub(super) controls: Option<(super::ResourceCacheKey, u64)>,
-    /// The tree holds bound components. Each reads its authority from a
-    /// permission context of its own, which changes without the app's
-    /// generations moving, so their controls are refreshed every frame.
-    pub(super) bound: bool,
+    /// A bound component's permissions sample an outside authority at each
+    /// decision (`PermissionContext::samples_outside`), which changes with
+    /// nothing put in force: their controls are refreshed every frame.
+    pub(super) sampled: bool,
 }
 
 /// Every input of reconciling the document routes with the tree.

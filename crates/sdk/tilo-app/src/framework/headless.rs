@@ -5,7 +5,6 @@
 //! surface it publishes, `--bench` captures its fixtures, and `--data-dir`
 //! and `--shots` open it on a profile of their own.
 
-use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -17,7 +16,7 @@ use ui_core::application::{
 use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
-use ui_core::permissions::{PermissionContext, Role, UserId};
+use ui_core::permissions::{PermissionContext, Role, SharedPermissions, UserId};
 
 pub(super) const AUTHOR: &str = "test-author";
 use ui_core::record::{RecordCheckout, RecordId, RecordStore};
@@ -153,7 +152,7 @@ pub struct HeadlessApp<A: ResourceApp> {
     room: Option<ui_core::state::DocumentFrontier>,
     /// Shared with the host: changing it is a role change the running app
     /// sees, as when the record's owner changes someone's access.
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
     marker: std::marker::PhantomData<A>,
 }
 
@@ -656,7 +655,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// owner changing their access does. Takes effect on the next frame,
     /// which this runs.
     pub fn set_role(&mut self, role: Role) {
-        *self.permissions.borrow_mut() = PermissionContext::member(self.author.as_str(), role);
+        self.permissions
+            .set(PermissionContext::member(self.author.as_str(), role));
         self.role = role;
         self.harness().relayout();
     }
@@ -671,14 +671,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// does when the room's grants change. Takes effect on the next frame,
     /// which this runs.
     pub fn set_permissions(&mut self, permissions: PermissionContext) {
-        *self.permissions.borrow_mut() = permissions;
+        self.permissions.set(permissions);
         self.harness().relayout();
     }
 
     /// Take the participant out of the room while the app runs: no role and
     /// no grant left, as when the owner removes them.
     pub fn leave_room(&mut self) {
-        *self.permissions.borrow_mut() = PermissionContext::stranger(self.author.as_str());
+        self.permissions
+            .set(PermissionContext::stranger(self.author.as_str()));
         self.harness().relayout();
     }
 
@@ -1861,7 +1862,7 @@ struct Opened {
     checkout: RecordCheckout,
     instance: u64,
     profile: Profile,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
 }
 
 /// The application host `profile` opens in, and the instance its window
@@ -1869,7 +1870,7 @@ struct Opened {
 fn profile_host(
     profile: &Profile,
     author: UserId,
-    permissions: &Rc<RefCell<PermissionContext>>,
+    permissions: &SharedPermissions,
 ) -> Result<(ApplicationHost, u64), LaunchError> {
     Ok(match profile {
         Profile::Temporary(directory, room, device)
@@ -1879,7 +1880,7 @@ fn profile_host(
                 device.clone(),
                 room,
                 author,
-                Rc::clone(permissions),
+                permissions.clone(),
                 tilo_actions::ActionContext::default(),
                 directory.clone(),
             )?,
@@ -1889,7 +1890,7 @@ fn profile_host(
             },
         ),
         Profile::DataDir(directory) => (
-            data_dir_host(directory, &author, Rc::clone(permissions))?,
+            data_dir_host(directory, &author, permissions.clone())?,
             DATA_DIR_INSTANCE,
         ),
     })

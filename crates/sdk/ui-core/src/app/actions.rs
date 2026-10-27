@@ -122,6 +122,7 @@ impl App {
             rebuilds: self.layout.rebuilds,
             remounts: self.layout.remounts,
             permissions: self.actions.permission_generation.get(),
+            shared_permissions: crate::permissions::shared_revision(),
         }
     }
 
@@ -300,8 +301,8 @@ impl App {
     /// of the tree here read only the tree, the document and permissions it
     /// was built from, what the window's own History door serves and
     /// whether input goes to History: a frame that moved none of them (one
-    /// only an animation asked for) walks no more than its bound components,
-    /// whose authority is their own.
+    /// only an animation asked for) walks nothing, unless a bound
+    /// component's permissions sample an outside authority.
     fn refresh_control_action_availability(&mut self) {
         let history_captures = self.history.as_ref().is_some_and(|h| h.captures_input());
         let history_door = self.refresh_history_controls();
@@ -316,7 +317,7 @@ impl App {
             walk.inputs == inputs && walk.controls == self.actions.last_control_availability
         });
         if let Some(walk) = unchanged {
-            if walk.bound {
+            if walk.sampled {
                 let history_door = inputs.history_door.clone();
                 let _ = self.refresh_bound_control_availability(&history_door);
             }
@@ -339,30 +340,31 @@ impl App {
         // every rebuild.
         tilo_startup_metrics::startup_mark("actions-legacy-done");
         let history_door = inputs.history_door.clone();
-        let bound = self.refresh_bound_control_availability(&history_door);
+        let sampled = self.refresh_bound_control_availability(&history_door);
         self.refresh_emitter_availability(history_door);
         self.layout.walks.availability = Some(runtime::AvailabilityWalk {
             inputs,
             controls: self.actions.last_control_availability.clone(),
-            bound,
+            sampled,
         });
     }
 
     /// Push what the bound components' controls may run into them; whether
-    /// the tree holds any.
+    /// any of their permissions sample an outside authority, or failed to.
     fn refresh_bound_control_availability(
         &mut self,
         history_door: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) -> bool {
         use crate::profiling::resource_trace::{CacheResult, Stage};
         let trace = self.trace_resource_stage(Stage::BoundDiscovery);
-        let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
+        let discovered = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
             &self.actions.bound_resource_cache,
             self.actions.resource_generation.get(),
-        )
-        .unwrap_or_default();
+        );
+        let unread = discovered.is_err();
+        let snapshots = discovered.unwrap_or_default();
         trace.finish(CacheResult::NotObserved);
         tilo_startup_metrics::startup_mark("actions-bound-discovery-done");
         let trace = self.trace_resource_stage(Stage::BoundControlProjection);
@@ -373,7 +375,10 @@ impl App {
         );
         trace.finish(CacheResult::NotApplicable);
         tilo_startup_metrics::startup_mark("actions-bound-projection-done");
-        !snapshots.is_empty()
+        let sampled = |s: &crate::bound_dispatch::BoundResourceSnapshot| {
+            s.binding.permissions.borrow().samples_outside()
+        };
+        unread || snapshots.iter().any(sampled)
     }
 
     /// Push the local action surface into the tree's action emitters.

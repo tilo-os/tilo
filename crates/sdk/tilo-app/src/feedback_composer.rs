@@ -342,10 +342,9 @@ pub fn prepare(
             .map_err(|error| crate::launch::LaunchError::Operation(error.to_string()))?,
     );
     let target = LaunchTarget::New;
-    let permissions = Rc::new(RefCell::new(crate::permissions::PermissionContext::member(
-        author,
-        crate::permissions::Role::Owner,
-    )));
+    let permissions = crate::permissions::SharedPermissions::new(
+        crate::permissions::PermissionContext::member(author, crate::permissions::Role::Owner),
+    );
     let mut context = HostContext::prepare(
         definition,
         HostContextInputs {

@@ -5,7 +5,7 @@ use notes::{
     actions::{self, Action},
     model::{PageMeta, TagAssignment, TagMeta, WorkspaceData},
 };
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf};
 use ui::{
     permissions::{PermissionContext, Role, UserId},
     record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore},
@@ -27,7 +27,7 @@ pub struct NotebookFixture {
     pub empty: PageId,
     pub tag: Uuid,
     pub author: UserId,
-    pub authority: Rc<RefCell<PermissionContext>>,
+    pub authority: ui::permissions::SharedPermissions,
     pub workspace: Workspace,
     bodies: RefCell<HashMap<PageId, String>>,
     _temp: tempfile::TempDir,
@@ -83,9 +83,9 @@ impl NotebookFixture {
             empty,
             tag,
             author: UserId("notes-fixture-author".into()),
-            authority: Rc::new(RefCell::new(
+            authority: ui::permissions::SharedPermissions::new(
                 PermissionContext::member("notes-fixture-author", Role::Owner).at_unix_time(100),
-            )),
+            ),
             workspace,
             bodies: RefCell::new(bodies),
             _temp: temp,
