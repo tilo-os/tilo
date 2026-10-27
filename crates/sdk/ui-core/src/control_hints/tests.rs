@@ -182,6 +182,27 @@ fn never_while_typing_in_a_call_or_following() {
     }
 }
 
+/// A hint held back past its moment wakes nobody: a host that woke for a
+/// moment already reached would draw a frame on every frame (the whole time
+/// the person types) for a hint that cannot begin until what holds it back
+/// changes.
+#[test]
+fn a_moment_held_back_asks_for_no_more_frames() {
+    let mut run = Run::new();
+    assert_eq!(
+        run.coach.next_change(TIMING),
+        Some(run.at(17)),
+        "before its moment, the hint wakes the host at it"
+    );
+    run.quiet = Some(Quiet::Typing);
+    run.tick(20);
+    assert_eq!(run.showing(), None);
+    assert_eq!(run.coach.next_change(TIMING), None);
+    run.quiet = None;
+    run.tick(21);
+    assert_eq!(run.showing(), Some("open"), "the next frame begins it");
+}
+
 #[test]
 fn a_call_takes_a_showing_hint_away_but_typing_does_not() {
     let mut run = Run::new();
