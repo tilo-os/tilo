@@ -1495,6 +1495,11 @@ pub(crate) struct SessionLaunches {
     /// Launches held until the session's services are up.
     #[cfg(any(test, target_os = "linux"))]
     gate: Mutex<Gate>,
+    /// Signalled whenever the gate opens.
+    #[cfg(any(test, target_os = "linux"))]
+    gate_opened: std::sync::Condvar,
+    /// The session's broker for native openings, once it has bound.
+    opening: Mutex<Option<NativeAppOpening>>,
 }
 
 impl Default for SessionLaunches {
@@ -1521,6 +1526,9 @@ impl Default for SessionLaunches {
             gate: Mutex::new(Gate::open_with_capacity(
                 crate::shell::launch_gate::MAX_HELD_LAUNCHES,
             )),
+            #[cfg(any(test, target_os = "linux"))]
+            gate_opened: std::sync::Condvar::new(),
+            opening: Mutex::default(),
         }
     }
 }
@@ -1562,6 +1570,17 @@ impl LaunchSession {
                 .get_or_insert_with(Self::for_new_thread)
                 .clone()
         })
+    }
+
+    /// Block while launches are held: until the broker the session is starting has bound, or
+    /// its start has failed.
+    #[cfg(any(test, target_os = "linux"))]
+    fn wait_while_launches_held(&self) {
+        drop(
+            self.gate_opened
+                .wait_while(lock(&self.gate), |gate| gate.is_holding())
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
     }
 
     #[cfg(not(test))]
@@ -1628,6 +1647,8 @@ static APP_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
 /// recursive inotify walk must not look like a new generation of apps.
 static APP_CACHE_EPOCH: AtomicU64 = AtomicU64::new(0);
 static APP_CACHE_WATCH: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
+/// The registries the memoised snapshot was read from, as they were just before the read.
+static APP_CACHE_STAMP: Mutex<Option<Vec<Option<RegistryStamp>>>> = Mutex::new(None);
 /// Capabilities of the workspace apps are being launched into, published
 /// by [`set_workspace_capabilities`] or [`launch_in_workspace`]. Empty is
 /// the safe default: an app launched before publish gets manifest-only.
@@ -2098,18 +2119,52 @@ pub(crate) fn installed_app(
     app
 }
 
+/// Which version of a registry file is on disk. An install replaces the registry by one
+/// rename, its commit point, so a completed install always shows as another file here.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct RegistryStamp {
+    device: u64,
+    inode: u64,
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+}
+
+fn registry_stamps() -> Vec<Option<RegistryStamp>> {
+    use std::os::unix::fs::MetadataExt as _;
+    app_cache_roots()
+        .iter()
+        .map(|root| {
+            let metadata =
+                std::fs::metadata(root.join(package_store::layout::REGISTRY_FILE)).ok()?;
+            Some(RegistryStamp {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                modified: metadata.modified().ok(),
+                len: metadata.len(),
+            })
+        })
+        .collect()
+}
+
 /// Pair records with their cache revision while holding the cache lock.
+///
+/// A memoised snapshot answers only while the registries are the ones it was read from: the
+/// watch that expires it runs on its own thread, and an app launched right after an install
+/// completed must start the installed package, not the one before it.
 fn installed_apps_snapshot() -> Result<(u64, Vec<InstalledApp>), LaunchError> {
+    let stamps = registry_stamps();
     {
         let cache = lock(&APP_CACHE);
         if let Some((apps, Some(at))) = cache.as_ref()
             && at.elapsed() < APP_CACHE_TTL
+            && lock(&APP_CACHE_STAMP).as_ref() == Some(&stamps)
         {
             return Ok((APP_CACHE_REVISION.load(Ordering::Acquire), apps.clone()));
         }
     }
     let epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
     let apps = read_installed_apps()?;
+    *lock(&APP_CACHE_STAMP) = Some(stamps);
     let generation = record_app_read(epoch, &apps);
     // Watch after the first memoize so opening the registry to fill the
     // cache cannot look like an install and wipe the snapshot we just wrote.
@@ -2194,6 +2249,7 @@ pub fn invalidate_app_cache() {
     APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
     APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
     *cache = None;
+    *lock(&APP_CACHE_STAMP) = None;
 }
 
 /// Cheap installed-store invalidation token for session-owned services.
@@ -4077,6 +4133,11 @@ pub(crate) fn queue_package_open(
 #[derive(Clone)]
 pub(crate) struct NativeAppOpening(pub tilo_action_broker::collab_broker::WeakAppActionBroker);
 
+/// The session's broker has bound: native openings asked for while it was binding use it.
+pub(crate) fn attach_native_app_opening(opening: NativeAppOpening) {
+    *lock(&LaunchSession::current().opening) = Some(opening);
+}
+
 impl std::fmt::Debug for NativeAppOpening {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("NativeAppOpening")
@@ -4095,6 +4156,7 @@ pub(crate) fn queue_native_authoring_launch(
     room: RoomId,
     opening: Option<NativeAppOpening>,
 ) -> Result<(), LaunchError> {
+    let session = LaunchSession::current();
     let native_owner = tree.read().installed_native_owner();
     let package = app.package_id.clone();
     let expected = tree
@@ -4110,6 +4172,10 @@ pub(crate) fn queue_native_authoring_launch(
         room,
         move || {
             let prepare = || -> Result<LaunchGrants, String> {
+                // Asked for while the session's broker was still binding (an app opened as
+                // the session starts): it is prepared once the broker is there, as held
+                // launches run.
+                session.wait_while_launches_held();
                 let (_, certificate) =
                     tilo_identity_host::broker::trusted_current_device(&room.to_string())
                         .map_err(|error| error.to_string())?;
@@ -4128,7 +4194,9 @@ pub(crate) fn queue_native_authoring_launch(
                         access,
                     ));
                 }
-                let broker = opening.ok_or("native app authorship broker unavailable")?;
+                let broker = opening
+                    .or_else(|| lock(&session.opening).clone())
+                    .ok_or("native app authorship broker unavailable")?;
                 let broker = broker.0.upgrade()?;
                 let job = broker.change_workspace_membership(
                     &room.to_string(),
@@ -4748,6 +4816,7 @@ pub fn release_held_launches() {
             held.retained,
         );
     });
+    session.gate_opened.notify_all();
 }
 
 /// Report every held launch as failed with `reason`, and let later launches
@@ -4762,6 +4831,7 @@ pub fn fail_held_launches(reason: &str) {
         );
         session.push(held_launch_failure(launch, reason));
     });
+    session.gate_opened.notify_all();
 }
 
 #[cfg(any(test, target_os = "linux"))]
@@ -6461,6 +6531,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_native_opening_asked_for_while_the_broker_binds_is_prepared_once_it_is_there() {
+        let session = LaunchSession::current();
+        assert!(
+            lock(&session.opening).is_none(),
+            "no broker is attached yet"
+        );
+        hold_launches();
+        let (prepared, prepared_now) = std::sync::mpsc::channel();
+        let waiting = session.clone();
+        let preflight = std::thread::spawn(move || {
+            waiting.wait_while_launches_held();
+            prepared.send(()).expect("the test waits for it");
+        });
+        assert!(
+            prepared_now
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "nothing is prepared while launches are held"
+        );
+        release_held_launches();
+        prepared_now
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("prepared once launches run");
+        preflight.join().expect("the preflight ends");
+        // Not holding: a later opening is prepared at once.
+        session.wait_while_launches_held();
+    }
+
     fn test_gate() -> Mutex<Gate> {
         Mutex::new(Gate::open_with_capacity(2))
     }
@@ -7565,6 +7664,46 @@ mod tests {
         .unwrap();
         std::fs::write(&registry, existing).unwrap();
         payload
+    }
+
+    /// An install that completed is what the next launch starts, whether or not the registry
+    /// watch has expired the memoised list yet: the list answers only while the registry is the
+    /// file it was read from.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_launch_right_after_an_install_reads_the_installed_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        invalidate_app_cache();
+        let before = registry_stamps();
+        assert_eq!(installed_apps().unwrap().len(), 1);
+
+        // The install's commit: a new registry, renamed into place.
+        let other = tmp.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        install_fixture(&other, "dev.tilo.calculator", "gui");
+        install_fixture(&other, "dev.tilo.notes", "gui");
+        std::fs::rename(
+            other.join("registry.toml"),
+            tmp.path().join("registry.toml"),
+        )
+        .unwrap();
+        assert_ne!(
+            registry_stamps(),
+            before,
+            "the replaced registry is another file"
+        );
+        let after = installed_apps().unwrap();
+        env.remove("TILO_APPS_DATA_DIR");
+        invalidate_app_cache();
+
+        assert_eq!(
+            after.len(),
+            2,
+            "the memoised list did not answer for the new registry"
+        );
     }
 
     /// The compositor loop asks for installed apps while building tiles and
