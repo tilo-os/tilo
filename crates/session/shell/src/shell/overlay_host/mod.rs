@@ -57,6 +57,7 @@ use ui::TextRole;
 mod controller;
 mod desk;
 mod desktop_control_chips;
+mod fullscreen_hint;
 pub use desk::SuperSurface;
 mod device_fabric;
 pub(crate) mod dictation_layer;
@@ -762,6 +763,9 @@ pub struct ShellOverlayHost {
     top_bar_reveal: top_bar_reveal::TopBarReveal,
     /// A fullscreen window's bar, shown over it when reached for.
     fullscreen_bar_reveal: top_bar_reveal::FullscreenBarReveal,
+    /// When a window filled the display and the shell began saying how to
+    /// leave it, while that is still up ([`fullscreen_hint`]).
+    fullscreen_hint: Option<Instant>,
     /// A finger that came down on a display's top edge while something
     /// hides there, and where: a swipe down from it reveals that.
     top_edge_swipe: Option<(u64, Point)>,
