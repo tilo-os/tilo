@@ -1157,11 +1157,13 @@ needs = ["sandbox-jobs-real-kernel-build"]
 # test where there is no XFS to give it. The startup test holds a 4 GiB heap, hence the memory.
 run = """
 echo "+cpu +memory +pids" > /sys/fs/cgroup/cgroup.subtree_control
-if command -v mkfs.xfs >/dev/null && truncate -s 512M /tmp/xfs.img && mkfs.xfs -q /tmp/xfs.img \
-  && mkdir -p /mnt/xfs && mount -o loop,prjquota /tmp/xfs.img /mnt/xfs; then
+if ! command -v mkfs.xfs >/dev/null; then
+  echo "no mkfs.xfs in the image: the quota test skips"
+elif truncate -s 512M /tmp/xfs.img && mkfs.xfs -q /tmp/xfs.img && mkdir -p /mnt/xfs \
+  && mount -o loop,prjquota /tmp/xfs.img /mnt/xfs; then
   export JOB_SANDBOX_TEST_XFS=/mnt/xfs
 else
-  echo "no XFS with project quotas here: the quota test skips"
+  echo "could not mount an XFS with project quotas: the quota test skips"
 fi
 cd crates/platform/tilo-sandbox
 tests=$(/target/vm/tilo-sandbox-job --list --format terse | sed -n 's/: test$//p')

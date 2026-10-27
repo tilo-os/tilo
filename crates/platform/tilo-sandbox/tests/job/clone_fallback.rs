@@ -76,7 +76,10 @@ fn a_job_started_with_clone_is_the_job_clone3_starts() {
     let direct = match provider() {
         Ok(p) => Some(p),
         Err(why) => {
-            eprintln!("comparing without a cgroup: no delegated cgroup here: {why}");
+            // "skipped" for what goes untested: the real-kernel check fails on it.
+            eprintln!(
+                "skipped joining a cgroup, comparing without one: no delegated cgroup here: {why}"
+            );
             None
         }
     };

@@ -248,8 +248,12 @@ fn a_daemon_the_job_left_dies_with_it() {
     spec.argv = [
         "/bin/sh",
         "-c",
-        "setsid sh -c 'sleep 300' </dev/null >/dev/null 2>&1 & d=$!
-         until [ \"$(cut -d' ' -f6 /proc/$d/stat)\" = $d ]; do :; done
+        "setsid sh -c 'sleep 300' </dev/null >/dev/null 2>&1 & d=$! tries=0
+         until [ \"$(cut -d' ' -f6 /proc/$d/stat 2>/dev/null)\" = $d ]; do
+           tries=$((tries + 1))
+           [ $tries -lt 500 ] || { echo \"daemon $d: no session of its own after 5 s\"; exit 1; }
+           sleep 0.01
+         done
          echo \"daemon $d in its session\"",
     ]
     .map(Into::into)
@@ -260,9 +264,10 @@ fn a_daemon_the_job_left_dies_with_it() {
         .stdout(out_w)
         .spawn()
         .expect("spawn a daemon starter");
-    assert!(job.wait().unwrap().success());
+    let status = job.wait().unwrap();
     let mut out = String::new();
     let _ = out_r.read_to_string(&mut out);
+    assert!(status.success(), "{status:?}: {out}");
     assert!(
         out.contains("in its session"),
         "the daemon never ran: {out}"
