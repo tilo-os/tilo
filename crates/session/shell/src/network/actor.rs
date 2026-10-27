@@ -3350,18 +3350,22 @@ impl ActorState {
     /// [`InternalEvent::Host`] arm of [`Self::handle_internal`], split out
     /// to keep that dispatcher short.
     async fn handle_host_event(&mut self, ws: WorkspaceId, peer: EndpointId, event: HostEvent) {
-        self.tally.note(match &event {
-            HostEvent::Message { msg, .. } => msg.kind(),
-            HostEvent::NativeInput(_) => "HostNativeInput",
-            HostEvent::Ready => "HostReady",
-            HostEvent::Live { .. } => "HostLive",
-            HostEvent::Member { .. } => "HostMember",
-            HostEvent::RecordOpened { .. } => "HostRecordOpened",
-            HostEvent::Voice(_) => "HostVoice",
-            HostEvent::Closed => "HostClosed",
-        });
+        self.tally.note(host_event_kind(&event));
         let event = self.admit_native_governance(ws, event).await;
-        let mapped = match event {
+        if let Some(event) = self.map_host_event(ws, peer, event) {
+            self.publish_to_subscriber(ws, event).await;
+        }
+    }
+
+    /// What a host session's event means to this device: `None` when it
+    /// changes nothing here.
+    fn map_host_event(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        event: HostEvent,
+    ) -> Option<NetEvent> {
+        match event {
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => Some(self.host_ready(ws, peer)),
             HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
@@ -3398,41 +3402,7 @@ impl ActorState {
                 fingerprint,
                 replayed,
                 msg,
-            } => {
-                if matches!(
-                    msg,
-                    NeighbourMsg::RemoteInput { .. } | NeighbourMsg::IdentityHello { .. }
-                ) {
-                    tracing::debug!(ws, author = %author, kind = ?std::mem::discriminant(&msg), "host session message");
-                }
-                // A remote-action retry is byte-identical on purpose; the
-                // receiving host deduplicates it by invocation id instead. A
-                // replay the host was asked for repeats what this device saw
-                // before on purpose too: the broker drops what it holds.
-                let new = match msg {
-                    NeighbourMsg::RemoteAction { .. } => true,
-                    NeighbourMsg::RemoteInput { .. } => mark_new_input(
-                        ws,
-                        peer,
-                        fingerprint,
-                        Instant::now(),
-                        &mut self.recent_input,
-                    ),
-                    _ => {
-                        mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
-                    }
-                };
-                if !new && !replayed {
-                    return;
-                }
-                Some(NetEvent::Msg {
-                    ws,
-                    peer: author,
-                    membership_epoch: None,
-                    replayed,
-                    msg,
-                })
-            }
+            } => self.host_message(ws, peer, author, fingerprint, replayed, msg),
             HostEvent::Closed => {
                 tracing::info!(ws, host = %peer, "workspace host session ended; the next heartbeat dials it again");
                 if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
@@ -3445,24 +3415,74 @@ impl ActorState {
                     membership_epoch: None,
                 })
             }
-        };
-        if let (Some(event), Some(tx)) = (mapped, self.subscribers.get(&ws)) {
-            let legacy = matches!(
-                &event,
-                NetEvent::Msg {
-                    msg: NeighbourMsg::RemoteInput { .. }
-                        | NeighbourMsg::SurfaceKeyframeRequest { .. }
-                        | NeighbourMsg::SurfaceStreamStart { .. }
-                        | NeighbourMsg::SurfaceFrame { .. }
-                        | NeighbourMsg::SurfaceStreamEnd { .. },
-                    ..
-                }
-            );
-            let _ = tx.send(event).await;
-            if legacy && let Some(wake) = &self.wake {
-                wake();
-            }
         }
+    }
+
+    /// Hand `event` to the room's subscriber and wake the loop for the
+    /// recorded streams, which are written out of band.
+    async fn publish_to_subscriber(&self, ws: WorkspaceId, event: NetEvent) {
+        let Some(tx) = self.subscribers.get(&ws) else {
+            return;
+        };
+        let legacy = matches!(
+            &event,
+            NetEvent::Msg {
+                msg: NeighbourMsg::RemoteInput { .. }
+                    | NeighbourMsg::SurfaceKeyframeRequest { .. }
+                    | NeighbourMsg::SurfaceStreamStart { .. }
+                    | NeighbourMsg::SurfaceFrame { .. }
+                    | NeighbourMsg::SurfaceStreamEnd { .. },
+                ..
+            }
+        );
+        let _ = tx.send(event).await;
+        if legacy && let Some(wake) = &self.wake {
+            wake();
+        }
+    }
+
+    /// A message a host session delivered: `None` when it repeats one this
+    /// device already handled, unless the host was asked to replay it.
+    fn host_message(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        author: EndpointId,
+        fingerprint: [u8; 32],
+        replayed: bool,
+        msg: NeighbourMsg,
+    ) -> Option<NetEvent> {
+        if matches!(
+            msg,
+            NeighbourMsg::RemoteInput { .. } | NeighbourMsg::IdentityHello { .. }
+        ) {
+            tracing::debug!(ws, author = %author, kind = ?std::mem::discriminant(&msg), "host session message");
+        }
+        // A remote-action retry is byte-identical on purpose; the receiving
+        // host deduplicates it by invocation id instead. A replay the host
+        // was asked for repeats what this device saw before on purpose too:
+        // the broker drops what it holds.
+        let new = match msg {
+            NeighbourMsg::RemoteAction { .. } => true,
+            NeighbourMsg::RemoteInput { .. } => mark_new_input(
+                ws,
+                peer,
+                fingerprint,
+                Instant::now(),
+                &mut self.recent_input,
+            ),
+            _ => mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order),
+        };
+        if !new && !replayed {
+            return None;
+        }
+        Some(NetEvent::Msg {
+            ws,
+            peer: author,
+            membership_epoch: None,
+            replayed,
+            msg,
+        })
     }
 
     /// Publish `msg` to the room's hosts and its gossip topic, pacing pointer
@@ -4575,6 +4595,20 @@ fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
 /// delivers within [`INPUT_COPY`] (the same event over another route to this
 /// room) is dropped; one session delivers each event once, in order, so
 /// identical events over it (a doubled letter in one batch) are all new.
+/// The tally name of a host session's event.
+fn host_event_kind(event: &HostEvent) -> &'static str {
+    match event {
+        HostEvent::Message { msg, .. } => msg.kind(),
+        HostEvent::NativeInput(_) => "HostNativeInput",
+        HostEvent::Ready => "HostReady",
+        HostEvent::Live { .. } => "HostLive",
+        HostEvent::Member { .. } => "HostMember",
+        HostEvent::RecordOpened { .. } => "HostRecordOpened",
+        HostEvent::Voice(_) => "HostVoice",
+        HostEvent::Closed => "HostClosed",
+    }
+}
+
 fn mark_new_input(
     ws: WorkspaceId,
     host: EndpointId,
