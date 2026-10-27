@@ -24,20 +24,33 @@ impl WorkspaceTree {
         self.native_governance = true;
     }
 
-    /// Mark the rooms that predate this session as all on the native owner.
-    pub(crate) fn native_rooms_ready(&mut self) {
-        self.native_rooms_ready = true;
+    /// Queue `tab` of `room` for the shell's close lifecycle: a layout request
+    /// another device retained for this one's window is not applied by
+    /// mutating the model here. Asking twice queues one close.
+    pub fn request_layout_close(&mut self, room: RoomId, tab: u64) {
+        if self
+            .pending_layout_closes
+            .iter()
+            .any(|close| close.tab == tab)
+        {
+            return;
+        }
+        self.pending_layout_closes
+            .push(super::LayoutClose { room, tab });
     }
 
-    /// Whether this session still has to create a governed room it found.
-    pub(crate) fn native_governance_settled(&self) -> bool {
-        self.native_governance && self.rooms_awaiting_native_governance().is_empty()
+    /// Take every window close this device was asked for, for the frame loop
+    /// to run each through [`crate::shell::window_actions::close_tab`].
+    pub fn take_layout_closes(&mut self) -> Vec<super::LayoutClose> {
+        std::mem::take(&mut self.pending_layout_closes)
     }
 
     /// The workspaces whose rooms this session governs and whose native
     /// owner has not created yet, as `(room, workspace, name)`. The network
-    /// creates one governed room for each; until then `requires_native_owner`
-    /// keeps the older engine away from it.
+    /// creates one governed room for each, and retries one whose creation
+    /// failed; `requires_native_owner` already keeps the older engine away
+    /// from them, so a write that needs the room document is refused rather
+    /// than served by the older engine.
     pub(crate) fn rooms_awaiting_native_governance(&self) -> Vec<(RoomId, WorkspaceId, String)> {
         if !self.native_governance {
             return Vec::new();

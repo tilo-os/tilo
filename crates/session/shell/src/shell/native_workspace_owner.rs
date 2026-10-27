@@ -235,10 +235,13 @@ pub(crate) fn create_governed_workspace(
     device: &tilo_user_identity::DeviceCert,
     key: &ed25519_dalek::SigningKey,
     salt: u16,
+    records: Option<&crate::shell::room_records::LocalRecordReader>,
 ) -> Result<(), String> {
-    // Read the seed under a short read lock: the owner's publication takes
-    // the tree's writer, and holding the reader across it would deadlock.
-    let seed = {
+    // Read what the workspace shows under a short read lock: the owner's
+    // publication takes the tree's writer, and holding the reader across it
+    // would deadlock. The records' documents are read after the lock is
+    // dropped — they are on disk, and a sync there must not hold the tree.
+    let (name, strips, held) = {
         let tree = tree.read();
         let ws = tree
             .desktop
@@ -254,22 +257,50 @@ pub(crate) fn create_governed_workspace(
             || ws.strips.clone(),
             |hosting| hosting.published(&ws.strips, &tree.package_launches),
         );
-        let records = tree
+        let held = tree
             .desktop
             .room_records_held
             .get(&room)
             .cloned()
             .unwrap_or_default();
-        tilo_peer_state::workspace_seed_with_layout(
-            &room.to_string(),
-            device,
-            std::slice::from_ref(device),
-            &ws.name,
-            salt,
-            &strips,
-            &records,
-        )?
+        (ws.name.clone(), strips, held)
     };
+    // The records themselves, not only the index that names them: each
+    // document this device already holds is imported at the route its app
+    // reads, under the app that keeps it. One that this device does not hold
+    // (never fetched) is not in the index's way: the room fetches it from a
+    // member that has it.
+    let documents = records.map_or_else(Vec::new, |records| {
+        held.iter()
+            .filter_map(|(id, kind)| {
+                let record = ui::record::RecordId::parse(id)?;
+                let (app_id, bytes) = records.record_document(&record)?;
+                Some(tilo_peer_state::SeedDocument {
+                    app_id,
+                    record_id: record.route().to_owned(),
+                    kind: kind.clone(),
+                    bytes,
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    if !documents.is_empty() {
+        tracing::info!(
+            %room,
+            records = documents.len(),
+            "importing the records this workspace already held"
+        );
+    }
+    let seed = tilo_peer_state::workspace_seed_with_records(
+        &room.to_string(),
+        device,
+        std::slice::from_ref(device),
+        &name,
+        salt,
+        &strips,
+        &held,
+        documents,
+    )?;
     owner.create_governed(
         room,
         workspace.raw(),

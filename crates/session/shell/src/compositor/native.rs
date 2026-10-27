@@ -13410,6 +13410,27 @@ pub fn run() {
             // This session's legacy windows, as its own tabs in the rooms
             // other devices govern, so their members have a tab to show.
             // Only those rooms' tabs are copied, and only their own legacy ones.
+            // A window another device asked this one to close runs through
+            // the one close lifecycle, never as a mutation of the model: a
+            // confined client is asked to save and exit first, and the tab
+            // goes when its surface does. The request stays retained in the
+            // room until then, and is claimed once that close is admitted.
+            let asked_closes = tree_handle.write().take_layout_closes();
+            if !asked_closes.is_empty() {
+                frame_builder.with_chrome(|chrome| {
+                    for asked in asked_closes {
+                        match crate::shell::window_actions::close_tab(chrome, asked.tab) {
+                            Ok(()) => {}
+                            Err(error) => tracing::debug!(
+                                room = %asked.room,
+                                tab = %asked.tab,
+                                ?error,
+                                "a window this device was asked to close refused the close"
+                            ),
+                        }
+                    }
+                });
+            }
             if hosted_legacy_checked.elapsed() >= std::time::Duration::from_millis(500) {
                 hosted_legacy_checked = Instant::now();
                 let rooms = tree_handle
@@ -13851,6 +13872,12 @@ pub fn run() {
                     ));
                     if let Some(net) = peer_sync.as_ref() {
                         net.set_wake(Arc::clone(&session_wake));
+                        // The record documents a workspace brings into its
+                        // native room are read off the frame loop, by the
+                        // owner's one-time creation pass.
+                        net.attach_record_documents(
+                            frame_builder.host().room_records().borrow().local_reader(),
+                        );
                         frame_builder.with_chrome(|chrome| {
                             if let Some(apps) = chrome.hosted_inputs.in_process() {
                                 let mut apps = apps.borrow_mut();

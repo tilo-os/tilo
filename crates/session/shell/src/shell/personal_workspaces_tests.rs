@@ -1196,29 +1196,30 @@ fn a_signed_invitation_in_the_list_joins_the_room_instead_of_copying_it() {
     );
 }
 
-/// A session with an identity marks the rooms it governs as native once the
-/// owner has opened, and the older engine stops writing them only after the
-/// one-time creation pass, so a gesture during that pass still lands.
+/// A session with an identity marks the rooms it governs as native the
+/// moment the owner has opened: the older engine writes none of them, not
+/// even while the one-time creation pass is still importing one. A write
+/// that needs the room document before it exists is refused and the pass
+/// retried; there is no window in which a gesture lands in the older shape.
 #[test]
-fn native_governance_takes_a_governed_room_off_the_older_engine_when_ready() {
+fn native_governance_takes_a_governed_room_off_the_older_engine_at_once() {
     let mut tree = device_tree(LAPTOP, "Garden");
     let room = tree.desktop.workspaces[0].room();
-    assert!(!tree.requires_native_owner(room));
-    tree.enable_native_governance();
     assert!(
         !tree.requires_native_owner(room),
-        "the room keeps the older engine until its native record exists"
+        "without the native owner, a session keeps the engine it has"
+    );
+    tree.enable_native_governance();
+    assert!(
+        tree.requires_native_owner(room),
+        "the room is native before its native record exists, so the older engine never writes it"
     );
     assert_eq!(
         tree.rooms_awaiting_native_governance()
             .into_iter()
             .map(|(waiting, _, _)| waiting)
             .collect::<Vec<_>>(),
-        vec![room]
-    );
-    tree.native_rooms_ready();
-    assert!(
-        tree.requires_native_owner(room),
-        "once the owner holds every earlier room, the older engine writes none"
+        vec![room],
+        "the creation pass still imports it"
     );
 }

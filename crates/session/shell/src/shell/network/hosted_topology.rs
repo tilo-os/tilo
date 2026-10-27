@@ -40,6 +40,15 @@ struct Room {
     retained: BTreeSet<String>,
 }
 
+/// Whether these strips still hold tab `tab`, as a window of one of them.
+fn strips_hold_tab(strips: &[crate::shell::state::Strip], tab: u64) -> bool {
+    strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .any(|held| held.id == tab)
+}
+
 /// What a look at a room last found nothing to do for. The outcome is a
 /// function of exactly these, so while they hold the next look would find
 /// nothing again, and the room's document is not copied to find that out.
@@ -242,7 +251,7 @@ impl ShellNetwork {
         governed_here: bool,
         now: Instant,
     ) {
-        use tilo_desktop_model::commands::{BoundCommand, admit, apply_command};
+        use tilo_desktop_model::commands::{BoundCommand, DesktopCommand, admit, apply_command};
         use tilo_desktop_model::projection::{EmptyStrips, project_owned_contents};
         use tilo_desktop_model::room_layout::{claim, pending};
 
@@ -315,6 +324,23 @@ impl ShellNetwork {
                     // still be able to apply it.
                     continue;
                 };
+                // Closing a window is not a layout mutation: this device's
+                // windows close through the one close lifecycle
+                // ([`crate::shell::window_actions::close_tab`]), which asks a
+                // confined client to save and exit first and only then
+                // removes the tab. The request is claimed once that admitted
+                // close has happened — the tab is gone from this workspace —
+                // and stays retained while the client still shows it.
+                if let DesktopCommand::CloseTab { location } = &command {
+                    if strips_hold_tab(&workspace.strips, location.tab) {
+                        tree.request_layout_close(room, location.tab);
+                        continue;
+                    }
+                    if claim(&mut doc, salt, request).unwrap_or(false) {
+                        claimed.push(request.id.clone());
+                    }
+                    continue;
+                }
                 match apply_command(
                     workspace,
                     &command,
@@ -1243,6 +1269,215 @@ mod tests {
             std::time::Instant::now(),
         );
         assert_eq!(order(&tree), [own(4), own(3)], "a restart applies it once");
+    }
+
+    /// A retained close for this device's window is not a layout mutation:
+    /// it waits for the shell's close lifecycle, stays retained while the
+    /// window is still here, and is claimed once — and only once — the tab is
+    /// really gone.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one retained close read top to bottom"
+    )]
+    fn a_retained_close_waits_for_the_close_lifecycle_and_is_claimed_once() {
+        use crate::shell::state::{StripId, WorkspaceTree};
+        use ed25519_dalek::SigningKey;
+        use tilo_desktop_model::commands::{
+            BoundCommand, CommandSource, DesktopCommand, TabLocation,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let salt = 0x0042;
+        let own = |counter: u64| (u64::from(salt) << 48) | counter;
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.set_peer_salt(salt);
+        tree.persist_path = Some(directory.path().join("state.json"));
+        let workspace = tree.desktop.active;
+        let placeholder = |label: &str| TileContent::AppPlaceholder {
+            kind: crate::shell::state::AppKind::Other("so.tilo.notes".into()),
+            label: label.into(),
+        };
+        let room = {
+            let ws = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|ws| ws.id == workspace)
+                .unwrap();
+            ws.strips = vec![Strip {
+                id: StripId(own(1)),
+                name: "Workspace".into(),
+                window_groups: vec![WindowGroup {
+                    id: own(2),
+                    tabs: vec![
+                        tab(own(3), placeholder("First")),
+                        tab(own(4), placeholder("Second")),
+                    ],
+                    active_tab: own(3),
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                    focus_history: Vec::new(),
+                }],
+            }];
+            ws.room()
+        };
+        let tree = tree.shared();
+        let owner = crate::shell::native_workspace_owner::open(tree.clone()).unwrap();
+        let key = SigningKey::from_bytes(&[73; 32]);
+        let device = tilo_joined_room::testing::certificate(
+            &SigningKey::from_bytes(&[74; 32]),
+            &key,
+            "Desktop",
+        );
+        let seed = tilo_peer_state::workspace_seed(
+            &room.to_string(),
+            &device,
+            std::slice::from_ref(&device),
+            "Garden",
+            salt,
+        )
+        .unwrap();
+        owner
+            .create_governed(
+                room,
+                workspace.raw(),
+                &device,
+                &key,
+                seed,
+                std::time::SystemTime::now(),
+            )
+            .unwrap();
+        let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
+        network.publish_hosted_legacy_windows(room, &tree);
+
+        let mut doc = owner
+            .with_current(room, |view| {
+                Ok(view.peer().admitted_room().unwrap().clone())
+            })
+            .unwrap();
+        let heads = doc.get_heads();
+        doc.set_actor(automerge::ActorId::from(device.device_public_key.to_vec()));
+        let retained = tilo_desktop_model::projection::LayoutRequest {
+            id: "retained-close".into(),
+            from: hex::encode(device.user_public_key),
+            to_salt: salt,
+            at: 1,
+            command: serde_json::to_vec(&BoundCommand {
+                source: CommandSource {
+                    room: room.to_string(),
+                    heads: doc.get_heads().into_iter().map(|head| head.0).collect(),
+                },
+                command: DesktopCommand::CloseTab {
+                    location: TabLocation {
+                        strip: own(1),
+                        group: own(2),
+                        tab: own(4),
+                    },
+                },
+            })
+            .unwrap(),
+        };
+        tilo_desktop_model::room_layout::request(&mut doc, &retained).unwrap();
+        doc.commit();
+        let changes = doc
+            .get_changes(&heads)
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        owner
+            .receive(
+                room,
+                tilo_peer_state::TransportOrigin::RelayDelta(device.device_public_key),
+                crate::network::NeighbourMsg::SyncResp {
+                    changes,
+                    room: room.to_string(),
+                },
+                std::time::SystemTime::now(),
+            )
+            .unwrap();
+        let pending = |owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner| {
+            owner
+                .with_current(room, |view| {
+                    Ok(tilo_desktop_model::room_layout::pending(
+                        view.peer().admitted_room().unwrap(),
+                        salt,
+                    )
+                    .len())
+                })
+                .unwrap()
+        };
+        let tabs = |tree: &crate::shell::state::WorkspaceTreeHandle| {
+            tree.read()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|ws| ws.room() == room)
+                .unwrap()
+                .strips[0]
+                .window_groups[0]
+                .tabs
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(pending(&owner), 1);
+
+        // The look queues the close for the lifecycle and claims nothing.
+        network.apply_retained_layout_requests(
+            &owner,
+            room,
+            &tree,
+            true,
+            std::time::Instant::now(),
+        );
+        assert_eq!(
+            tabs(&tree),
+            [own(3), own(4)],
+            "the window is not removed behind the close lifecycle's back"
+        );
+        assert_eq!(pending(&owner), 1, "an unclosed request stays retained");
+        assert_eq!(
+            tree.write().take_layout_closes(),
+            vec![crate::shell::state::LayoutClose { room, tab: own(4) }],
+            "the close is queued for the one lifecycle"
+        );
+
+        // The lifecycle runs and the tab really goes; the next look claims
+        // the request in this device's namespace and never applies it again.
+        {
+            let mut tree = tree.write();
+            let ws = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|ws| ws.room() == room)
+                .unwrap();
+            ws.strips[0].window_groups[0]
+                .tabs
+                .retain(|tab| tab.id != own(4));
+        }
+        network.apply_retained_layout_requests(
+            &owner,
+            room,
+            &tree,
+            true,
+            std::time::Instant::now(),
+        );
+        assert_eq!(pending(&owner), 0, "the admitted close claims the request");
+        assert!(
+            tree.write().take_layout_closes().is_empty(),
+            "a request whose close already happened queues nothing"
+        );
+        network.apply_retained_layout_requests(
+            &owner,
+            room,
+            &tree,
+            true,
+            std::time::Instant::now(),
+        );
+        assert_eq!(pending(&owner), 0);
+        assert_eq!(tabs(&tree), [own(3)], "closed once, not twice");
     }
 
     #[test]

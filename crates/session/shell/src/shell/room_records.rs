@@ -779,6 +779,29 @@ impl LocalRecordReader {
         self.scan.lock().ok()?.room_documents.get(id).cloned()
     }
 
+    /// The document an app keeps for record `id`, as the app that keeps it
+    /// and its bytes: what a workspace becoming a native room imports, so a
+    /// record it referenced keeps its content instead of arriving as an
+    /// index entry with nothing behind it. The app is the store the
+    /// document was found in — never a name inferred from the record — and
+    /// the bytes are read the same bounded, revalidated way
+    /// [`Self::load`] reads them.
+    pub(crate) fn record_document(&self, id: &RecordId) -> Option<(String, Vec<u8>)> {
+        // Two looks at the scan, each taking its lock on its own: the
+        // location first, then the store it was found in.
+        let location = self.location(id, false)?;
+        let package_id = self
+            .scan
+            .lock()
+            .ok()?
+            .records
+            .iter()
+            .find(|record| record.id == *id)
+            .map(|record| record.package_id.clone())?;
+        let document = read_validated_record_document(id, &location)?;
+        Some((package_id, document.save()))
+    }
+
     /// The documents apps keep for room `room` on this device: an app
     /// whose content is the room's own document (Notes' notebook, Files'
     /// queue) keeps it beside its records, not as one. Each is named by an
@@ -1005,6 +1028,51 @@ mod tests {
 
     fn room() -> RoomId {
         RoomId::new()
+    }
+
+    /// The document an app keeps for a record is read back as that app and
+    /// its bytes — what a workspace becoming a native room imports — and a
+    /// record this device does not hold answers none, so nothing is
+    /// invented for it.
+    #[test]
+    fn a_record_document_is_read_as_the_app_that_keeps_it() {
+        let data = tempfile::tempdir().unwrap();
+        let record = RecordId::minted();
+        let kind = RecordKind::new("fixture.drafts");
+        let path =
+            RoomRecords::record_document_path_for_test(data.path(), "so.tilo.fixture", "drafts");
+        std::fs::create_dir_all(path.parent().expect("record directory")).unwrap();
+        let mut document = AutoCommit::new();
+        ui::record::init(&mut document, &record, &kind, &room().to_string());
+        document.put(automerge::ROOT, "kept", "content").unwrap();
+        std::fs::write(&path, document.save()).unwrap();
+        let mut local = RoomRecords::in_memory();
+        local.scan_now_for_test(data.path());
+        let reader = local.local_reader().expect("the scan is attached");
+
+        let (app_id, bytes) = reader
+            .record_document(&record)
+            .expect("the record this device holds is read");
+        assert_eq!(app_id, "so.tilo.fixture", "the app that keeps it");
+        let held = AutoCommit::load(&bytes).unwrap();
+        assert_eq!(
+            held.get(automerge::ROOT, "kept")
+                .unwrap()
+                .and_then(|(value, _)| match value {
+                    automerge::Value::Scalar(value) => match value.as_ref() {
+                        automerge::ScalarValue::Str(text) => Some(text.to_string()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .as_deref(),
+            Some("content"),
+            "the bytes are the record's own document"
+        );
+        assert!(
+            reader.record_document(&RecordId::minted()).is_none(),
+            "a record no store on this device holds is not invented"
+        );
     }
 
     #[test]

@@ -32,6 +32,10 @@ pub(super) struct State {
     /// When governed-room creation last looked; the loop runs every frame,
     /// and nothing changes in the few milliseconds between them.
     governing_checked: Mutex<Option<Instant>>,
+    /// Where the records a workspace already held are read from, so the
+    /// one-time creation imports their documents off the frame loop: the
+    /// same reader activity uses, and only once it exists.
+    record_documents: Mutex<Option<crate::shell::room_records::LocalRecordReader>>,
 }
 
 #[derive(Default)]
@@ -221,6 +225,18 @@ impl ShellNetwork {
         owner
     }
 
+    /// Keep `reader` for the governed-room creation pass: the record
+    /// documents a workspace brings into its native room are read from the
+    /// app stores this device holds, off the frame loop.
+    pub(crate) fn attach_record_documents(
+        &self,
+        reader: Option<crate::shell::room_records::LocalRecordReader>,
+    ) {
+        if let Ok(mut held) = self.native_enrollment.record_documents.lock() {
+            *held = reader;
+        }
+    }
+
     /// Move this device's governed rooms that have no native owner record yet
     /// onto the native owner, one bounded publication each. A workspace made
     /// after the session started is created here within a tick of its first
@@ -256,10 +272,6 @@ impl ShellNetwork {
             (tree.rooms_awaiting_native_governance(), tree.local_salt())
         };
         if rooms.is_empty() {
-            let mut tree = tree.write();
-            if tree.native_governance_settled() {
-                tree.native_rooms_ready();
-            }
             return;
         }
         if salt == 0 {
@@ -299,9 +311,22 @@ impl ShellNetwork {
             let tree = tree.clone();
             let governing = Arc::clone(&self.native_enrollment.governing);
             let failed = Arc::clone(&self.native_enrollment.failed_governance);
+            let records = self
+                .native_enrollment
+                .record_documents
+                .lock()
+                .ok()
+                .and_then(|held| held.clone());
             let work = move || {
                 let result = crate::shell::native_workspace_owner::create_governed_workspace(
-                    &owner, &tree, room, workspace, &device, &key, salt,
+                    &owner,
+                    &tree,
+                    room,
+                    workspace,
+                    &device,
+                    &key,
+                    salt,
+                    records.as_ref(),
                 );
                 if let Err(error) = &result {
                     tracing::warn!(%error, %room, "a governed room was not created");

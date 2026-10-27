@@ -1180,7 +1180,7 @@ fn opening_a_governed_workspace_imports_its_windows_and_record_index() {
     let key = SigningKey::from_bytes(&[71; 32]);
     let device =
         tilo_joined_room::testing::certificate(&SigningKey::from_bytes(&[72; 32]), &key, "Desktop");
-    create_governed_workspace(&owner, &tree, room, workspace, &device, &key, salt).unwrap();
+    create_governed_workspace(&owner, &tree, room, workspace, &device, &key, salt, None).unwrap();
 
     let (tabs, records) = owner
         .with_current(room, |view| {

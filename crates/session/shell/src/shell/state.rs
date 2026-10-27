@@ -830,6 +830,17 @@ pub enum OwnershipTransferStateError {
 const MAX_OWNERSHIP_TRANSFER_HISTORY: usize = 4_096;
 const MAX_OWNERSHIP_OFFER_SECONDS: u64 = 7 * 24 * 60 * 60;
 
+/// A window close another device asked of this one: the retained layout
+/// request's target, queued for the shell's close lifecycle
+/// ([`crate::shell::window_actions::close_tab`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayoutClose {
+    /// The room whose window it is.
+    pub room: RoomId,
+    /// The tab the request names.
+    pub tab: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceTree {
     /// Native authority is never re-derived from desktop caches.
@@ -846,13 +857,13 @@ pub struct WorkspaceTree {
     /// governed rooms it finds.
     #[serde(skip)]
     pub native_governance: bool,
-    /// Whether the rooms this session found when it opened have all been
-    /// created on the native owner. Until they have, those rooms keep the
-    /// older engine so a gesture during the one-time migration still lands;
-    /// once it is set, every room this device governs is native from the
-    /// moment it is made.
+    /// Window closes another device asked of this one and that have not run
+    /// through the shell's close lifecycle yet: a retained layout request is
+    /// room state, but closing a window is not a layout mutation. Drained
+    /// every frame by the compositor ([`Self::take_layout_closes`]), and the
+    /// request stays retained in the room until the tab is really gone.
     #[serde(skip)]
-    pub native_rooms_ready: bool,
+    pub pending_layout_closes: Vec<LayoutClose>,
     /// Enrolled rooms whose governor stewards their channels: a node (a
     /// host its person's root let own workspaces). Their records are sealed channels
     /// every member opens itself, never documents the governor commits.
@@ -1032,7 +1043,7 @@ impl Default for WorkspaceTree {
             native_authority: super::native_workspace_owner::NativeAuthorityStorage::default(),
             native_runtime: super::native_workspace_owner::NativeStateRuntime::default(),
             native_governance: false,
-            native_rooms_ready: false,
+            pending_layout_closes: Vec::new(),
             stewarded_rooms: BTreeSet::new(),
             policy_revision: 0,
             doc: AutoCommit::new(),
@@ -1156,10 +1167,12 @@ impl WorkspaceTree {
             || self.native_runtime.requires_uncertain(room)
             // A room this device governs is a native room from the moment
             // its workspace exists, even while the owner is still creating
-            // it: the shell's older engine must not write it in between.
-            || (self.native_governance
-                && self.native_rooms_ready
-                && self.governed_here(room))
+            // it: the shell's older engine never writes it, not even in
+            // between. A write that needs the room document before it exists
+            // is refused (and the creation pass retried), which is a
+            // refusal the caller sees — never a quiet fallback to the older
+            // engine, whose shape this migration leaves behind.
+            || (self.native_governance && self.governed_here(room))
     }
 
     /// Whether this device holds `room`: its replica is installed, or it is

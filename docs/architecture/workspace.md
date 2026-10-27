@@ -167,14 +167,16 @@ workspace already showed: its strips and windows in this device's topology
 namespace, and the record index its apps referenced
 (`tilo_peer_state::workspace_seed_with_layout`), so an upgrade keeps the
 tabs and records the file held instead of replacing them with an empty
-room. Until that one-time pass finishes for a room, `requires_native_owner`
-is false and the older engine still writes it, so a gesture during the
-import lands in the tree the seed is taken from; once every room found at
-open has its native record (`native_rooms_ready`), every room this device
-governs is native. An import that cannot be published leaves the workspace
+room. A room this device governs is native from the moment the native owner
+is open, before its own record exists: `requires_native_owner` is true for
+it, so the older engine never writes it, not even while the import is in
+flight. A write that needs the room document before the import has landed
+is refused — `record_effect` is one — and the creation pass is retried; the
+caller sees the refusal and the workspace keeps its cached tabs and
+records meanwhile. An import that cannot be published leaves the workspace
 and its windows in the tree, logs why and is retried; it never deletes a
-tab or a record it could not carry. This is the ready window migration step
-1 still has to delete: it is not claimed gone here.
+tab or a record it could not carry, and it never becomes a reason to write
+the older shape again.
 
 A room with no workspace host is carried by `direct_carrier`: gossip
 delivers the same `SyncResp` and `AppDocument` a relay session does,
