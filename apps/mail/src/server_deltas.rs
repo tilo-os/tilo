@@ -86,7 +86,7 @@ pub(super) fn take_found(
 
 /// The timing of an account's first fetch, starting now: its mail comes
 /// from the account's server.
-pub(super) fn first_fetch(config: &crate::model::AccountConfig) -> ui::arriving::ArrivalClock {
+pub(super) fn first_fetch(config: &AccountConfig) -> ui::arriving::ArrivalClock {
     ui::arriving::ArrivalClock::new(
         ui::time::now(),
         ui::arriving::Source::host(config.imap_host.clone()),
