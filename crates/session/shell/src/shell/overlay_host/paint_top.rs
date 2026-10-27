@@ -154,6 +154,14 @@ impl ShellOverlayHost {
             self.draw_acknowledgement(scene, transform, text_renderer, theme);
             None
         });
+
+        // A window that just filled the display says how to leave it over
+        // itself, and over every other overlay: it is the only way out the
+        // person can see.
+        overlay_part(scene, "shell.fullscreen-hint", desktop, |scene| {
+            self.draw_fullscreen_hint(scene, transform, text_renderer, theme);
+            None
+        });
     }
 
     /// The command palette's card while it is shown, arriving or leaving,

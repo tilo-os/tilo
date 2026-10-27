@@ -1171,6 +1171,9 @@ shell-tab-menu-new-group = In neue Gruppe verschieben
 shell-window-menu-reveal = Zu diesem Fenster gehen
 shell-window-menu-full-screen = Vollbild
 shell-window-menu-exit-full-screen = Vollbild beenden
+# The way out of a window that just filled the display, said over it once.
+# "{ $key }" is the leaving key, labelled as the person's keyboard labels it.
+shell-fullscreen-way-out = { $key } beendet das Vollbild.
 shell-window-menu-maximize = Maximieren
 shell-window-menu-restore = Wiederherstellen
 shell-window-menu-width = Breite

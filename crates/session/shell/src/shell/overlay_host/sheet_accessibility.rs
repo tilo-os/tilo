@@ -178,6 +178,9 @@ impl ShellOverlayHost {
         if let Some(ack) = self.current_acknowledgement(ui::time::now()) {
             nodes.push(ack.accessibility());
         }
+        if let Some(hint) = self.fullscreen_hint_accessibility(ui::time::now()) {
+            nodes.push(hint);
+        }
         if let Some((name, narration)) = pad_map {
             nodes.push(
                 AccessNode::new(Role::StaticText)
