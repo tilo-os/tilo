@@ -17,10 +17,9 @@ SPEC.loader.exec_module(t_toml)
 
 
 class TTomlTests(unittest.TestCase):
-    def test_generated_blocks_are_current(self):
-        text = (ROOT / "t.toml").read_text(encoding="utf-8")
-        expected = t_toml.render(text, t_toml.generated(t_toml.suites.load(ROOT)))
-        self.assertEqual(text, expected, "run python3 tools/ci/t_toml.py write")
+    # That the generated blocks are current is the t-toml check (`t_toml.py check`), keyed by
+    # exactly what the generator reads: run here too, it ran every cargo tree of the size checks
+    # again on every run of the policy tests, most of this file's minute and a half.
 
     def test_each_policy_step_is_a_check_keyed_by_what_it_reads(self):
         config = t_matrix.load(ROOT)

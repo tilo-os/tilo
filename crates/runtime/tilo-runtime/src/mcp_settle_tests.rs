@@ -31,6 +31,10 @@ pub(crate) struct GatedHost {
     /// Refuse an invocation naming no revision as the broker refuses a
     /// directory action that asks for confirmation without one.
     confirmed_needs_revision: bool,
+    /// Take every invocation without ever answering its admission, as a
+    /// broker whose admission journal waits on a slow disk.
+    admission_unanswered: bool,
+    unanswered: Arc<StdMutex<Vec<Completer<Result<InvocationReceipt, ActionHostError>>>>>,
     queries: Arc<StdMutex<Vec<CatalogueQuery>>>,
 }
 
@@ -97,7 +101,13 @@ impl ActionHost for GatedHost {
             }));
         }
         self.owner.lock().unwrap().replace(caller.clone());
-        self.stub.invoke(caller, request)
+        let answer = self.stub.invoke(caller, request);
+        if !self.admission_unanswered {
+            return answer;
+        }
+        let (admission, unanswered) = tilo_actions::remote::pending();
+        self.unanswered.lock().unwrap().push(admission);
+        unanswered
     }
 
     fn confirm(
@@ -450,6 +460,37 @@ fn an_app_that_needs_a_revision_is_given_the_current_one() {
         (vec![Some("1".to_owned())], 1),
         "one read of the revision, one start with it"
     );
+}
+
+/// An admission the host has not answered within the call's wait goes on
+/// without the call, which answers it as pending under its invocation id,
+/// for the agent to invoke again with that id, rather than as a failure
+/// that names no id to retry with.
+#[test]
+fn an_unanswered_admission_is_pending_under_its_invocation_id() {
+    let host = GatedHost {
+        admission_unanswered: true,
+        ..GatedHost::default()
+    };
+    let endpoint = gated_endpoint(host.clone());
+    run_paused(async {
+        let session = gated_session(&endpoint).await;
+        let invocation = InvocationId::new();
+        let reply = call(&endpoint, &session, "tilo_invoke", long_invoke(invocation)).await;
+        assert_eq!(reply["isError"], false, "{reply}");
+        assert_eq!(
+            reply["structuredContent"]["invocation_id"],
+            invocation.0.to_string(),
+            "{reply}"
+        );
+        assert!(
+            reply["structuredContent"]["pending"]
+                .as_str()
+                .is_some_and(|pending| pending.contains("20000 ms")),
+            "the admission was awaited as long as the call waits: {reply}"
+        );
+    });
+    assert_eq!(host.invoked().len(), 1, "the admission was asked for once");
 }
 
 /// The state `tilo_status` or `tilo_cancel` of `invocation` answers.

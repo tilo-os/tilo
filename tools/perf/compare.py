@@ -190,8 +190,36 @@ def budget_misses(item: record.Record, entry: dict[str, Any]) -> list[str]:
             for name in CEILINGS if name in entry and getattr(item, name) > float(entry[name])]
 
 
+def identity(item: record.Record) -> tuple[Any, ...]:
+    """What makes a record one measurement: the same KPI, environment, commit and start."""
+    return (item.kpi, item.env_key, item.commit, item.started_at, series(item))
+
+
+def stored(item: record.Record, history: list[record.Record]) -> record.Record | None:
+    """The store's copy of `item`, when this run brings a measurement the store already holds.
+
+    t keeps a measuring check's result, and its records, for as long as what it measures is
+    unchanged, so a release candidate whose change doesn't reach a group brings that group's
+    earlier records again. They were judged when they entered the store: judging them again
+    would count one measurement twice in its own baseline, and make a pending regression
+    fail on a second look at the same numbers."""
+    key = identity(item)
+    return next((h for h in reversed(history) if identity(h) == key), None)
+
+
 def judge(item: record.Record, history: list[record.Record], budgets: Budgets, accept: bool) -> Row:
     """Annotate one record with its verdict and say whether it fails the run."""
+    known = None if accept else stored(item, history)
+    if known is not None:
+        item.verdict = dict(known.verdict or {})
+        status = item.verdict.get("status", "new")
+        note = f"measured before, at {item.commit[:10]} ({item.started_at}): judged then"
+        entry = budgets.kpis.get(item.kpi)
+        misses = budget_misses(item, entry) if entry is not None and entry["unit"] == item.unit else []
+        enforced = bool(misses) and bool(entry.get("enforce", False))
+        if misses:
+            note += ("; over budget: " if enforced else "; over target: ") + "; ".join(misses)
+        return Row(item, item.kpi, status, status in FAILING or enforced, note, over_budget=enforced)
     matching = sorted((h for h in history if h.kpi == item.kpi and h.env_key == item.env_key),
                       key=lambda h: h.started_at)
     verdict: dict[str, Any] = {}
@@ -352,8 +380,10 @@ def main(argv: list[str] | None = None, now: datetime.datetime | None = None) ->
     print(text, end="")
     if args.summary:
         args.summary.write_text(text, encoding="utf-8")
-    if args.publish_dir and current:
-        print(f"published {publish(current, args.publish_dir, args.run)}")
+    # Only what the store doesn't hold yet: a measurement enters it once.
+    fresh = [item for item in current if args.accept or stored(item, history) is None]
+    if args.publish_dir and fresh:
+        print(f"published {publish(fresh, args.publish_dir, args.run)}")
     return 1 if any(row.failing for row in rows) else 0
 
 

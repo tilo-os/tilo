@@ -70,6 +70,7 @@ window-toolbar-show-inspector = Inspektor einblenden
 window-toolbar-hide-inspector = Inspektor ausblenden
 window-share-to-channel = In Kanal teilen…
 window-stop-sharing-in = Teilen in { $place } beenden
+history-loading = Verlauf wird geladen…
 history-genesis = Erstellt
 history-edited-field = { $more ->
     [0] { $path } bearbeitet

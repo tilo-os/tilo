@@ -39,6 +39,15 @@ commit_checkout() {
   git reset -q "$T_COMMIT"
 }
 
+# The browser desktop bundle the room service and web entry serve, which the run's
+# web-desktop-bundle check built for this commit (the bundle records it): the same release
+# build, made once for every consumer instead of again for each measurement.
+desktop_bundle() {
+  local bundle=${TILO_PERF_DESKTOP_BUNDLE:-/target/publish/web-desktop/bundle}
+  [[ -f $bundle/index.html ]] || { echo "$group measures the web-desktop-bundle check's bundle, not found at $bundle" >&2; exit 2; }
+  printf '%s\n' "$bundle"
+}
+
 chrome() {
   bash tools/ci/ensure-browser-dependencies.sh
   npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
@@ -78,17 +87,22 @@ case $group in
       --transport "tilo-runtime-mcp --connect, agent door, headless, release + dev-overrides, thin LTO" \
       --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/task-compositor.log" \
       --client-log "$out/task-client.log"
+    ;;
+  agent-native)
+    # The agent's own task pipeline, without the desktop: a release build of the agent's
+    # tests, which shares nothing with the shell's build above, so it runs as a check of its
+    # own beside it. Its records are the agent group's.
     env_json release none kvm > "$out/env-pipeline.json"
     TILO_AGENT_NATIVE_REPS=30 TILO_AGENT_NATIVE_SAMPLES="$out/native" \
       cargo test --locked --release -p agent --lib native_task_benchmark -- --nocapture
     for plan in pipelined sequential; do
       python3 tools/perf/record.py emit --kpi "agent.task.native.${plan}.wall" --unit ms \
         --samples-file "$out/native/${plan}.txt" --env-json "$out/env-pipeline.json" \
-        --meta steps=3 --meta step_ms=100 >> "$out/agent.jsonl"
+        --meta steps=3 --meta step_ms=100 >> "$out/agent-native.jsonl"
     done
     python3 tools/perf/record.py emit --kpi agent.task.native.idle_round_trips --unit count \
       --samples-file "$out/native/idle.txt" --env-json "$out/env-pipeline.json" \
-      --meta steps=3 --meta step_ms=100 >> "$out/agent.jsonl"
+      --meta steps=3 --meta step_ms=100 >> "$out/agent-native.jsonl"
     ;;
   footprint)
     curl --fail --silent --show-error --retry 3 --retry-all-errors --proto '=https' \
@@ -242,21 +256,18 @@ case $group in
     ;;
   browser)
     commit_checkout
-    cargo fetch --locked
-    crates/browser/tilo-browser-runtime/scripts/build.sh "$out/bundle" --bundle desktop
+    bundle=$(desktop_bundle)
     chrome
     env_json release swiftshader kvm > "$out/env.json"
-    node scripts/perf/browser_qualification.mjs "$out/bundle" --out "$out/browser.json" \
+    node scripts/perf/browser_qualification.mjs "$bundle" --out "$out/browser.json" \
       --renderer swiftshader --demo-seconds 0 --rounds 1 --activations 10 --viewport 960x540 \
       --expect-revision "$(git rev-parse HEAD)" | tee "$out/browser-summary.txt"
     python3 tools/perf/adapters.py browser-qualification --env-json "$out/env.json" "$out/browser.json" \
       > "$out/browser.jsonl"
-    rm -rf "$out/bundle"
     ;;
   stream)
     commit_checkout
-    cargo fetch --locked
-    crates/browser/tilo-browser-runtime/scripts/build.sh "$out/bundle" --bundle desktop
+    bundle=$(desktop_bundle)
     cargo build --locked --release -p tilo-relay --features web,stream-source \
       --bin tilo-relay --example legacy_stream_source
     cargo test --locked --release -p tilo-relay --features stream-source --example legacy_stream_source
@@ -272,7 +283,7 @@ case $group in
       # must rest under a window that is not the page's first.
       name=stream codec_args=(--reopen)
       [[ $codec == vp9 ]] && name=stream-vp9 codec_args=(--codec vp9)
-      if node scripts/perf/native_stream_qualification.mjs "$out/bundle" --out "$out/$name.json" \
+      if node scripts/perf/native_stream_qualification.mjs "$bundle" --out "$out/$name.json" \
         --relay "$target/release/tilo-relay" --source "$target/release/examples/legacy_stream_source" \
         --renderer swiftshader --viewport 960x540 --warm-up 30 --expect-revision "$(git rev-parse HEAD)" \
         "${codec_args[@]}" | tee "$out/$name-summary.txt"; then
@@ -281,7 +292,6 @@ case $group in
         status=1
       fi
     done
-    rm -rf "$out/bundle"
     exit "$status"
     ;;
   *)

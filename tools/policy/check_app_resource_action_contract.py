@@ -164,15 +164,15 @@ NOT_CONTROL_CALLBACKS = {
     "on_open_item": "answers the resource's published open action",
     "on_stage": "stages view state for a screenshot scenario",
 }
-# Buttons a toolkit composite draws itself and runs a closure for: a
-# dialog's footer, a menu's entries, a row's hover and swipe actions, a
-# card's hover action, a navigation list's item actions. Each builder call
-# that hands one a closure counts, as a closure-activated control does; a
-# composite that publishes its buttons itself leaves this set.
+# Buttons a toolkit composite draws itself and runs a closure for: a menu's
+# entries, a row's hover and swipe actions, a card's hover action, a
+# navigation list's item actions. Each builder call that hands one a closure
+# counts, as a closure-activated control does; a composite that publishes its
+# buttons itself (a dialog's footer) is in NOT_ACTION_BUTTONS.
 ACTION_BUTTON_BUILDERS = frozenset(
     {
-        "primary_action", "secondary_action", "tertiary_action", "hover_action",
-        "swipe_action", "icon_action", "destructive_action", "item_actions",
+        "hover_action", "swipe_action", "icon_action", "destructive_action",
+        "item_actions",
     }
 )
 # `MenuItem::action` and a row's or property's `.action(Icon::…, label, …)`
@@ -188,6 +188,9 @@ ACTION_BUTTON_CALL = re.compile(
 NOT_ACTION_BUTTONS = {
     "action": "counted by call shape (ACTION_BUTTON_CALL)",
     "actions_group": "binds each hit to its published action",
+    "primary_action": "a dialog's footer button, published as the dialog's own control",
+    "secondary_action": "a dialog's footer button, published as the dialog's own control",
+    "tertiary_action": "a dialog's footer button, published as the dialog's own control",
 }
 CONTROL_CALLBACK_SOURCES = ("crates/sdk/ui-core/src", "crates/sdk/tilo-app/src/framework")
 CLOSURE_CALLBACK_DEFINITION = re.compile(

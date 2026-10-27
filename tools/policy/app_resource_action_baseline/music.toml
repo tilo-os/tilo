@@ -1,5 +1,5 @@
 [ratchets.closure_action_button]
-"apps/music/src/app.rs" = 5
+"apps/music/src/app.rs" = 3
 "apps/music/src/app/media_grid.rs" = 2
 "apps/music/src/app/render/query_view.rs" = 1
 

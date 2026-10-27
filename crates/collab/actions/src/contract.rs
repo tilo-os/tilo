@@ -220,6 +220,23 @@ pub const DOCUMENT_READ_TAG: &str = "read:document";
 /// is never guessed from its name.
 pub const OPENS_PATH_TAG: &str = "open:path";
 
+/// Prefix of the [`ActionContract::tags`] entries naming a capability of
+/// the host the action needs: `requires-host:native-paths`. On a host
+/// without it the action is published unavailable, coded
+/// [`HOST_UNSUPPORTED_CODE`], and so refused, wherever it is offered: an
+/// app declares what its action needs once instead of hiding it per host.
+/// A requirement the host does not know is one it lacks.
+pub const REQUIRES_HOST_PREFIX: &str = "requires-host:";
+
+/// [`REQUIRES_HOST_PREFIX`] entry of an action that reaches files through
+/// their file system path, as importing a folder by its path does; browser
+/// storage has no paths.
+pub const REQUIRES_NATIVE_PATHS_TAG: &str = "requires-host:native-paths";
+
+/// [`Availability::Unavailable`] code of an action whose
+/// [`REQUIRES_HOST_PREFIX`] requirement this host cannot meet.
+pub const HOST_UNSUPPORTED_CODE: &str = "host_unsupported";
+
 /// Prefix of the [`ActionContract::tags`] entries naming the file
 /// extensions (lowercase, without the dot) an [`OPENS_PATH_TAG`] action
 /// opens: `open:path-ext:csv`. An opener naming none opens any file.

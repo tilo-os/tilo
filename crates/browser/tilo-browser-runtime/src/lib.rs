@@ -133,6 +133,9 @@ mod link;
 mod mount_service_custody;
 #[cfg(target_arch = "wasm32")]
 mod page_authors;
+// The page's theme from settings and the browser: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod page_theme;
 // Which peer speaks for the page's person: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod page_person;
